@@ -1,5 +1,4 @@
 use std::process::{Command, Child};
-use std::sync::{Arc, Mutex};
 
 pub struct AnvilNode {
     process: Option<Child>,

@@ -32,6 +32,10 @@ export function BottomPanel({ logs, onClear, snapshots, activeSnapshotId, onReve
     }, [logs])
 
     const sortedSnapshots = useMemo(() => snapshots.slice().sort((a, b) => b.createdAt - a.createdAt), [snapshots])
+    const activeIndex = useMemo(
+        () => sortedSnapshots.findIndex((snap) => snap.snapshotId === activeSnapshotId),
+        [sortedSnapshots, activeSnapshotId],
+    )
 
     return (
         <div className="flex flex-col h-full bg-slate-900 border-t border-slate-800">
@@ -68,55 +72,75 @@ export function BottomPanel({ logs, onClear, snapshots, activeSnapshotId, onReve
             ) : (
                 <div className="flex-1 overflow-y-auto p-4 text-xs text-slate-300">
                     {sortedSnapshots.length === 0 && <div className="opacity-30 italic">No snapshots yet.</div>}
-                    <div className="space-y-4">
-                        {sortedSnapshots.map((snap, index) => (
-                            <div key={snap.id} className="flex items-start gap-4">
-                                <div className="flex flex-col items-center">
-                                    <div className={clsx(
-                                        "h-3 w-3 rounded-full border",
-                                        snap.snapshotId === activeSnapshotId ? "bg-indigo-500 border-indigo-300" : "bg-slate-800 border-slate-600"
-                                    )} />
-                                    {index < sortedSnapshots.length - 1 && (
-                                        <div className="w-px flex-1 bg-slate-700/60" />
-                                    )}
-                                </div>
-                                <div className="flex-1 bg-slate-950/50 border border-slate-800 rounded p-3">
-                                    <div className="flex items-center justify-between">
-                                        <div className="text-[10px] uppercase text-slate-500">
-                                            {new Date(snap.createdAt).toLocaleTimeString()}
+                    <div className="relative">
+                        <div className="absolute left-3 top-0 bottom-0 w-px bg-slate-800" />
+                        <div className="space-y-6">
+                            {sortedSnapshots.map((snap, index) => {
+                                const isActive = snap.snapshotId === activeSnapshotId
+                                const isAhead = activeIndex !== -1 && index < activeIndex
+                                return (
+                                    <div key={snap.id} className={clsx("flex items-start gap-4", isAhead && "opacity-50")}>
+                                        <div className="relative z-10 mt-1">
+                                            <div className={clsx(
+                                                "h-3 w-3 rounded-full border",
+                                                isActive ? "bg-indigo-500 border-indigo-300" : "bg-slate-800 border-slate-600"
+                                            )} />
+                                            {isActive && (
+                                                <span className="absolute left-5 -top-1 text-[9px] uppercase font-bold text-indigo-300">
+                                                    HEAD
+                                                </span>
+                                            )}
                                         </div>
-                                        <div className={clsx(
-                                            "text-[10px] uppercase font-semibold",
-                                            snap.status === 'confirmed' ? "text-emerald-400" : snap.status === 'error' ? "text-red-400" : "text-slate-400"
-                                        )}>
-                                            {snap.status}
+                                        <div className="flex-1 bg-slate-950/50 border border-slate-800 rounded p-3">
+                                            <div className="flex items-center justify-between">
+                                                <div className="text-[10px] uppercase text-slate-500">
+                                                    {new Date(snap.createdAt).toLocaleTimeString()}
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    {isActive && (
+                                                        <span className="text-[10px] uppercase font-semibold text-indigo-300">Current</span>
+                                                    )}
+                                                    <div className={clsx(
+                                                        "text-[10px] uppercase font-semibold",
+                                                        snap.status === 'confirmed' ? "text-emerald-400" : snap.status === 'error' ? "text-red-400" : "text-slate-400"
+                                                    )}>
+                                                        {snap.status}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="mt-2 text-sm font-semibold text-slate-100">
+                                                {snap.method}
+                                            </div>
+                                            <div className="mt-1 grid grid-cols-2 gap-2 text-[10px] text-slate-400">
+                                                <div>From: <span className="text-slate-300">{snap.from || '-'}</span></div>
+                                                <div>To: <span className="text-slate-300">{snap.to || '-'}</span></div>
+                                                <div>Value: <span className="text-slate-300">{snap.value || '0'}</span></div>
+                                                <div>Block: <span className="text-slate-300">{snap.blockNumber ?? '-'}</span></div>
+                                            </div>
+                                            {snap.txHash && (
+                                                <div className="mt-2 text-[10px] text-slate-500">
+                                                    Tx: <span className="text-slate-300">{snap.txHash}</span>
+                                                </div>
+                                            )}
+                                            <div className="mt-3 flex items-center justify-end">
+                                                <button
+                                                    onClick={() => onRevert(snap.snapshotId)}
+                                                    disabled={isActive || isAhead}
+                                                    className={clsx(
+                                                        "text-[10px] uppercase font-bold px-3 py-1 rounded border",
+                                                        (isActive || isAhead)
+                                                            ? "border-slate-800 text-slate-500 cursor-not-allowed"
+                                                            : "border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800",
+                                                    )}
+                                                >
+                                                    Revert
+                                                </button>
+                                            </div>
                                         </div>
                                     </div>
-                                    <div className="mt-2 text-sm font-semibold text-slate-100">
-                                        {snap.method}
-                                    </div>
-                                    <div className="mt-1 grid grid-cols-2 gap-2 text-[10px] text-slate-400">
-                                        <div>From: <span className="text-slate-300">{snap.from || '-'}</span></div>
-                                        <div>To: <span className="text-slate-300">{snap.to || '-'}</span></div>
-                                        <div>Value: <span className="text-slate-300">{snap.value || '0'}</span></div>
-                                        <div>Block: <span className="text-slate-300">{snap.blockNumber ?? '-'}</span></div>
-                                    </div>
-                                    {snap.txHash && (
-                                        <div className="mt-2 text-[10px] text-slate-500">
-                                            Tx: <span className="text-slate-300">{snap.txHash}</span>
-                                        </div>
-                                    )}
-                                    <div className="mt-3 flex items-center justify-end">
-                                        <button
-                                            onClick={() => onRevert(snap.snapshotId)}
-                                            className="text-[10px] uppercase font-bold px-3 py-1 rounded border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800"
-                                        >
-                                            Revert
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        ))}
+                                )
+                            })}
+                        </div>
                     </div>
                 </div>
             )}

@@ -4,12 +4,15 @@ mod anvil;
 
 use axum::{
     extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path, Query, State},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
     Json,
 };
-use std::{net::SocketAddr, sync::{Arc, Mutex}, process::Command};
+use clap::Parser;
+use include_dir::{include_dir, Dir};
+use std::{net::SocketAddr, path::PathBuf, process::Command, sync::{Arc, Mutex}};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -22,6 +25,7 @@ struct AppState {
     tx: broadcast::Sender<String>,
     last_msg: Arc<Mutex<Option<String>>>,
     fork_node: Arc<Mutex<anvil::AnvilNode>>,
+    root_dir: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -57,8 +61,19 @@ struct ForkStatusResponse {
     port: u16,
 }
 
+static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
+
+#[derive(Parser, Debug)]
+#[command(name = "chasm", about = "ChainSmith CLI")]
+struct Cli {
+    #[arg(value_name = "path", default_value = ".")]
+    path: PathBuf,
+}
+
 #[tokio::main]
 async fn main() {
+    let args = Cli::parse();
+    let root_dir = args.path.canonicalize().unwrap_or(args.path);
     // Initialize logging
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
@@ -84,12 +99,9 @@ async fn main() {
     // Forked Anvil (Optional)
     let fork_node = Arc::new(Mutex::new(anvil::AnvilNode::new(8546)));
     
-    // Determine the root directory (current directory)
-    let current_dir = std::env::current_dir().unwrap().to_string_lossy().to_string();
-
     // Initial Compile
     tracing::info!("Performing initial compilation...");
-    let compiler = Compiler::new(std::path::PathBuf::from(&current_dir)).unwrap();
+    let compiler = Compiler::new(root_dir.clone()).unwrap();
     match compiler.compile_to_json() {
         Ok(json) => {
             tracing::info!("Initial compilation successful. Payload size: {}", json.len());
@@ -99,21 +111,24 @@ async fn main() {
         },
         Err(e) => {
             tracing::error!("Initial compilation failed: {}", e);
+            let err_msg = format!("{{\"type\": \"compile_error\", \"error\": \"{}\"}}", e);
+            if let Ok(mut lock) = last_msg.lock() {
+                *lock = Some(err_msg);
+            }
         }
     }
 
     // Start File Watcher
     let tx_for_watcher = tx.clone();
     let last_msg_for_watcher = last_msg.clone();
-    if let Err(e) = watcher::setup_watcher(current_dir, tx_for_watcher, last_msg_for_watcher).await {
+    if let Err(e) = watcher::setup_watcher(root_dir.clone(), tx_for_watcher, last_msg_for_watcher).await {
         tracing::error!("Failed to setup watcher: {}", e);
     }
 
-    let app_state = Arc::new(AppState { tx, last_msg, fork_node });
+    let app_state = Arc::new(AppState { tx, last_msg, fork_node, root_dir });
 
     // Build our application with a route
     let app = Router::new()
-        .route("/", get(root))
         .route("/ws", get(ws_handler))
         .route("/inspect/:contract", get(inspect_storage))
         .route("/trace/:tx_hash", get(get_trace))
@@ -122,6 +137,8 @@ async fn main() {
         .route("/fork/start", post(start_fork))
         .route("/fork/stop", post(stop_fork))
         .route("/fork/status", get(fork_status))
+        .route("/", get(serve_ui_root))
+        .route("/*path", get(serve_ui))
         .layer(CorsLayer::permissive())
         .with_state(app_state);
 
@@ -131,8 +148,8 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn root() -> &'static str {
-    "ChainSmith Backend Running. Connect via WS for updates."
+async fn serve_ui_root() -> Response {
+    serve_ui(Path("".to_string())).await
 }
 
 async fn ws_handler(
@@ -161,10 +178,13 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     }
 }
 
-async fn inspect_storage(Path(contract): Path<String>) -> Response {
+async fn inspect_storage(
+    Path(contract): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
     tracing::info!("Inspecting storage for {}", contract);
     
-    let current_dir = std::env::current_dir().unwrap();
+    let current_dir = state.root_dir.clone();
     let mut file_path = None;
     
     for entry in WalkDir::new(&current_dir).into_iter().filter_map(|e| e.ok()) {
@@ -181,6 +201,7 @@ async fn inspect_storage(Path(contract): Path<String>) -> Response {
     };
 
     let output = Command::new("forge")
+        .current_dir(&state.root_dir)
         .arg("inspect")
         .arg(&target)
         .arg("storage")
@@ -209,13 +230,18 @@ async fn inspect_storage(Path(contract): Path<String>) -> Response {
     }
 }
 
-async fn get_trace(Path(tx_hash): Path<String>, Query(params): Query<TraceParams>) -> Response {
+async fn get_trace(
+    Path(tx_hash): Path<String>,
+    Query(params): Query<TraceParams>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
     let rpc_url = params.rpc_url.unwrap_or("http://127.0.0.1:8545".to_string());
     tracing::info!("Tracing tx {} on {}", tx_hash, rpc_url);
 
     // cast run <tx> --rpc-url <url>
     // cast run outputs colored ansi. We want that to display in frontend.
     let output = Command::new("cast")
+        .current_dir(&state.root_dir)
         .arg("run")
         .arg(&tx_hash)
         .arg("--rpc-url")
@@ -242,7 +268,10 @@ async fn get_trace(Path(tx_hash): Path<String>, Query(params): Query<TraceParams
     }
 }
 
-async fn get_trace_call(Json(payload): Json<TraceCallRequest>) -> Response {
+async fn get_trace_call(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<TraceCallRequest>,
+) -> Response {
     let url = payload.rpcUrl;
     let block_tag = payload.blockTag.unwrap_or("latest".to_string());
 
@@ -254,6 +283,7 @@ async fn get_trace_call(Json(payload): Json<TraceCallRequest>) -> Response {
     });
 
     let output = Command::new("curl")
+        .current_dir(&state.root_dir)
         .arg("-sS")
         .arg("-X")
         .arg("POST")
@@ -291,7 +321,10 @@ async fn get_trace_call(Json(payload): Json<TraceCallRequest>) -> Response {
     }
 }
 
-async fn get_trace_calltree(Json(payload): Json<TraceCalltreeRequest>) -> Response {
+async fn get_trace_calltree(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<TraceCalltreeRequest>,
+) -> Response {
     let rpc_url = payload.rpcUrl;
     let block_tag = payload.blockTag.unwrap_or("latest".to_string());
 
@@ -302,6 +335,7 @@ async fn get_trace_calltree(Json(payload): Json<TraceCalltreeRequest>) -> Respon
     let gas = payload.call.get("gas").and_then(|v| v.as_str());
 
     let mut cmd = Command::new("cast");
+    cmd.current_dir(&state.root_dir);
     cmd.arg("call");
     cmd.arg("--rpc-url").arg(&rpc_url);
     cmd.arg("--trace");
@@ -369,6 +403,24 @@ async fn get_trace_calltree(Json(payload): Json<TraceCalltreeRequest>) -> Respon
             })).into_response()
         }
     }
+}
+
+async fn serve_ui(Path(path): Path<String>) -> Response {
+    let trimmed = path.trim_start_matches('/');
+    let file_path = if trimmed.is_empty() { "index.html" } else { trimmed };
+    let file = UI_DIR.get_file(file_path).or_else(|| UI_DIR.get_file("index.html"));
+
+    if let Some(file) = file {
+        let mime = mime_guess::from_path(file.path()).first_or_octet_stream();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(mime.as_ref()).unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+        );
+        return (StatusCode::OK, headers, file.contents()).into_response();
+    }
+
+    StatusCode::NOT_FOUND.into_response()
 }
 
 async fn start_fork(

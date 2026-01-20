@@ -1,12 +1,17 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { TransactionViewer } from './TransactionViewer'
 import { clsx } from 'clsx'
 import type { PublicClient, Block, Transaction } from 'viem'
-import { formatEther, isAddress, isHex, formatUnits } from 'viem'
+import { formatEther, isAddress, isHex } from 'viem'
 import { Search, Box, ArrowRightLeft, FileText, Hash, Clock, Layers, ArrowLeft } from 'lucide-react'
 
-interface ExplorerProps {
+export interface ExplorerProps {
     publicClient: PublicClient;
+    rpcUrl: string;
+    txModes: Record<string, 'live' | 'local'>;
+    onRemoveRecentTx: (hash: string) => void;
+    blockModes: Record<string, 'live' | 'local'>;
+    onRemoveRecentBlock: (hash: string) => void;
     onLog: (msg: string) => void;
     recentBlocks: Block[];
     recentTransactions: Transaction[];
@@ -20,12 +25,19 @@ type SearchResult =
 
 
 
-export function Explorer({ publicClient, onLog, recentBlocks, recentTransactions }: ExplorerProps) {
+export function Explorer({ publicClient, rpcUrl, txModes, onRemoveRecentTx, blockModes, onRemoveRecentBlock, onLog, recentBlocks, recentTransactions }: ExplorerProps) {
     const [query, setQuery] = useState("")
     const [result, setResult] = useState<SearchResult>(null)
     const [loading, setLoading] = useState(false)
     const [addressTxs, setAddressTxs] = useState<Transaction[]>([])
     const [loadingAddressTxs, setLoadingAddressTxs] = useState(false)
+    const [notice, setNotice] = useState<string | null>(null)
+
+    useEffect(() => {
+        if (!notice) return
+        const timer = setTimeout(() => setNotice(null), 3500)
+        return () => clearTimeout(timer)
+    }, [notice])
     
     // Trace state
     const [traceData, setTraceData] = useState<string | null>(null)
@@ -34,8 +46,7 @@ export function Explorer({ publicClient, onLog, recentBlocks, recentTransactions
     const fetchTrace = async (txHash: string) => {
         setLoadingTrace(true)
         try {
-            const url = "http://127.0.0.1:8545" // Hardcoded or pass from App
-            const res = await fetch(`http://localhost:3000/trace/${txHash}?rpc_url=${encodeURIComponent(url)}`)
+            const res = await fetch(`http://localhost:3000/trace/${txHash}?rpc_url=${encodeURIComponent(rpcUrl)}`)
             const data = await res.json()
             if (data.error) setTraceData(`Error: ${data.error}`)
             else setTraceData(data.stdout || data.stderr || "No trace output.")
@@ -48,7 +59,7 @@ export function Explorer({ publicClient, onLog, recentBlocks, recentTransactions
     
     // Use recentBlocks from props instead of local state polling
 
-    const handleNavigate = (type: 'tx' | 'block' | 'address', value: string) => {
+    const handleNavigate = (_type: 'tx' | 'block' | 'address', value: string) => {
         setQuery(value)
         performSearch(value)
     }
@@ -138,14 +149,24 @@ export function Explorer({ publicClient, onLog, recentBlocks, recentTransactions
                     
                     setResult({ type: 'tx', data: { ...tx, ...receipt } })
                     return
-                } catch {}
+                } catch {
+                    if (txModes[searchQuery] === 'local') {
+                        onRemoveRecentTx(searchQuery)
+                        setNotice("Local transaction no longer exists after revert/switch/stop. Removed from list.")
+                    }
+                }
                 
                 // Try Block Hash
                 try {
                     const block = await publicClient.getBlock({ blockHash: searchQuery, includeTransactions: true })
                     setResult({ type: 'block', data: block })
                     return
-                } catch {}
+                } catch {
+                    if (blockModes[searchQuery] === 'local') {
+                        onRemoveRecentBlock(searchQuery)
+                        setNotice("Local block no longer exists after revert/switch/stop. Removed from list.")
+                    }
+                }
             }
 
             // 3. Try as Block Number
@@ -154,7 +175,13 @@ export function Explorer({ publicClient, onLog, recentBlocks, recentTransactions
                     const block = await publicClient.getBlock({ blockNumber: BigInt(searchQuery), includeTransactions: true })
                     setResult({ type: 'block', data: block })
                     return
-                } catch {}
+                } catch {
+                    const matching = recentBlocks.find(b => b.number?.toString() === searchQuery)
+                    if (matching?.hash && blockModes[matching.hash] === 'local') {
+                        onRemoveRecentBlock(matching.hash)
+                        setNotice("Local block no longer exists after revert/switch/stop. Removed from list.")
+                    }
+                }
             }
             
             onLog("Search not found")
@@ -173,6 +200,11 @@ export function Explorer({ publicClient, onLog, recentBlocks, recentTransactions
 
     return (
         <div className="flex flex-col h-full bg-slate-950 text-slate-200 p-6 overflow-y-auto">
+            {notice && (
+                <div className="fixed bottom-4 right-4 z-50 bg-slate-900 border border-slate-800 rounded-lg px-4 py-3 text-sm text-slate-200 shadow-lg">
+                    {notice}
+                </div>
+            )}
             
             {/* Search Bar */}
             <div className="max-w-2xl mx-auto w-full mb-10">
@@ -320,7 +352,19 @@ export function Explorer({ publicClient, onLog, recentBlocks, recentTransactions
                                         </div>
                                         <div>
                                             <div className="text-xs text-slate-500">Hash</div>
-                                            <div className="text-xs font-mono text-slate-300">{block.hash?.slice(0, 10)}...</div>
+                                            <div className="text-xs font-mono text-slate-300 flex items-center gap-2">
+                                                <span>{block.hash?.slice(0, 10)}...</span>
+                                                {block.hash && blockModes[block.hash] && (
+                                                    <span className={clsx(
+                                                        "text-[9px] uppercase font-bold px-1.5 py-0.5 rounded",
+                                                        blockModes[block.hash] === 'local'
+                                                            ? "bg-indigo-600/20 text-indigo-300"
+                                                            : "bg-slate-700/60 text-slate-300"
+                                                    )}>
+                                                        {blockModes[block.hash]}
+                                                    </span>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
                                     <div className="text-right">
@@ -350,7 +394,19 @@ export function Explorer({ publicClient, onLog, recentBlocks, recentTransactions
                                             Tx
                                         </div>
                                         <div className="min-w-0">
-                                            <div className="text-xs text-indigo-400 font-mono mb-1">{tx.hash.slice(0, 18)}...</div>
+                                            <div className="text-xs text-indigo-400 font-mono mb-1 flex items-center gap-2">
+                                                <span>{tx.hash.slice(0, 18)}...</span>
+                                                {txModes[tx.hash] && (
+                                                    <span className={clsx(
+                                                        "text-[9px] uppercase font-bold px-1.5 py-0.5 rounded",
+                                                        txModes[tx.hash] === 'local'
+                                                            ? "bg-indigo-600/20 text-indigo-300"
+                                                            : "bg-slate-700/60 text-slate-300"
+                                                    )}>
+                                                        {txModes[tx.hash]}
+                                                    </span>
+                                                )}
+                                            </div>
                                             <div className="text-[10px] text-slate-500 flex items-center gap-1">
                                                 From <span className="text-slate-400 font-mono">{tx.from.slice(0,6)}...</span>
                                                 to <span className="text-slate-400 font-mono">{tx.to ? tx.to.slice(0,6) + '...' : 'Contract Creation'}</span>

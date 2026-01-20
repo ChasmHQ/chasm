@@ -124,10 +124,13 @@ function App() {
   // Explorer Data State
   const [recentBlocks, setRecentBlocks] = useState<Block[]>([])
   const [recentTransactions, setRecentTransactions] = useState<Transaction[]>([])
+  const [txModes, setTxModes] = useState<Record<string, 'live' | 'local'>>({})
+  const [blockModes, setBlockModes] = useState<Record<string, 'live' | 'local'>>({})
 
   const hasLoadedSettings = useRef(false)
   const [snapshots, setSnapshots] = useState<SnapshotEntry[]>([])
   const [activeSnapshotId, setActiveSnapshotId] = useState<string | null>(null)
+  const [snapshotToast, setSnapshotToast] = useState<{ message: string; status: 'success' | 'error' } | null>(null)
 
   // Viem Clients (Memoized)
   const clients = useMemo(() => {
@@ -376,8 +379,8 @@ function App() {
 
   // Open Function for a specific INSTANCE
   const openInstanceFunctionTab = (instance: DeployedInstance, func: any) => {
-      if (instance.mode && instance.mode !== globalMode) {
-          setGlobalMode(instance.mode)
+      if (instance.mode === 'local' && globalMode !== 'local') {
+          setGlobalMode('local')
       }
       const id = `func-${instance.id}-${func.name}-${Date.now()}`
       const newTab: TabData = {
@@ -394,8 +397,8 @@ function App() {
 
   // Open Details for a specific INSTANCE
   const openInstanceDetailsTab = (instance: DeployedInstance) => {
-      if (instance.mode && instance.mode !== globalMode) {
-          setGlobalMode(instance.mode)
+      if (instance.mode === 'local' && globalMode !== 'local') {
+          setGlobalMode('local')
       }
       const id = `details-${instance.id}`
       const existing = tabs.find(t => t.id === id)
@@ -510,6 +513,7 @@ function App() {
     }
   }, [localForkStatus?.running, localForkStatus?.port, buildForkClients])
 
+
   // Poll for blocks and transactions
   useEffect(() => {
     const explorerClient =
@@ -523,6 +527,12 @@ function App() {
         setRecentBlocks(prev => {
           if (prev.length > 0 && prev[0].number === block.number) return prev
           return [block, ...prev].slice(0, 50)
+        })
+        setBlockModes(prev => {
+          const hash = block.hash || ''
+          if (!hash) return prev
+          if (prev[hash]) return prev
+          return { ...prev, [hash]: globalMode }
         })
 
         if (block.transactions.length > 0) {
@@ -538,6 +548,15 @@ function App() {
                 // Reverse to have newest (highest index) first if that's the order
                 return [...newTxs.reverse(), ...prev].slice(0, 100)
             })
+            setTxModes(prev => {
+              const next = { ...prev }
+              txs.forEach(tx => {
+                if (!next[tx.hash]) {
+                  next[tx.hash] = globalMode
+                }
+              })
+              return next
+            })
         }
       } catch (e) {
         console.error("Block fetch error", e)
@@ -548,6 +567,26 @@ function App() {
     const interval = setInterval(fetchLatest, 4000)
     return () => clearInterval(interval)
   }, [clients?.publicClient, localClients?.publicClient, globalMode])
+
+  useEffect(() => {
+    if (globalMode !== 'live') return
+    setRecentTransactions(prev => prev.filter(tx => txModes[tx.hash] !== 'local'))
+    setRecentBlocks(prev => prev.filter(block => (block.hash ? blockModes[block.hash] !== 'local' : true)))
+    setTxModes(prev => {
+      const next: Record<string, 'live' | 'local'> = {}
+      Object.entries(prev).forEach(([hash, mode]) => {
+        if (mode !== 'local') next[hash] = mode
+      })
+      return next
+    })
+    setBlockModes(prev => {
+      const next: Record<string, 'live' | 'local'> = {}
+      Object.entries(prev).forEach(([hash, mode]) => {
+        if (mode !== 'local') next[hash] = mode
+      })
+      return next
+    })
+  }, [globalMode, txModes, blockModes])
 
   const startLocalFork = useCallback(async () => {
     const rawBlock = localForkBlock.trim()
@@ -582,6 +621,13 @@ function App() {
     return buildForkClients(forkRpc)
   }, [localClients, startLocalFork, buildForkClients])
 
+  useEffect(() => {
+    if (globalMode !== "local") return
+    if (activeView !== "explorer") return
+    if (localClients) return
+    void ensureLocalClients()
+  }, [globalMode, activeView, localClients, ensureLocalClients])
+
   const addSnapshot = useCallback((entry: {
     snapshotId: string;
     method: string;
@@ -607,15 +653,27 @@ function App() {
   }, [])
 
   const revertSnapshot = useCallback(async (snapshotId: string) => {
-    const clients = await ensureLocalClients()
-    await clients.testClient.revert({ id: snapshotId as Hex })
-    setActiveSnapshotId(snapshotId)
-    setSnapshots(prev => {
-      const idx = prev.findIndex(s => s.snapshotId === snapshotId)
-      return idx === -1 ? prev : prev.slice(idx)
-    })
-    log(`Reverted to snapshot ${snapshotId}`)
-  }, [ensureLocalClients])
+    try {
+      const clients = await ensureLocalClients()
+      await clients.testClient.revert({ id: snapshotId as Hex })
+      setActiveSnapshotId(snapshotId)
+      setSnapshots(prev => {
+        const target = prev.find(s => s.snapshotId === snapshotId)
+        if (!target) return prev
+        return prev.filter(s => s.createdAt <= target.createdAt)
+      })
+      setSnapshotToast({ message: "Reverted to snapshot", status: "success" })
+      log(`Reverted to snapshot ${snapshotId}`)
+    } catch (e: any) {
+      setSnapshotToast({ message: `Revert failed: ${e.message || e}`, status: "error" })
+    }
+  }, [ensureLocalClients, log])
+
+  useEffect(() => {
+    if (!snapshotToast) return
+    const timer = setTimeout(() => setSnapshotToast(null), 3500)
+    return () => clearTimeout(timer)
+  }, [snapshotToast])
 
   // Resizing Logic
   const startResizing = useCallback(() => {
@@ -1007,11 +1065,13 @@ function App() {
                                     publicClient={clients.publicClient}
                                     walletClient={clients.walletClient}
                                     rpcUrl={rpcUrl}
+                                    isActive={activeTabId === tab.id}
                                     globalMode={globalMode}
                                     ensureLocalClients={ensureLocalClients}
                                     localClients={localClients}
                                     onSnapshotCreated={addSnapshot}
                                     onSnapshotUpdated={updateSnapshot}
+                                    snapshotsCount={snapshots.length}
                                     onLog={log}
                                     onDeploy={() => contractArtifact && openDeployTab(contractArtifact)}
                                 />
@@ -1033,6 +1093,7 @@ function App() {
                                     localClients={localClients}
                                     onSnapshotCreated={addSnapshot}
                                     onSnapshotUpdated={updateSnapshot}
+                                    snapshotsCount={snapshots.length}
                                 />
                             )}
                          </div>
@@ -1050,7 +1111,26 @@ function App() {
             <div className="flex-1 min-h-0">
                 {clients ? (
                     <Explorer 
-                        publicClient={clients.publicClient} 
+                        publicClient={globalMode === 'local' && localClients ? localClients.publicClient : clients.publicClient}
+                        rpcUrl={globalMode === 'local' && localClients ? localClients.rpcUrl : rpcUrl}
+                        txModes={txModes}
+                        blockModes={blockModes}
+                        onRemoveRecentBlock={(hash: string) => {
+                          setRecentBlocks(prev => prev.filter(block => block.hash !== hash))
+                          setBlockModes(prev => {
+                            const next = { ...prev }
+                            delete next[hash]
+                            return next
+                          })
+                        }}
+                        onRemoveRecentTx={(hash: string) => {
+                          setRecentTransactions(prev => prev.filter(tx => tx.hash !== hash))
+                          setTxModes(prev => {
+                            const next = { ...prev }
+                            delete next[hash]
+                            return next
+                          })
+                        }}
                         onLog={log} 
                         recentBlocks={recentBlocks}
                         recentTransactions={recentTransactions}
@@ -1092,6 +1172,20 @@ function App() {
           <span>{updateToast.message}</span>
           <span className="text-indigo-400 text-xs font-bold uppercase">Refresh</span>
         </button>
+      </div>
+    )}
+    {snapshotToast && (
+      <div className="fixed bottom-4 left-4 z-50">
+        <div
+          className={clsx(
+            "bg-slate-900 border rounded-lg px-4 py-3 text-sm shadow-lg",
+            snapshotToast.status === "success"
+              ? "border-emerald-700/60 text-emerald-200"
+              : "border-red-700/60 text-red-200",
+          )}
+        >
+          {snapshotToast.message}
+        </div>
       </div>
     )}
     </>

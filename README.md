@@ -1,113 +1,57 @@
 # Chasm
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/yourusername/Chasm/actions)
+Chasm is an all-in-one development and security tool for smart contracts. It is designed to bridge the gap between writing code and analyzing it, providing a unified interface that combines the best features of Remix, Postman, and Foundry.
 
-Chasm is the open source all-in-one platform for blockchain developers, designed to streamline the development, testing, and deployment of blockchain applications. Just as Burp Suite empowers penetration testers with comprehensive security tools and Postman simplifies API testing, Chasm provides a unified environment for blockchain development, offering tools for smart contract creation, blockchain interaction, debugging, and more.
+> **Note:** This project is still in the prototyping phase, so any feedback is welcome. It might contain a lot of bugs.
+
+Just as Burp Suite is essential for web security and Postman for API testing, Chasm provides a workspace for blockchain developers and security researchers to interact with, debug, and audit contracts in a structure-agnostic environment.
 
 ## Features
 
-- **Smart Contract Development**: Write, compile, and deploy smart contracts with ease.
-- **Blockchain Interaction**: Connect to various blockchains (Ethereum, Binance Smart Chain, etc.) and interact with them via intuitive interfaces.
-- **Testing Suite**: Comprehensive testing tools for unit tests, integration tests, and security audits.
-- **Debugging Tools**: Step-through debugging for smart contracts and transactions.
-- **API Integration**: Seamless integration with blockchain APIs for data fetching and transaction management.
-- **Multi-Chain Support**: Support for multiple blockchain networks out of the box.
-- **User-Friendly Interface**: Modern, intuitive UI designed for developers of all levels.
+### Smart Contract Workspace
+- **Zero-Config Compilation**: Chasm recursively scans the current directory for any Solidity files and recompiles them automatically using `foundry-compilers`.
+- **Persistent Interaction**: A tabbed, Postman-style interface allows you to keep multiple function calls open simultaneously. Inputs and responses persist even when switching tabs.
+- **Advanced Parameter Control**: Support for constructor arguments, ETH value sending (with Wei/Gwei/ETH unit conversion), and manual gas limit overrides.
+- **Raw RPC Editor**: Toggle between a standard form view and a raw JSON-RPC request editor with syntax highlighting for low-level debugging.
+
+### Debugging & Security
+- **Visual Transaction Traces**: View detailed, colored execution traces for every transaction, similar to Foundry's `-vvvv` output.
+- **Storage Inspector**: Read any storage slot directly from the UI, including private variables, mappings, and long strings.
+- **Foundry Integration**: Built-in support for local simulation using Foundry cheatcodes, embedded Anvil node, easy transaction state revert, and more.
+
+### Blockchain Explorer
+- **Universal Search**: Search for wallet addresses, contract addresses, transaction hashes, or block numbers.
+- **Network Dashboard**: Real-time view of latest blocks and transactions on the connected network.
 
 ## Installation
 
 ### Prerequisites
-
-- Node.js (version 14 or higher)
-- npm or yarn
-- A supported blockchain network (e.g., Ethereum testnet)
+- **Rust**: Required to build the backend.
+- **Foundry**: Required for the underlying simulation and tracing tools (`anvil`, `cast`, `forge`).
+- **Node.js**: Required to build the UI assets once.
 
 ### Steps
-
 1. Clone the repository:
    ```bash
    git clone https://github.com/yourusername/Chasm.git
-   cd Chasm
+   cd Chasm/chainsmith
    ```
-
-2. Install dependencies:
+2. Build the UI assets:
    ```bash
-   npm install
+   npm --prefix ui install
+   npm --prefix ui run build
    ```
-
-3. Configure your environment:
-   - Copy `.env.example` to `.env` and fill in your blockchain API keys and configurations.
-
-4. Run the application:
+3. Build the binary:
    ```bash
-   npm start
+   cargo build --release
    ```
-
-For detailed installation instructions, see [Installation Guide](docs/installation.md).
+4. Run Chasm from any Solidity project directory:
+   ```bash
+   ./target/release/chasm ./contracts
+   ```
 
 ## Usage
-
-### Getting Started
-
-1. Launch Chasm from your terminal.
-2. Connect to a blockchain network via the settings panel.
-3. Create or import a smart contract project.
-4. Use the built-in editor to write your code.
-5. Compile and deploy your contracts directly from the platform.
-
-### Example
-
-```javascript
-// Sample smart contract code
-pragma solidity ^0.8.0;
-
-contract SimpleStorage {
-    uint256 storedData;
-
-    function set(uint256 x) public {
-        storedData = x;
-    }
-
-    function get() public view returns (uint256) {
-        return storedData;
-    }
-}
-```
-
-For more examples and tutorials, check out our [Documentation](docs/).
-
-## Contributing
-
-We welcome contributions from the community! To get started:
-
-1. Fork the repository.
-2. Create a feature branch: `git checkout -b feature/your-feature-name`
-3. Make your changes and commit them: `git commit -m 'Add some feature'`
-4. Push to the branch: `git push origin feature/your-feature-name`
-5. Submit a pull request.
-
-Please read our [Contributing Guidelines](CONTRIBUTING.md) for more details.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-If you have any questions or need help, feel free to:
-
-- Open an issue on GitHub
-- Join our [Discord community](https://discord.gg/Chasm)
-- Check out our [FAQ](docs/faq.md)
-
-## Roadmap
-
-- [ ] Support for additional blockchain networks
-- [ ] Advanced security scanning features
-- [ ] Plugin system for extensibility
-- [ ] Mobile app companion
+Launch Chasm in any folder containing Solidity files by running `chasm .`. The tool will automatically detect your contracts, allowing you to deploy them to a local node or attach to existing addresses on any network. Use the activity bar to switch between the Contract Workspace and the Blockchain Explorer.
 
 ---
-
-Made with ❤️ for the blockchain community.
+Built for the Ethereum development and security community.

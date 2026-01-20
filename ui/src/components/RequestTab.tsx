@@ -48,6 +48,7 @@ interface RequestTabProps {
     value?: string;
   }) => string;
   onSnapshotUpdated?: (id: string, patch: { txHash?: string; blockNumber?: number; status?: "confirmed" | "error" }) => void;
+  snapshotsCount?: number;
 }
 
 const COMMON_KEYS = [
@@ -64,6 +65,21 @@ const COMMON_KEYS = [
 ];
 
 type ValueUnit = "wei" | "gwei" | "ether";
+
+const isArrayType = (type: string) => /\[[0-9]*\]$/.test(type);
+
+const parseArrayType = (type: string) => {
+  const match = type.match(/^(.*)\[(\d*)\]$/);
+  if (!match) return { baseType: type, length: null as number | null };
+  const length = match[2] ? Number(match[2]) : null;
+  return { baseType: match[1], length: Number.isNaN(length) ? null : length };
+};
+
+const coercePrimitive = (val: string) => {
+  if (val === "true") return true;
+  if (val === "false") return false;
+  return val;
+};
 
 function UnitDisplay({ value }: { value: bigint }) {
   const [unit, setUnit] = useState<ValueUnit>("ether");
@@ -113,9 +129,10 @@ export function RequestTab({
   localClients,
   onSnapshotCreated,
   onSnapshotUpdated,
+  snapshotsCount = 0,
 }: RequestTabProps) {
   // Form State
-  const [inputs, setInputs] = useState<Record<number, string>>({});
+  const [inputs, setInputs] = useState<Record<number, string | string[]>>({});
   const [value, setValue] = useState<string>("");
   const [valueUnit, setValueUnit] = useState<ValueUnit>("ether");
   const [gasLimit, setGasLimit] = useState<string>("");
@@ -182,6 +199,20 @@ export function RequestTab({
 
   const inputsList =
     type === "deploy" ? abiItem?.inputs || [] : abiItem?.inputs || [];
+
+  const buildArgs = useCallback(() => {
+    return inputsList.map((input: any, i: number) => {
+      const val = inputs[i];
+      if (isArrayType(input.type)) {
+        const arr = Array.isArray(val) ? val : [];
+        return arr.map((item) => coercePrimitive(item));
+      }
+      if (Array.isArray(val)) {
+        return coercePrimitive(val.join(","));
+      }
+      return coercePrimitive(val || "");
+    });
+  }, [inputsList, inputs]);
 
   const isPayable =
     type === "deploy"
@@ -253,12 +284,7 @@ export function RequestTab({
 
   const generateRawJson = useCallback(() => {
     try {
-      const args = inputsList.map((_: any, i: number) => {
-        const val = inputs[i] || "";
-        if (val === "true") return true;
-        if (val === "false") return false;
-        return val;
-      });
+    const args = buildArgs();
       const valBigInt = getValueInWei();
       const gas = gasLimit ? BigInt(gasLimit) : undefined;
 
@@ -360,9 +386,13 @@ export function RequestTab({
             data: params.data,
           });
           if (decoded.args) {
-            const newInputs: Record<number, string> = {};
+            const newInputs: Record<number, string | string[]> = {};
             decoded.args.forEach((arg: any, i: number) => {
-              newInputs[i] = String(arg);
+              if (Array.isArray(arg)) {
+                newInputs[i] = arg.map((item) => String(item));
+              } else {
+                newInputs[i] = String(arg);
+              }
             });
             setInputs(newInputs);
           }
@@ -388,12 +418,7 @@ export function RequestTab({
 
     let data = "0x";
     try {
-      const args = inputsList.map((_: any, i: number) => {
-        const val = inputs[i] || "";
-        if (val === "true") return true;
-        if (val === "false") return false;
-        return val;
-      });
+      const args = buildArgs();
       data = encodeFunctionData({
         abi: [abiItem],
         functionName: abiItem?.name,
@@ -414,8 +439,7 @@ export function RequestTab({
     bytecode,
     contractAddress,
     abiItem,
-    inputsList,
-    inputs,
+    buildArgs,
     getValueInWei,
     gasLimit,
   ]);
@@ -471,7 +495,11 @@ export function RequestTab({
         rpcUrl: string;
       }) => {
         let snapshotEntryId: string | null = null;
-        const maybeSnapshot = async (info: { method: string; from?: string; to?: string; value?: string }) => {
+        const createSnapshotEntry = async (
+          info: { method: string; from?: string; to?: string; value?: string },
+          markPending = false,
+          patch?: { txHash?: string; blockNumber?: number; status?: "confirmed" | "error" },
+        ) => {
           if (globalMode !== "local") return null;
           if (!clients.testClient || !onSnapshotCreated) return null;
           const snapshotId = await clients.testClient.snapshot();
@@ -482,7 +510,12 @@ export function RequestTab({
             to: info.to,
             value: info.value,
           });
-          pendingSnapshotIdRef.current = snapshotEntryId;
+          if (markPending) {
+            pendingSnapshotIdRef.current = snapshotEntryId;
+          }
+          if (snapshotEntryId && onSnapshotUpdated && patch) {
+            onSnapshotUpdated(snapshotEntryId, patch);
+          }
           return snapshotEntryId;
         };
         if (requestViewMode === "rpc") {
@@ -499,12 +532,15 @@ export function RequestTab({
           const callParams = req.params?.[0] || {};
           setLastCallParams(callParams);
           if (req.method !== "eth_call") {
-            await maybeSnapshot({
-              method: req.method,
-              from: req.params?.[0]?.from,
-              to: req.params?.[0]?.to,
-              value: req.params?.[0]?.value,
-            });
+            if (snapshotsCount === 0) {
+              const preBlock = await clients.publicClient.getBlockNumber();
+              await createSnapshotEntry({
+                method: req.method,
+                from: req.params?.[0]?.from,
+                to: req.params?.[0]?.to,
+                value: req.params?.[0]?.value,
+              }, true, { status: "confirmed", blockNumber: Number(preBlock) });
+            }
           }
           const res = await (activeClient as any).request(req);
 
@@ -520,23 +556,21 @@ export function RequestTab({
             });
             const tx = await clients.publicClient.getTransaction({ hash: res });
             setResponse({ ...receipt, ...tx });
-            if (snapshotEntryId && onSnapshotUpdated) {
-              onSnapshotUpdated(snapshotEntryId, {
-                txHash: res,
-                blockNumber: Number(receipt.blockNumber),
-                status: "confirmed",
-              });
-              pendingSnapshotIdRef.current = null;
-            }
+            await createSnapshotEntry({
+              method: req.method,
+              from: req.params?.[0]?.from,
+              to: req.params?.[0]?.to,
+              value: req.params?.[0]?.value,
+            }, false, {
+              txHash: res,
+              blockNumber: Number(receipt.blockNumber),
+              status: "confirmed",
+            });
+            pendingSnapshotIdRef.current = null;
             onLog(`Confirmed in block ${receipt.blockNumber}`);
           }
         } else {
-          const args = inputsList.map((_: any, i: number) => {
-            const val = inputs[i] || "";
-            if (val === "true") return true;
-            if (val === "false") return false;
-            return val;
-          });
+      const args = buildArgs();
 
           const valBigInt = getValueInWei();
           const gas = gasLimit ? BigInt(gasLimit) : undefined;
@@ -554,12 +588,15 @@ export function RequestTab({
             if (clients.walletClient.account) {
               deployParams.account = clients.walletClient.account;
             }
-            await maybeSnapshot({
-              method: `Deploy ${contractName}`,
-              from: clients.walletClient.account?.address,
-              to: "0x",
-              value: valBigInt ? `${formatEther(valBigInt)} ETH` : "0 ETH",
-            });
+            if (snapshotsCount === 0) {
+              const preBlock = await clients.publicClient.getBlockNumber();
+              await createSnapshotEntry({
+                method: `Deploy ${contractName}`,
+                from: clients.walletClient.account?.address,
+                to: "0x",
+                value: valBigInt ? `${formatEther(valBigInt)} ETH` : "0 ETH",
+              }, true, { status: "confirmed", blockNumber: Number(preBlock) });
+            }
             const hash = await clients.walletClient.deployContract(deployParams);
 
             onLog(`Deploy Tx: ${hash}`);
@@ -577,14 +614,17 @@ export function RequestTab({
             });
             const tx = await clients.publicClient.getTransaction({ hash });
             setResponse({ ...receipt, ...tx });
-            if (snapshotEntryId && onSnapshotUpdated) {
-              onSnapshotUpdated(snapshotEntryId, {
-                txHash: hash,
-                blockNumber: Number(receipt.blockNumber),
-                status: "confirmed",
-              });
-              pendingSnapshotIdRef.current = null;
-            }
+            await createSnapshotEntry({
+              method: `Deploy ${contractName}`,
+              from: clients.walletClient.account?.address,
+              to: receipt.contractAddress || "0x",
+              value: valBigInt ? `${formatEther(valBigInt)} ETH` : "0 ETH",
+            }, false, {
+              txHash: hash,
+              blockNumber: Number(receipt.blockNumber),
+              status: "confirmed",
+            });
+            pendingSnapshotIdRef.current = null;
 
             if (receipt.contractAddress && onDeploySuccess) {
               onDeploySuccess(receipt.contractAddress);
@@ -614,12 +654,15 @@ export function RequestTab({
               if (clients.walletClient.account) {
                 writeParams.account = clients.walletClient.account;
               }
-              await maybeSnapshot({
-                method: abiItem.name,
-                from: clients.walletClient.account?.address,
-                to: contractAddress!,
-                value: valBigInt ? `${formatEther(valBigInt)} ETH` : "0 ETH",
-              });
+              if (snapshotsCount === 0) {
+                const preBlock = await clients.publicClient.getBlockNumber();
+                await createSnapshotEntry({
+                  method: abiItem.name,
+                  from: clients.walletClient.account?.address,
+                  to: contractAddress!,
+                  value: valBigInt ? `${formatEther(valBigInt)} ETH` : "0 ETH",
+                }, true, { status: "confirmed", blockNumber: Number(preBlock) });
+              }
               const hash = await clients.walletClient.writeContract(writeParams);
               const data = encodeFunctionData({
                 abi: [abiItem],
@@ -642,14 +685,17 @@ export function RequestTab({
               });
               const tx = await clients.publicClient.getTransaction({ hash });
               setResponse({ ...receipt, ...tx });
-              if (snapshotEntryId && onSnapshotUpdated) {
-                onSnapshotUpdated(snapshotEntryId, {
-                  txHash: hash,
-                  blockNumber: Number(receipt.blockNumber),
-                  status: "confirmed",
-                });
-                pendingSnapshotIdRef.current = null;
-              }
+              await createSnapshotEntry({
+                method: abiItem.name,
+                from: clients.walletClient.account?.address,
+                to: contractAddress!,
+                value: valBigInt ? `${formatEther(valBigInt)} ETH` : "0 ETH",
+              }, false, {
+                txHash: hash,
+                blockNumber: Number(receipt.blockNumber),
+                status: "confirmed",
+              });
+              pendingSnapshotIdRef.current = null;
               onLog(`Confirmed in block ${receipt.blockNumber}`);
             }
           }
@@ -1002,24 +1048,75 @@ export function RequestTab({
               <div className="space-y-4">
                 {inputsList.length > 0 ? (
                   <div className="grid grid-cols-1 gap-5">
-                    {inputsList.map((input: any, i: number) => (
-                      <div key={i} className="flex flex-col gap-1.5">
-                        <label className="text-xs font-medium text-slate-400">
-                          {input.name || `param_${i}`}{" "}
-                          <span className="text-slate-600 ml-1">
-                            ({input.type})
-                          </span>
-                        </label>
-                        <input
-                          className="bg-transparent border-b border-slate-700 py-2 px-1 text-sm text-slate-200 focus:border-indigo-500 outline-none transition-colors placeholder:text-slate-700"
-                          placeholder={`Enter ${input.type}`}
-                          value={inputs[i] || ""}
-                          onChange={(e) =>
-                            setInputs((p) => ({ ...p, [i]: e.target.value }))
-                          }
-                        />
-                      </div>
-                    ))}
+                    {inputsList.map((input: any, i: number) => {
+                      const isArray = isArrayType(input.type);
+                      const { baseType, length } = parseArrayType(input.type);
+                      const rawVal = inputs[i];
+                      const arrayValues = Array.isArray(rawVal) ? rawVal : [];
+                      const displayValues =
+                        length !== null
+                          ? Array.from({ length }, (_, idx) => arrayValues[idx] ?? "")
+                          : arrayValues.length > 0
+                          ? arrayValues
+                          : [""];
+                      return (
+                        <div key={i} className="flex flex-col gap-1.5">
+                          <label className="text-xs font-medium text-slate-400">
+                            {input.name || `param_${i}`}{" "}
+                            <span className="text-slate-600 ml-1">
+                              ({input.type})
+                            </span>
+                          </label>
+                          {isArray ? (
+                            <div className="space-y-2">
+                              {displayValues.map((val, idx) => (
+                                <div key={idx} className="flex items-center gap-2">
+                                  <input
+                                    className="flex-1 bg-transparent border-b border-slate-700 py-2 px-1 text-sm text-slate-200 focus:border-indigo-500 outline-none transition-colors placeholder:text-slate-700"
+                                    placeholder={`Item ${idx + 1} (${baseType})`}
+                                    value={val}
+                                    onChange={(e) => {
+                                      const next = [...displayValues];
+                                      next[idx] = e.target.value;
+                                      setInputs((p) => ({ ...p, [i]: next }));
+                                    }}
+                                  />
+                                  {length === null && (
+                                    <button
+                                      onClick={() => {
+                                        const next = displayValues.filter((_, index) => index !== idx);
+                                        setInputs((p) => ({ ...p, [i]: next.length ? next : [""] }));
+                                      }}
+                                      className="text-[10px] uppercase font-bold text-slate-500 hover:text-red-400"
+                                      title="Remove item"
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                              {length === null && (
+                                <button
+                                  onClick={() => setInputs((p) => ({ ...p, [i]: [...displayValues, ""] }))}
+                                  className="text-[10px] uppercase font-bold text-slate-400 hover:text-indigo-300"
+                                >
+                                  Add item
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <input
+                              className="bg-transparent border-b border-slate-700 py-2 px-1 text-sm text-slate-200 focus:border-indigo-500 outline-none transition-colors placeholder:text-slate-700"
+                              placeholder={`Enter ${input.type}`}
+                              value={typeof inputs[i] === "string" ? inputs[i] : ""}
+                              onChange={(e) =>
+                                setInputs((p) => ({ ...p, [i]: e.target.value }))
+                              }
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="text-slate-600 italic text-sm py-4">

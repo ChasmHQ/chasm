@@ -1,8 +1,8 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { clsx } from 'clsx'
-import { Copy, RefreshCw, Database, Code, FileJson, Search, Play, Zap, Eye, EyeOff, Send, Coins, Loader2, RotateCcw, ChevronDown, ChevronUp, Activity } from 'lucide-react'
+import { Copy, RefreshCw, Database, Code, FileJson, Search, Zap, Eye, EyeOff, Send, Loader2, RotateCcw, ChevronDown, ChevronUp, Activity } from 'lucide-react'
 import type { Address, PublicClient, Hex, WalletClient, TestClient } from 'viem'
-import { keccak256, toHex, pad, numberToHex, fromHex, hexToBigInt, hexToBool, hexToString, toBytes, concat, formatEther, parseEther, parseUnits, formatUnits } from 'viem'
+import { keccak256, toHex, pad, numberToHex, hexToBigInt, hexToBool, toBytes, formatEther, parseUnits, formatUnits } from 'viem'
 
 import Editor from 'react-simple-code-editor'
 import { Cheatcodes } from './Cheatcodes'
@@ -18,6 +18,7 @@ interface ContractDetailsTabProps {
     publicClient: PublicClient;
     walletClient: WalletClient;
     rpcUrl?: string;
+    isActive?: boolean;
     globalMode: 'live' | 'local';
     ensureLocalClients: () => Promise<{ publicClient: PublicClient; walletClient: WalletClient; testClient: TestClient; rpcUrl: string }>;
     localClients: { publicClient: PublicClient; walletClient: WalletClient; testClient: TestClient; rpcUrl: string } | null;
@@ -29,6 +30,7 @@ interface ContractDetailsTabProps {
         value?: string;
     }) => string;
     onSnapshotUpdated?: (id: string, patch: { txHash?: string; blockNumber?: number; status?: 'confirmed' | 'error' }) => void;
+    snapshotsCount?: number;
     onLog: (msg: string) => void;
     onDeploy: () => void;
 }
@@ -121,11 +123,13 @@ export function ContractDetailsTab({
     publicClient,
     walletClient,
     rpcUrl,
+    isActive = false,
     globalMode,
     ensureLocalClients,
     localClients,
     onSnapshotCreated,
     onSnapshotUpdated,
+    snapshotsCount = 0,
     onLog,
     onDeploy
 }: ContractDetailsTabProps) {
@@ -164,27 +168,34 @@ export function ContractDetailsTab({
     const [interactRawJson, setInteractRawJson] = useState("")
 
     const activePublicClient = globalMode === 'local'
-        ? (localClients?.publicClient ?? publicClient)
+        ? (localPublicClient ?? localClients?.publicClient ?? publicClient)
         : publicClient
     const activeWalletClient = globalMode === 'local'
         ? (localClients?.walletClient ?? walletClient)
         : walletClient
 
-    // Fetch Balance
-    useEffect(() => {
+    const refreshBalance = useCallback(async () => {
         if (!contractAddress) return
-        const fetchBalance = async () => {
-            try {
-                const bal = await activePublicClient.getBalance({ address: contractAddress })
-                setContractBalance(bal)
-            } catch (e) {
-                console.error("Failed balance", e)
-            }
+        try {
+            const bal = await activePublicClient.getBalance({ address: contractAddress })
+            setContractBalance(bal)
+        } catch (e) {
+            console.error("Failed balance", e)
         }
-        fetchBalance()
-        const interval = setInterval(fetchBalance, 5000)
-        return () => clearInterval(interval)
     }, [contractAddress, activePublicClient])
+
+    // Fetch once on open or when address/client changes
+    useEffect(() => {
+        refreshBalance()
+    }, [refreshBalance])
+
+    // Poll balance only when details tab is active
+    useEffect(() => {
+        if (!isActive) return
+        refreshBalance()
+        const interval = setInterval(refreshBalance, 5000)
+        return () => clearInterval(interval)
+    }, [isActive, refreshBalance])
 
     useEffect(() => {
         const handleClick = (e: MouseEvent) => {
@@ -202,8 +213,13 @@ export function ContractDetailsTab({
             setLocalPublicClient(null)
             return
         }
-        if (!showCheatcodes) return
         let mounted = true
+        if (localClients?.publicClient) {
+            setLocalPublicClient(localClients.publicClient)
+        }
+        if (localClients?.testClient) {
+            setLocalTestClient(localClients.testClient)
+        }
         ensureLocalClients()
             .then((clients) => {
                 if (!mounted) return
@@ -214,7 +230,7 @@ export function ContractDetailsTab({
         return () => {
             mounted = false
         }
-    }, [globalMode, showCheatcodes, ensureLocalClients])
+    }, [globalMode, ensureLocalClients, localClients])
 
     // Fetch Layout
     useEffect(() => {
@@ -320,6 +336,146 @@ export function ContractDetailsTab({
         setInteractRequestMode(mode)
     }
 
+    const isArrayLabel = (label: string) => label.includes('[') && label.endsWith(']')
+
+    const parseArrayLabel = (label: string) => {
+        const match = label.match(/^(.*)\[(\d*)\]$/)
+        if (!match) return { baseLabel: label, length: null as number | null }
+        const length = match[2] ? Number(match[2]) : null
+        return { baseLabel: match[1], length: Number.isNaN(length) ? null : length }
+    }
+
+    const isDynamicType = (typeLabel: string, typeDef?: StorageType) => {
+        if (typeLabel === 'string' || typeLabel === 'bytes') return true
+        if (typeDef?.encoding === 'dynamic_array') return true
+        return false
+    }
+
+    const slotHash = (slotIndex: bigint) => {
+        const slotHex = pad(numberToHex(slotIndex), { size: 32 })
+        return hexToBigInt(keccak256(toBytes(slotHex)))
+    }
+
+    const decodeByLabel = (raw: string, label: string) => {
+        if (!raw || raw.startsWith('Error')) return raw
+        if (label.includes('uint') || label.includes('int')) {
+            try {
+                return hexToBigInt(raw as Hex).toString()
+            } catch {
+                return raw
+            }
+        }
+        if (label.includes('address')) {
+            return '0x' + raw.replace(/^0x/, '').slice(-40)
+        }
+        if (label.includes('bool')) {
+            return hexToBool(raw as Hex) ? 'true' : 'false'
+        }
+        return raw
+    }
+
+    const formatArrayDisplay = (value: any, numeric: boolean): string => {
+        if (!Array.isArray(value)) {
+            if (numeric && typeof value === 'string' && /^-?\d+$/.test(value)) {
+                return value
+            }
+            return JSON.stringify(value)
+        }
+        const items = value.map((item) => formatArrayDisplay(item, numeric))
+        return `[${items.join(', ')}]`
+    }
+
+    const readSolidityBytes = async (slotIndex: bigint): Promise<string> => {
+        if (!contractAddress) return "0x"
+        const slotValue = await activePublicClient.getStorageAt({
+            address: contractAddress,
+            slot: pad(numberToHex(slotIndex), { size: 32 })
+        }) || "0x0"
+        const slotBigInt = hexToBigInt(slotValue as Hex)
+        const lsb = Number(slotBigInt & 1n)
+        if (lsb === 1) {
+            const len = Number((slotBigInt - 1n) / 2n)
+            const bytes = new Uint8Array(len)
+            const dataBytes = toBytes(slotValue as Hex)
+            bytes.set(dataBytes.slice(0, Math.min(len, 31)))
+            return toHex(bytes)
+        }
+        const len = Number(slotBigInt * 2n)
+        const baseSlot = slotHash(slotIndex)
+        const bytes = new Uint8Array(len)
+        let offset = 0
+        for (let i = 0; offset < len; i++) {
+            const data = await activePublicClient.getStorageAt({
+                address: contractAddress,
+                slot: pad(numberToHex(baseSlot + BigInt(i)), { size: 32 })
+            }) || "0x0"
+            const chunk = toBytes(data as Hex)
+            const take = Math.min(32, len - offset)
+            bytes.set(chunk.slice(0, take), offset)
+            offset += take
+        }
+        return toHex(bytes)
+    }
+
+    const slotsForType = (typeId: string): number => {
+        const def = storageLayout?.types[typeId]
+        if (!def) return 1
+        if (isArrayLabel(def.label) && def.base) {
+            const { length } = parseArrayLabel(def.label)
+            if (def.encoding === 'dynamic_array' || length === null) return 1
+            return (length || 1) * slotsForType(def.base)
+        }
+        if (def.label === 'string' || def.label === 'bytes') return 1
+        return 1
+    }
+
+    const readTypeValue = async (slotIndex: bigint, typeId: string): Promise<any> => {
+        const def = storageLayout?.types[typeId]
+        if (!def) {
+            const val = await activePublicClient.getStorageAt({
+                address: contractAddress!,
+                slot: pad(numberToHex(slotIndex), { size: 32 })
+            })
+            return val || "0x0"
+        }
+
+        if (isArrayLabel(def.label) && def.base) {
+            const { length } = parseArrayLabel(def.label)
+            let arrayLength = length
+            let baseSlot = slotIndex
+            if (def.encoding === 'dynamic_array' || length === null) {
+                const rawLen = await activePublicClient.getStorageAt({
+                    address: contractAddress!,
+                    slot: pad(numberToHex(slotIndex), { size: 32 })
+                }) || "0x0"
+                arrayLength = Number(hexToBigInt(rawLen as Hex))
+                baseSlot = slotHash(slotIndex)
+            }
+            const baseDef = storageLayout?.types[def.base]
+            const elementSlots = baseDef && !isDynamicType(baseDef.label, baseDef) ? slotsForType(def.base) : 1
+            const items = []
+            for (let i = 0; i < (arrayLength || 0); i++) {
+                const elementSlot = baseSlot + BigInt(i * elementSlots)
+                const val = await readTypeValue(elementSlot, def.base)
+                items.push(val)
+            }
+            return items
+        }
+
+        if (def.label === 'string') {
+            return await readSolidityString(slotIndex)
+        }
+        if (def.label === 'bytes') {
+            return await readSolidityBytes(slotIndex)
+        }
+
+        const raw = await activePublicClient.getStorageAt({
+            address: contractAddress!,
+            slot: pad(numberToHex(slotIndex), { size: 32 })
+        }) || "0x0"
+        return decodeByLabel(raw, def.label)
+    }
+
     const readStorage = async (item: StorageItem) => {
         if (!contractAddress) return
         
@@ -356,10 +512,23 @@ export function ContractDetailsTab({
             }
 
             const label = typeDef?.label || ''
+            if (isArrayLabel(label) && typeDef?.base) {
+                const values = await readTypeValue(slot, item.type)
+                const baseLabel = storageLayout?.types[typeDef.base]?.label || ''
+                const numeric = baseLabel.includes('uint') || baseLabel.includes('int')
+                const formatted = formatArrayDisplay(values, numeric)
+                setStorageValues(p => ({...p, [item.label]: formatted}))
+                return
+            }
             if (label === 'string') {
                 const strVal = await readSolidityString(slot)
                 setStorageValues(p => ({...p, [item.label]: strVal}))
                 return 
+            }
+            if (label === 'bytes') {
+                const bytesVal = await readSolidityBytes(slot)
+                setStorageValues(p => ({...p, [item.label]: bytesVal}))
+                return
             }
 
             const val = await activePublicClient.getStorageAt({
@@ -419,7 +588,11 @@ export function ContractDetailsTab({
         
         const runWithClients = async (clients: { publicClient: PublicClient; walletClient: WalletClient; testClient?: TestClient | null; rpcUrl: string }) => {
             let snapshotEntryId: string | null = null
-            const maybeSnapshot = async (info: { method: string; from?: string; to?: string; value?: string }) => {
+            const createSnapshotEntry = async (
+                info: { method: string; from?: string; to?: string; value?: string },
+                markPending = false,
+                patch?: { txHash?: string; blockNumber?: number; status?: 'confirmed' | 'error' },
+            ) => {
                 if (globalMode !== 'local') return null
                 if (!clients.testClient || !onSnapshotCreated) return null
                 const snapshotId = await clients.testClient.snapshot()
@@ -430,32 +603,43 @@ export function ContractDetailsTab({
                     to: info.to,
                     value: info.value,
                 })
-                pendingSnapshotIdRef.current = snapshotEntryId
+                if (markPending) {
+                    pendingSnapshotIdRef.current = snapshotEntryId
+                }
+                if (snapshotEntryId && onSnapshotUpdated && patch) {
+                    onSnapshotUpdated(snapshotEntryId, patch)
+                }
                 return snapshotEntryId
             }
             if (interactRequestMode === 'rpc') {
                 const req = JSON.parse(interactRawJson)
                 onLog(`Executing Raw ${req.method}...`)
-                await maybeSnapshot({
-                    method: req.method,
-                    from: req.params?.[0]?.from,
-                    to: req.params?.[0]?.to,
-                    value: req.params?.[0]?.value,
-                })
+                if (snapshotsCount === 0) {
+                    const preBlock = await clients.publicClient.getBlockNumber()
+                    await createSnapshotEntry({
+                        method: req.method,
+                        from: req.params?.[0]?.from,
+                        to: req.params?.[0]?.to,
+                        value: req.params?.[0]?.value,
+                    }, true, { status: 'confirmed', blockNumber: Number(preBlock) })
+                }
                 const res = await (clients.walletClient as any).request(req)
                 onLog(`Tx: ${res}`)
                 setInteractResponse({ transactionHash: res, status: "pending" })
                 const receipt = await clients.publicClient.waitForTransactionReceipt({ hash: res })
                 const tx = await clients.publicClient.getTransaction({ hash: res })
                 setInteractResponse({ ...receipt, ...tx })
-                if (snapshotEntryId && onSnapshotUpdated) {
-                    onSnapshotUpdated(snapshotEntryId, {
-                        txHash: res,
-                        blockNumber: Number(receipt.blockNumber),
-                        status: 'confirmed',
-                    })
-                    pendingSnapshotIdRef.current = null
-                }
+                await createSnapshotEntry({
+                    method: req.method,
+                    from: req.params?.[0]?.from,
+                    to: req.params?.[0]?.to,
+                    value: req.params?.[0]?.value,
+                }, false, {
+                    txHash: res,
+                    blockNumber: Number(receipt.blockNumber),
+                    status: 'confirmed',
+                })
+                pendingSnapshotIdRef.current = null
                 onLog(`Confirmed in block ${receipt.blockNumber}`)
             } else {
                 const val = getSendValueInWei() || 0n
@@ -464,20 +648,26 @@ export function ContractDetailsTab({
                 
                 onLog(`Sending ${formatEther(val)} ETH to ${contractName}...`)
 
-                await maybeSnapshot({
-                    method: 'Send ETH',
-                    from: clients.walletClient.account?.address,
-                    to: contractAddress || undefined,
-                    value: val ? `${formatEther(val)} ETH` : '0 ETH',
-                })
+                if (snapshotsCount === 0) {
+                    const preBlock = await clients.publicClient.getBlockNumber()
+                    await createSnapshotEntry({
+                        method: 'Send ETH',
+                        from: clients.walletClient.account?.address,
+                        to: contractAddress || undefined,
+                        value: val ? `${formatEther(val)} ETH` : '0 ETH',
+                    }, true, { status: 'confirmed', blockNumber: Number(preBlock) })
+                }
 
-                const hash = await clients.walletClient.sendTransaction({
+                const txParams: any = {
                     to: contractAddress,
                     value: val,
                     data: data,
                     gas: gas,
-                    account: clients.walletClient.account
-                })
+                }
+                if (clients.walletClient.account) {
+                    txParams.account = clients.walletClient.account
+                }
+                const hash = await clients.walletClient.sendTransaction(txParams)
                 
                 onLog(`Tx Sent: ${hash}`)
                 setInteractResponse({ transactionHash: hash, status: "pending" })
@@ -486,14 +676,17 @@ export function ContractDetailsTab({
                 const tx = await clients.publicClient.getTransaction({ hash })
                 setInteractResponse({ ...receipt, ...tx })
 
-                if (snapshotEntryId && onSnapshotUpdated) {
-                    onSnapshotUpdated(snapshotEntryId, {
-                        txHash: hash,
-                        blockNumber: Number(receipt.blockNumber),
-                        status: 'confirmed',
-                    })
-                    pendingSnapshotIdRef.current = null
-                }
+                await createSnapshotEntry({
+                    method: 'Send ETH',
+                    from: clients.walletClient.account?.address,
+                    to: contractAddress || undefined,
+                    value: val ? `${formatEther(val)} ETH` : '0 ETH',
+                }, false, {
+                    txHash: hash,
+                    blockNumber: Number(receipt.blockNumber),
+                    status: 'confirmed',
+                })
+                pendingSnapshotIdRef.current = null
                 
                 onLog(`Transaction confirmed`)
                 
@@ -549,6 +742,7 @@ export function ContractDetailsTab({
 
     const decodeValue = (raw: string, typeDef?: StorageType) => {
         if (!raw || raw.startsWith('Error') || raw === "Enter a key") return raw
+        if (raw.trim().startsWith('[') || raw.trim().startsWith('{')) return raw
         if (!raw.startsWith('0x')) return `"${raw}"` 
         if (raw === "0x0") return "0" 
         try {
@@ -698,6 +892,13 @@ export function ContractDetailsTab({
                                 {displayBalance} {balanceUnit === 'ether' ? 'ETH' : balanceUnit.toUpperCase()}
                             </div>
                         )}
+                        <button
+                            onClick={refreshBalance}
+                            className="text-slate-500 hover:text-slate-300 transition-colors"
+                            title="Refresh balance"
+                        >
+                            <RefreshCw size={14} />
+                        </button>
                     </div>
                 </div>
                 

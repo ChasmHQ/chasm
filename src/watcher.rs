@@ -1,11 +1,11 @@
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher, Config};
-use std::path::Path;
+use std::path::PathBuf;
 use tokio::sync::broadcast;
 use std::sync::{Arc, Mutex};
 use crate::compiler::Compiler;
 
 pub async fn setup_watcher(
-    path: String,
+    path: PathBuf,
     tx: broadcast::Sender<String>,
     last_msg: Arc<Mutex<Option<String>>>,
 ) -> notify::Result<()> {
@@ -21,7 +21,7 @@ pub async fn setup_watcher(
                     if is_sol {
                          tracing::info!("Change detected in: {:?}", event.paths);
                          
-                         let compiler = Compiler::new(std::path::PathBuf::from(&path_clone)).unwrap(); 
+                         let compiler = Compiler::new(path_clone.clone()).unwrap(); 
                          match compiler.compile_to_json() {
                              Ok(json) => {
                                  tracing::info!("Compilation successful");
@@ -41,7 +41,7 @@ pub async fn setup_watcher(
             }
         }, Config::default()).unwrap();
 
-        watcher.watch(Path::new(&path), RecursiveMode::Recursive).unwrap();
+        watcher.watch(path.as_path(), RecursiveMode::Recursive).unwrap();
         
         // Keep the watcher alive
         std::thread::park();

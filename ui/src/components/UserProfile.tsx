@@ -29,6 +29,7 @@ export function UserProfile({
     const [showKey, setShowKey] = useState(false)
     const [balance, setBalance] = useState<string | null>(null)
     const [isRefreshing, setIsRefreshing] = useState(false)
+    const [isBalanceRefreshing, setIsBalanceRefreshing] = useState(false)
     const [isCopied, setIsCopied] = useState(false)
 
     const containerRef = useRef<HTMLDivElement>(null)
@@ -52,24 +53,20 @@ export function UserProfile({
         }
     }, [isOpen, rpcUrl, privateKey])
 
-    // Fetch Balance
-    useEffect(() => {
-        const fetchBalance = async () => {
-            if (publicClient && address && isConnected) {
-                try {
-                    const bal = await publicClient.getBalance({ address })
-                    setBalance(formatEther(bal))
-                } catch (e) {
-                    console.error("Failed to fetch balance", e)
-                }
+    const fetchBalance = async () => {
+        if (publicClient && address && isConnected) {
+            try {
+                const bal = await publicClient.getBalance({ address })
+                setBalance(formatEther(bal))
+            } catch (e) {
+                console.error("Failed to fetch balance", e)
             }
         }
-        
+    }
+
+    // Fetch Balance on open only
+    useEffect(() => {
         if (isOpen) fetchBalance()
-        
-        // Poll balance if connected
-        const interval = setInterval(fetchBalance, 5000)
-        return () => clearInterval(interval)
     }, [publicClient, address, isConnected, isOpen])
 
     const handleSave = () => {
@@ -144,8 +141,21 @@ export function UserProfile({
                     {/* Header: Balance & Copy */}
                     <div className="p-4 bg-slate-950 border-b border-slate-800 text-center">
                         <div className="text-xs text-slate-500 uppercase tracking-wider mb-1">Current Balance</div>
-                        <div className="text-xl font-bold text-slate-200 flex items-center justify-center gap-1">
-                            {balance ? parseFloat(balance).toFixed(4) : '0.00'} <span className="text-sm font-normal text-slate-500">ETH</span>
+                        <div className="text-xl font-bold text-slate-200 flex items-center justify-center gap-2">
+                            <span>
+                                {balance ? parseFloat(balance).toFixed(4) : '0.00'} <span className="text-sm font-normal text-slate-500">ETH</span>
+                            </span>
+                            <button
+                                onClick={async () => {
+                                    setIsBalanceRefreshing(true)
+                                    await fetchBalance()
+                                    setIsBalanceRefreshing(false)
+                                }}
+                                className="text-slate-500 hover:text-slate-300 transition-colors"
+                                title="Refresh balance"
+                            >
+                                <RefreshCw size={12} className={isBalanceRefreshing ? "animate-spin" : ""} />
+                            </button>
                         </div>
                         <div 
                             className={clsx(
