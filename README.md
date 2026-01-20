@@ -33,7 +33,7 @@ Just as Burp Suite is essential for web security and Postman for API testing, Ch
 ### Steps
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/Chasm.git
+   git clone https://github.com/ChasmHQ/chasm
    cd Chasm/chainsmith
    ```
 2. Build the UI assets:
