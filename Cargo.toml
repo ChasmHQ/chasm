@@ -1,0 +1,20 @@
+[package]
+name = "chainsmith"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+notify = "6"
+foundry-compilers = "0.19" # Verifying version compatibility is key, starting with 0.4
+anyhow = "1.0"
+ethers = "2.0" # or alloy, using ethers for now as it's common with foundry-compilers usually
+futures = "0.3"
+walkdir = "2.5.0"
