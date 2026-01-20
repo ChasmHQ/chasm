@@ -6,6 +6,12 @@ Chasm is an all-in-one development and security tool for smart contracts. It is 
 
 Just as Burp Suite is essential for web security and Postman for API testing, Chasm provides a workspace for blockchain developers and security researchers to interact with, debug, and audit contracts in a structure-agnostic environment.
 
+## Screenshots
+![Contract workspace](screenshots/Screenshot%202026-01-20%20at%2023.26.49.png)
+![Transaction trace](screenshots/Screenshot%202026-01-20%20at%2023.27.01.png)
+![Storage inspector](screenshots/Screenshot%202026-01-20%20at%2023.27.36.png)
+![Blockchain explorer](screenshots/Screenshot%202026-01-20%20at%2023.28.01.png)
+
 ## Features
 
 ### Smart Contract Workspace
@@ -54,12 +60,6 @@ Just as Burp Suite is essential for web security and Postman for API testing, Ch
 
 ## Usage
 Launch Chasm in any folder containing Solidity files by running `chasm .`. The tool will automatically detect your contracts, allowing you to deploy them to a local node or attach to existing addresses on any network. Use the activity bar to switch between the Contract Workspace and the Blockchain Explorer.
-
-## Screenshots
-![Contract workspace](screenshots/Screenshot%202026-01-20%20at%2023.26.49.png)
-![Transaction trace](screenshots/Screenshot%202026-01-20%20at%2023.27.01.png)
-![Storage inspector](screenshots/Screenshot%202026-01-20%20at%2023.27.36.png)
-![Blockchain explorer](screenshots/Screenshot%202026-01-20%20at%2023.28.01.png)
 
 ---
 Built for the Ethereum development and security community.
