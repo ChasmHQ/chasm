@@ -17,7 +17,7 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 notify = "6"
-foundry-compilers = "0.19" # Verifying version compatibility is key, starting with 0.4
+foundry-compilers = { version = "0.19", features = ["svm-solc"] } # auto-install solc based on pragmas
 anyhow = "1.0"
 ethers = "2.0" # or alloy, using ethers for now as it's common with foundry-compilers usually
 futures = "0.3"

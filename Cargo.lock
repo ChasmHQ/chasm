@@ -1808,8 +1808,10 @@ dependencies = [
  "semver 1.0.27",
  "serde",
  "serde_json",
+ "sha2",
  "solar-compiler",
  "svm-rs 0.5.23",
+ "svm-rs-builds",
  "thiserror 2.0.17",
  "tracing",
  "winnow",
@@ -1876,7 +1878,9 @@ dependencies = [
  "semver 1.0.27",
  "serde",
  "serde_json",
+ "svm-rs 0.5.23",
  "thiserror 2.0.17",
+ "tokio",
  "walkdir",
  "xxhash-rust",
 ]
@@ -3696,7 +3700,9 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
@@ -4641,6 +4647,18 @@ dependencies = [
  "thiserror 2.0.17",
  "url",
  "zip 4.6.1",
+]
+
+[[package]]
+name = "svm-rs-builds"
+version = "0.5.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab96ac3275ad299c6e5455b69a2f72443c4d3afb4933d92a0f859d48432dea49"
+dependencies = [
+ "const-hex",
+ "semver 1.0.27",
+ "serde_json",
+ "svm-rs 0.5.23",
 ]
 
 [[package]]
