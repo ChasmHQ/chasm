@@ -3,7 +3,7 @@ import { Terminal, Trash2 } from 'lucide-react'
 import { clsx } from 'clsx'
 
 interface BottomPanelProps {
-    logs: string[];
+    logs: { message: string; timestamp: string }[];
     onClear: () => void;
     snapshots: {
         id: string;
@@ -64,8 +64,8 @@ export function BottomPanel({ logs, onClear, snapshots, activeSnapshotId, onReve
                     {logs.length === 0 && <div className="opacity-30 italic">No logs yet.</div>}
                     {logs.map((log, i) => (
                         <div key={i} className="break-all border-b border-slate-800/30 pb-1 last:border-0 hover:bg-slate-800/20 px-1 rounded">
-                            <span className="text-slate-600 mr-2">{new Date().toLocaleTimeString()}</span>
-                            {log}
+                            <span className="text-slate-600 mr-2">{log.timestamp}</span>
+                            {log.message}
                         </div>
                     ))}
                 </div>

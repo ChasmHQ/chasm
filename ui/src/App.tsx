@@ -82,14 +82,20 @@ interface SnapshotEntry {
   status: 'pending' | 'confirmed' | 'error';
 }
 
+interface LogEntry {
+  message: string;
+  timestamp: string;
+}
+
 function App() {
   const [contracts, setContracts] = useState<ContractArtifact[]>([])
   const contractsRef = useRef<Map<string, string>>(new Map())
-  const [logs, setLogs] = useState<string[]>([])
+  const [logs, setLogs] = useState<LogEntry[]>([])
   
   // Settings State
   const [rpcUrl, setRpcUrl] = useState(DEFAULT_RPC)
   const [privateKey, setPrivateKey] = useState(DEFAULT_PRIV_KEY)
+  const [chainId, setChainId] = useState<number>(31337)
   const [isRpcConnected, setIsRpcConnected] = useState(false)
   const [globalMode, setGlobalMode] = useState<'live' | 'local'>('live')
   const [localForkBlock, setLocalForkBlock] = useState("")
@@ -136,18 +142,25 @@ function App() {
   const clients = useMemo(() => {
     try {
         const account = privateKeyToAccount(privateKey as `0x${string}`)
-        const chainConfig = {
-            ...anvilChain,
+        const dynamicChain = defineChain({
+            id: chainId,
+            name: 'Network',
+            network: 'network',
+            nativeCurrency: {
+              decimals: 18,
+              name: 'Ether',
+              symbol: 'ETH',
+            },
             rpcUrls: {
                 default: { http: [rpcUrl] },
                 public: { http: [rpcUrl] },
             }
-        }
+        })
         
         const transport = http(rpcUrl)
 
         const testClient = createTestClient({
-            chain: chainConfig,
+            chain: dynamicChain,
             mode: 'anvil',
             transport
         })
@@ -158,11 +171,11 @@ function App() {
             account,
             walletClient: createWalletClient({
                 account,
-                chain: chainConfig,
+                chain: dynamicChain,
                 transport
             }),
             publicClient: createPublicClient({
-                chain: chainConfig,
+                chain: dynamicChain,
                 transport
             }),
             testClient
@@ -171,7 +184,7 @@ function App() {
         console.error("Failed to create clients", e)
         return null
     }
-  }, [rpcUrl, privateKey])
+  }, [rpcUrl, privateKey, chainId])
 
   useEffect(() => {
     const raw = localStorage.getItem("chainsmith.settings")
@@ -302,8 +315,13 @@ function App() {
               return
           }
           try {
-              await clients.publicClient.getBlockNumber()
-              if(mounted) setIsRpcConnected(true)
+              const remoteChainId = await clients.publicClient.getChainId()
+              if(mounted) {
+                  if (remoteChainId !== chainId) {
+                      setChainId(remoteChainId)
+                  }
+                  setIsRpcConnected(true)
+              }
           } catch (e) {
               if(mounted) setIsRpcConnected(false)
           }
@@ -321,14 +339,14 @@ function App() {
     const ws = new WebSocket("ws://localhost:3000/ws")
 
     ws.onopen = () => {
-      setLogs(p => [...p, "Connected to ChainSmith Engine"])
+      setLogs(p => [...p, { message: "Connected to ChainSmith Engine", timestamp: new Date().toLocaleTimeString() }])
     }
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
         if (data.type === 'compile_success') {
-          setLogs(p => [...p, "Compilation successful!"])
+          setLogs(p => [...p, { message: "Compilation successful!", timestamp: new Date().toLocaleTimeString() }])
           if (data.contracts && Array.isArray(data.contracts)) {
              const nextMap = new Map<string, string>()
              const changed: string[] = []
@@ -348,10 +366,10 @@ function App() {
              }
           }
         } else if (data.type === 'compile_error') {
-            setLogs(p => [...p, `Error: ${data.error}`])
+            setLogs(p => [...p, { message: `Error: ${data.error}`, timestamp: new Date().toLocaleTimeString() }])
         }
       } catch (e) {
-        setLogs(p => [...p, event.data])
+        setLogs(p => [...p, { message: String(event.data), timestamp: new Date().toLocaleTimeString() }])
       }
     }
 
@@ -359,9 +377,15 @@ function App() {
     return () => ws.close()
   }, [])
 
-  const log = (msg: string) => setLogs(p => [...p, msg])
+  const log = (msg: string) => setLogs(p => [...p, { message: msg, timestamp: new Date().toLocaleTimeString() }])
   const openDeployTab = (contract: ContractArtifact, activate = true) => {
-      const id = `deploy-${contract.name}-${Date.now()}`
+      const id = `deploy-${contract.name}`
+      const existing = tabs.find(t => t.id === id)
+      if (existing) {
+          if (activate) setActiveTabId(id)
+          return id
+      }
+
       const ctor = contract.artifact.abi.find((item: any) => item.type === 'constructor') || { inputs: [], type: 'constructor', stateMutability: 'nonpayable' }
       
       const newTab: TabData = {
@@ -382,7 +406,13 @@ function App() {
       if (instance.mode === 'local' && globalMode !== 'local') {
           setGlobalMode('local')
       }
-      const id = `func-${instance.id}-${func.name}-${Date.now()}`
+      const id = `func-${instance.id}-${func.name}`
+      const existing = tabs.find(t => t.id === id)
+      if (existing) {
+          setActiveTabId(id)
+          return
+      }
+
       const newTab: TabData = {
           id,
           type: 'function',

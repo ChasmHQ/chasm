@@ -521,7 +521,6 @@ export function RequestTab({
         if (requestViewMode === "rpc") {
           const req = JSON.parse(rawJsonInput);
           onLog(`Executing Raw ${req.method}...`);
-          const activeClient = isView ? clients.publicClient : clients.walletClient;
 
           if (type === "deploy" && req.params[0].data.includes("...")) {
             throw new Error(
@@ -531,43 +530,94 @@ export function RequestTab({
 
           const callParams = req.params?.[0] || {};
           setLastCallParams(callParams);
-          if (req.method !== "eth_call") {
-            if (snapshotsCount === 0) {
-              const preBlock = await clients.publicClient.getBlockNumber();
-              await createSnapshotEntry({
-                method: req.method,
-                from: req.params?.[0]?.from,
-                to: req.params?.[0]?.to,
-                value: req.params?.[0]?.value,
-              }, true, { status: "confirmed", blockNumber: Number(preBlock) });
-            }
-          }
-          const res = await (activeClient as any).request(req);
 
-          if (req.method === "eth_call") {
-            setResponse(res);
-            onLog(`Result: ${res}`);
+          // INTERCEPTION LOGIC: Handle eth_sendTransaction locally
+          if (req.method === "eth_sendTransaction") {
+             const txParams = req.params[0];
+             onLog(`Intercepting eth_sendTransaction for local signing...`);
+             
+             if (!clients.walletClient.account) {
+                 throw new Error("Wallet account not initialized");
+             }
+
+             // Prepare params for viem's sendTransaction
+             const hash = await clients.walletClient.sendTransaction({
+                 to: txParams.to,
+                 data: txParams.data,
+                 value: txParams.value ? BigInt(txParams.value) : undefined,
+                 gas: txParams.gas ? BigInt(txParams.gas) : undefined,
+                 account: clients.walletClient.account,
+                 chain: clients.walletClient.chain
+             } as any);
+
+             onLog(`Tx: ${hash}`);
+             setResponse({ transactionHash: hash, status: "pending" });
+             setLastTxHash(hash);
+
+             const receipt = await clients.publicClient.waitForTransactionReceipt({
+               hash,
+             });
+             const tx = await clients.publicClient.getTransaction({ hash });
+             setResponse({ ...receipt, ...tx });
+             
+             if (snapshotsCount === 0) {
+                 await createSnapshotEntry({
+                    method: "Raw Transaction",
+                    from: clients.walletClient.account?.address,
+                    to: txParams.to,
+                    value: txParams.value ? `${formatEther(BigInt(txParams.value))} ETH` : "0 ETH",
+                 }, false, {
+                    txHash: hash,
+                    blockNumber: Number(receipt.blockNumber),
+                    status: "confirmed",
+                 });
+             }
+             pendingSnapshotIdRef.current = null;
+             onLog(`Confirmed in block ${receipt.blockNumber}`);
+             
           } else {
-            onLog(`Tx: ${res}`);
-            setResponse({ transactionHash: res, status: "pending" });
-            setLastTxHash(res);
-            const receipt = await clients.publicClient.waitForTransactionReceipt({
-              hash: res,
-            });
-            const tx = await clients.publicClient.getTransaction({ hash: res });
-            setResponse({ ...receipt, ...tx });
-            await createSnapshotEntry({
-              method: req.method,
-              from: req.params?.[0]?.from,
-              to: req.params?.[0]?.to,
-              value: req.params?.[0]?.value,
-            }, false, {
-              txHash: res,
-              blockNumber: Number(receipt.blockNumber),
-              status: "confirmed",
-            });
-            pendingSnapshotIdRef.current = null;
-            onLog(`Confirmed in block ${receipt.blockNumber}`);
+              // ORIGINAL LOGIC for other methods (eth_call, etc.)
+              const activeClient = isView ? clients.publicClient : clients.walletClient;
+              
+              if (req.method !== "eth_call") {
+                if (snapshotsCount === 0) {
+                  const preBlock = await clients.publicClient.getBlockNumber();
+                  await createSnapshotEntry({
+                    method: req.method,
+                    from: req.params?.[0]?.from,
+                    to: req.params?.[0]?.to,
+                    value: req.params?.[0]?.value,
+                  }, true, { status: "confirmed", blockNumber: Number(preBlock) });
+                }
+              }
+
+              const res = await (activeClient as any).request(req);
+    
+              if (req.method === "eth_call") {
+                setResponse(res);
+                onLog(`Result: ${res}`);
+              } else {
+                onLog(`Tx: ${res}`);
+                setResponse({ transactionHash: res, status: "pending" });
+                setLastTxHash(res);
+                const receipt = await clients.publicClient.waitForTransactionReceipt({
+                  hash: res,
+                });
+                const tx = await clients.publicClient.getTransaction({ hash: res });
+                setResponse({ ...receipt, ...tx });
+                await createSnapshotEntry({
+                  method: req.method,
+                  from: req.params?.[0]?.from,
+                  to: req.params?.[0]?.to,
+                  value: req.params?.[0]?.value,
+                }, false, {
+                  txHash: res,
+                  blockNumber: Number(receipt.blockNumber),
+                  status: "confirmed",
+                });
+                pendingSnapshotIdRef.current = null;
+                onLog(`Confirmed in block ${receipt.blockNumber}`);
+              }
           }
         } else {
       const args = buildArgs();
