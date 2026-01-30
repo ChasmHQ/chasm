@@ -186,6 +186,8 @@ function App() {
     }
   }, [rpcUrl, privateKey, chainId])
 
+  const ANVIL_DEFAULT_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
   useEffect(() => {
     const raw = localStorage.getItem("chainsmith.settings")
     if (!raw) {
@@ -200,7 +202,10 @@ function App() {
         localForkBlock?: string
       }
       if (parsed?.rpcUrl) setRpcUrl(parsed.rpcUrl)
-      if (parsed?.privateKey) setPrivateKey(parsed.privateKey)
+      // SECURITY: Do NOT load private key from local storage. Always default to Anvil #0 or empty.
+      // We explicitly ignore parsed.privateKey to prevent persistence of sensitive keys.
+      setPrivateKey(ANVIL_DEFAULT_KEY)
+      
       if (parsed?.globalMode) setGlobalMode(parsed.globalMode)
       if (typeof parsed?.localForkBlock === "string") setLocalForkBlock(parsed.localForkBlock)
     } catch (e) {
@@ -212,14 +217,15 @@ function App() {
   useEffect(() => {
     if (!hasLoadedSettings.current) return
     try {
+      // SECURITY: Never save the private key to local storage.
       localStorage.setItem(
         "chainsmith.settings",
-        JSON.stringify({ rpcUrl, privateKey, globalMode, localForkBlock })
+        JSON.stringify({ rpcUrl, globalMode, localForkBlock }) // privateKey excluded
       )
     } catch (e) {
       console.error("Failed to persist settings", e)
     }
-  }, [rpcUrl, privateKey, globalMode, localForkBlock])
+  }, [rpcUrl, globalMode, localForkBlock])
 
   useEffect(() => {
     const raw = localStorage.getItem("chainsmith.deployedInstances")
@@ -260,7 +266,7 @@ function App() {
     let mounted = true
     const fetchForkStatus = async () => {
       try {
-        const res = await fetch("http://localhost:3000/fork/status")
+        const res = await fetch("/fork/status")
         const data = await res.json()
         if (!mounted) return
         if (data?.running && data?.port) {

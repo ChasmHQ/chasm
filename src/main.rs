@@ -12,7 +12,7 @@ use axum::{
 };
 use clap::Parser;
 use include_dir::{include_dir, Dir};
-use std::{net::SocketAddr, path::PathBuf, process::Command, sync::{Arc, Mutex}};
+use std::{net::SocketAddr, path::PathBuf, process::{Command, Stdio}, sync::{Arc, Mutex}, io::Write};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -59,6 +59,29 @@ struct ForkStatusResponse {
     rpcUrl: Option<String>,
     blockNumber: Option<u64>,
     port: u16,
+}
+
+#[derive(Serialize)]
+struct KeystoreListResponse {
+    accounts: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct KeystoreUnlockRequest {
+    account: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct KeystoreCreateRequest {
+    account: String,
+    password: String,
+    privateKey: Option<String>,
+}
+
+#[derive(Serialize)]
+struct KeystoreUnlockResponse {
+    privateKey: String,
 }
 
 static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
@@ -137,6 +160,10 @@ async fn main() {
         .route("/fork/start", post(start_fork))
         .route("/fork/stop", post(stop_fork))
         .route("/fork/status", get(fork_status))
+        .route("/keystores", get(list_keystores))
+        .route("/keystores/unlock", post(unlock_keystore))
+        .route("/keystores/create", post(create_keystore))
+        .route("/keystores/remove", post(remove_keystore))
         .route("/", get(serve_ui_root))
         .route("/*path", get(serve_ui))
         .layer(CorsLayer::permissive())
@@ -465,4 +492,155 @@ async fn fork_status(State(state): State<Arc<AppState>>) -> Response {
         port: node.port(),
     };
     Json(payload).into_response()
+}
+
+async fn list_keystores() -> Response {
+    let mut accounts = Vec::new();
+    // foundry keystores are in ~/.foundry/keystores
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        let keystore_dir = PathBuf::from(home).join(".foundry").join("keystores");
+        if keystore_dir.exists() {
+            for entry in WalkDir::new(keystore_dir).max_depth(1).into_iter().filter_map(|e| e.ok()) {
+                if entry.file_type().is_file() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if !name.starts_with('.') {
+                             accounts.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Json(KeystoreListResponse { accounts }).into_response()
+}
+
+async fn unlock_keystore(
+    Json(payload): Json<KeystoreUnlockRequest>,
+) -> Response {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or(".".to_string());
+    let keystore_path = PathBuf::from(home).join(".foundry").join("keystores").join(&payload.account);
+
+    // cast wallet decrypt-keystore <PATH> --unsafe-password <PASS>
+    let output = Command::new("cast")
+        .arg("wallet")
+        .arg("decrypt-keystore")
+        .arg(keystore_path)
+        .arg("--unsafe-password")
+        .arg(&payload.password)
+        .output();
+
+    match output {
+        Ok(out) => {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                // Output format: "... private key is: 0x..."
+                // We take the last word.
+                let private_key = stdout.trim().split_whitespace().last().unwrap_or("").to_string();
+                
+                if private_key.starts_with("0x") {
+                     Json(KeystoreUnlockResponse { privateKey: private_key }).into_response()
+                } else {
+                     // Fallback: try to find it in the string if formatting is different
+                     if let Some(start) = stdout.find("0x") {
+                         let pk = &stdout[start..];
+                         let pk = pk.split_whitespace().next().unwrap_or("").to_string();
+                         Json(KeystoreUnlockResponse { privateKey: pk }).into_response()
+                     } else {
+                         Json(serde_json::json!({"error": format!("Could not parse private key from output: {}", stdout)})).into_response()
+                     }
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                Json(serde_json::json!({"error": format!("Decryption failed: {}", stderr)})).into_response()
+            }
+        },
+        Err(e) => Json(serde_json::json!({"error": format!("Failed to execute cast: {}", e)})).into_response()
+    }
+}
+
+#[derive(Deserialize)]
+struct KeystoreRemoveRequest {
+    account: String,
+    password: String,
+}
+
+async fn remove_keystore(
+    Json(payload): Json<KeystoreRemoveRequest>,
+) -> Response {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or(".".to_string());
+    let keystore_root = PathBuf::from(home).join(".foundry").join("keystores");
+
+    // cast wallet remove --name <NAME> --dir <DIR> --unsafe-password <PASS>
+    let output = Command::new("cast")
+        .arg("wallet")
+        .arg("remove")
+        .arg("--name")
+        .arg(&payload.account)
+        .arg("--dir")
+        .arg(keystore_root)
+        .arg("--unsafe-password")
+        .arg(&payload.password)
+        .output();
+
+    match output {
+        Ok(out) => {
+            if out.status.success() {
+                Json(serde_json::json!({"status": "success"})).into_response()
+            } else {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                Json(serde_json::json!({"error": format!("Remove failed: {}", stderr)})).into_response()
+            }
+        },
+        Err(e) => Json(serde_json::json!({"error": format!("Failed to execute cast: {}", e)})).into_response()
+    }
+}
+
+async fn create_keystore(
+    Json(payload): Json<KeystoreCreateRequest>,
+) -> Response {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or(".".to_string());
+    let keystore_root = PathBuf::from(home).join(".foundry").join("keystores");
+    
+    if !keystore_root.exists() {
+        let _ = std::fs::create_dir_all(&keystore_root);
+    }
+
+    let mut cmd = Command::new("cast");
+    cmd.arg("wallet");
+
+    if let Some(ref pk) = payload.privateKey {
+        // IMPORT MODE
+        // cast wallet import <NAME> --private-key <KEY> --unsafe-password <PASS> --keystore-dir <DIR>
+        cmd.arg("import")
+           .arg(&payload.account)
+           .arg("--private-key")
+           .arg(pk)
+           .arg("--unsafe-password")
+           .arg(&payload.password)
+           .arg("--keystore-dir")
+           .arg(&keystore_root);
+    } else {
+        // NEW RANDOM MODE
+        // cast wallet new <FULL_PATH> --unsafe-password <PASS>
+        let full_path = keystore_root.join(&payload.account);
+        cmd.arg("new")
+           .arg(full_path)
+           .arg("--unsafe-password")
+           .arg(&payload.password);
+    }
+
+    // No stdin needed anymore
+    let output = cmd.output();
+
+    match output {
+        Ok(out) => {
+            if out.status.success() {
+                Json(serde_json::json!({"status": "success", "account": payload.account})).into_response()
+            } else {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                Json(serde_json::json!({"error": format!("Operation failed: {}", stderr)})).into_response()
+            }
+        },
+        Err(e) => Json(serde_json::json!({"error": format!("Failed to execute cast: {}", e)})).into_response()
+    }
 }
