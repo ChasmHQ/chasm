@@ -12,7 +12,13 @@ Chasm is an all-in-one development and security tool for smart contracts, combin
 
 ## Build Commands
 
-### Initial Setup
+### Installation for Users
+Users can install via the installer script:
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChasmHQ/chasm/main/install.sh | bash
+```
+
+### Build from Source (Development)
 ```bash
 # Install UI dependencies and build assets
 npm --prefix ui install

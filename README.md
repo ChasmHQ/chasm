@@ -31,18 +31,42 @@ Just as Burp Suite is essential for web security and Postman for API testing, Ch
 
 ## Installation
 
-### Prerequisites
+### Quick Install (macOS ARM64)
+
+**Prerequisites:**
+- **Foundry**: Required for simulation and tracing tools (`anvil`, `cast`, `forge`). Install from [getfoundry.sh](https://getfoundry.sh)
+
+**Install:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChasmHQ/chasm/main/install.sh | bash
+```
+
+Or manually:
+```bash
+wget https://raw.githubusercontent.com/ChasmHQ/chasm/main/install.sh
+chmod +x install.sh
+./install.sh
+```
+
+**Uninstall:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChasmHQ/chasm/main/uninstall.sh | bash
+```
+
+### Build from Source
+
+**Prerequisites:**
 - **Rust**: Required to build the backend.
 - **Foundry**: Required for the underlying simulation and tracing tools (`anvil`, `cast`, `forge`).
 - **Node.js**: Required to build the UI assets once.
 
-### Steps
+**Steps:**
 1. Clone the repository:
    ```bash
    git clone https://github.com/ChasmHQ/chasm
-   cd Chasm/chainsmith
+   cd chasm
    ```
-2. Build frontend + binary
+2. Build the UI and binary:
    ```bash
    ./build.sh
    ```
@@ -50,7 +74,7 @@ Just as Burp Suite is essential for web security and Postman for API testing, Ch
    ```bash
    ./target/release/chasm ./contracts
    ```
-4. Open the web on http://localhost:3000
+4. Open the web UI at http://localhost:3000
 
 ## Usage
 Launch Chasm in any folder containing Solidity files by running `chasm .`. The tool will automatically detect your contracts, allowing you to deploy them to a local node or attach to existing addresses on any network. Use the activity bar to switch between the Contract Workspace and the Blockchain Explorer.
