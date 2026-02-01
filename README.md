@@ -53,6 +53,23 @@ chmod +x install.sh
 curl -fsSL https://raw.githubusercontent.com/ChasmHQ/chasm/main/uninstall.sh | bash
 ```
 
+### Quick Install (Windows)
+
+**Prerequisites:**
+- **Foundry**: Required for simulation and tracing tools (`anvil`, `cast`, `forge`). Install from [getfoundry.sh](https://getfoundry.sh)
+
+**Install:**
+Run the following command in PowerShell:
+```powershell
+iwr -useb https://raw.githubusercontent.com/ChasmHQ/chasm/main/install.ps1 | iex
+```
+
+**Uninstall:**
+Run the following command in PowerShell:
+```powershell
+iwr -useb https://raw.githubusercontent.com/ChasmHQ/chasm/main/uninstall.ps1 | iex
+```
+
 ### Build from Source
 
 **Prerequisites:**
@@ -67,9 +84,14 @@ curl -fsSL https://raw.githubusercontent.com/ChasmHQ/chasm/main/uninstall.sh | b
    cd chasm
    ```
 2. Build the UI and binary:
-   ```bash
-   ./build.sh
-   ```
+   - **macOS / Linux:**
+     ```bash
+     ./build.sh
+     ```
+   - **Windows (PowerShell):**
+     ```powershell
+     ./build.ps1
+     ```
 3. Run Chasm from any Solidity project directory:
    ```bash
    ./target/release/chasm ./contracts
