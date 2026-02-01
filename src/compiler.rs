@@ -17,11 +17,19 @@ impl Compiler {
             root.clone() // Fallback to root if contracts dir missing
         };
 
+        // Create a temporary cache directory for this compilation session
+        let cache_dir = std::env::temp_dir().join(format!("chasm-cache-{}", std::process::id()));
+        let artifacts_dir = std::env::temp_dir().join(format!("chasm-artifacts-{}", std::process::id()));
+
+        // Build paths configuration explicitly, without relying on foundry.toml
         let paths = ProjectPathsConfig::builder()
             .root(&root)
-            .sources(&src_path) // Explicitly set sources
+            .sources(&src_path)
+            .artifacts(&artifacts_dir)
+            .cache(&cache_dir)
+            .build_infos(&artifacts_dir.join("build-info"))
             .build()?;
-        
+
         let project = Project::builder()
             .paths(paths)
             .ephemeral()

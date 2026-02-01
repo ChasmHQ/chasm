@@ -42,21 +42,15 @@ Just as Burp Suite is essential for web security and Postman for API testing, Ch
    git clone https://github.com/ChasmHQ/chasm
    cd Chasm/chainsmith
    ```
-2. Build the UI assets:
+2. Build frontend + binary
    ```bash
-   npm --prefix ui install
-   npm --prefix ui run build
+   ./build.sh
    ```
-3. Build the binary:
-   ```bash
-   cargo build --release
-   ```
-4. Run Chasm from any Solidity project directory:
+3. Run Chasm from any Solidity project directory:
    ```bash
    ./target/release/chasm ./contracts
    ```
-
-5. Open the web on http://localhost:3000
+4. Open the web on http://localhost:3000
 
 ## Usage
 Launch Chasm in any folder containing Solidity files by running `chasm .`. The tool will automatically detect your contracts, allowing you to deploy them to a local node or attach to existing addresses on any network. Use the activity bar to switch between the Contract Workspace and the Blockchain Explorer.

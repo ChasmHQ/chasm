@@ -210,10 +210,18 @@ async fn inspect_storage(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     tracing::info!("Inspecting storage for {}", contract);
-    
+
     let current_dir = state.root_dir.clone();
     let mut file_path = None;
-    
+
+    // Determine source directory
+    let contracts_dir = current_dir.join("contracts");
+    let src_path = if contracts_dir.exists() {
+        contracts_dir.clone()
+    } else {
+        current_dir.clone()
+    };
+
     for entry in WalkDir::new(&current_dir).into_iter().filter_map(|e| e.ok()) {
         if entry.file_name().to_string_lossy() == format!("{}.sol", contract) {
             file_path = Some(entry.path().to_path_buf());
@@ -224,15 +232,18 @@ async fn inspect_storage(
     let target = if let Some(path) = file_path {
         format!("{}:{}", path.display(), contract)
     } else {
-        contract 
+        contract
     };
 
     let output = Command::new("forge")
-        .current_dir(&state.root_dir)
         .arg("inspect")
         .arg(&target)
         .arg("storage")
         .arg("--json")
+        .arg("--root")
+        .arg(&current_dir)
+        .arg("--contracts")
+        .arg(&src_path)
         .output();
 
     match output {
