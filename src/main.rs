@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 mod compiler;
 mod watcher;
 mod anvil;
@@ -12,7 +13,7 @@ use axum::{
 };
 use clap::Parser;
 use include_dir::{include_dir, Dir};
-use std::{net::SocketAddr, path::PathBuf, process::{Command, Stdio}, sync::{Arc, Mutex}, io::Write};
+use std::{net::SocketAddr, path::PathBuf, process::Command, sync::{Arc, Mutex}};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -82,6 +83,38 @@ struct KeystoreCreateRequest {
 #[derive(Serialize)]
 struct KeystoreUnlockResponse {
     privateKey: String,
+}
+
+#[derive(Deserialize)]
+struct ProxyRequest {
+    url: String,
+    method: String,
+    params: Option<serde_json::Value>,
+    id: Option<u64>,
+    jsonrpc: Option<String>,
+}
+
+async fn handle_proxy_request(
+    Json(payload): Json<ProxyRequest>,
+) -> Response {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "jsonrpc": payload.jsonrpc.unwrap_or("2.0".to_string()),
+        "method": payload.method,
+        "params": payload.params.unwrap_or(serde_json::json!([])),
+        "id": payload.id.unwrap_or(1)
+    });
+
+    match client.post(&payload.url).json(&body).send().await {
+        Ok(res) => {
+            let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            match res.json::<serde_json::Value>().await {
+                Ok(data) => Json::<serde_json::Value>(data).into_response(),
+                Err(_) => status.into_response()
+            }
+        },
+        Err(e) => Json(serde_json::json!({"error": format!("Proxy failed: {}", e)})).into_response()
+    }
 }
 
 static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
@@ -164,6 +197,7 @@ async fn main() {
         .route("/keystores/unlock", post(unlock_keystore))
         .route("/keystores/create", post(create_keystore))
         .route("/keystores/remove", post(remove_keystore))
+        .route("/proxy", post(handle_proxy_request))
         .route("/", get(serve_ui_root))
         .route("/*path", get(serve_ui))
         .layer(CorsLayer::permissive())

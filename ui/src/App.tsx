@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
-import { Hammer, Zap, Plus, X, Box, ChevronRight, ChevronDown, Trash2, Globe } from 'lucide-react'
+import { Hammer, Zap, Plus, X, Box, ChevronRight, ChevronDown, Trash2, Globe, Wand2 } from 'lucide-react'
 import { clsx } from 'clsx'
-import { createWalletClient, createPublicClient, createTestClient, http, defineChain, type Address, type Block, type Transaction, type PublicClient, type WalletClient, type Hex, publicActions, walletActions } from 'viem'
+import { createWalletClient, createPublicClient, createTestClient, http, custom, defineChain, type Address, type Block, type Transaction, type PublicClient, type WalletClient, type Hex, publicActions, walletActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import { RequestTab } from './components/RequestTab'
@@ -9,6 +9,7 @@ import { BottomPanel } from './components/BottomPanel'
 import { UserProfile } from './components/UserProfile'
 import { ContractDetailsTab } from './components/ContractDetailsTab'
 import { Explorer } from './components/Explorer'
+import { ConverterView } from './components/ConverterView'
 
 // Default Constants
 const DEFAULT_RPC = "http://127.0.0.1:8545"
@@ -124,7 +125,7 @@ function App() {
     const [isLocalDeployedOpen, setIsLocalDeployedOpen] = useState(true)
 
   // View State
-  const [activeView, setActiveView] = useState<'contracts' | 'explorer'>('contracts')
+  const [activeView, setActiveView] = useState<'contracts' | 'explorer' | 'converter'>('contracts')
 
 
   // Explorer Data State
@@ -141,7 +142,7 @@ function App() {
   // Viem Clients (Memoized)
   const clients = useMemo(() => {
     try {
-        const account = privateKeyToAccount(privateKey as `0x${string}`)
+        const account = privateKey ? privateKeyToAccount(privateKey as `0x${string}`) : undefined;
         const dynamicChain = defineChain({
             id: chainId,
             name: 'Network',
@@ -157,8 +158,46 @@ function App() {
             }
         })
         
-        const transport = http(rpcUrl)
+        const transport = custom({
+            async request({ method, params }) {
+                const isLocal = rpcUrl.includes("localhost") || rpcUrl.includes("127.0.0.1");
+                
+                if (isLocal) {
+                    const response = await fetch(rpcUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ method, params, id: 1, jsonrpc: '2.0' }),
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error.message);
+                    return data.result;
+                } else {
+                    // Proxy through backend to avoid CORS
+                    const response = await fetch('/proxy', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            url: rpcUrl,
+                            method, 
+                            params,
+                            id: 1, 
+                            jsonrpc: '2.0' 
+                        }),
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+                    return data.result;
+                }
+            }
+        })
 
+        // Standard Public Client (Works for any RPC)
+        const publicClient = createPublicClient({
+            chain: dynamicChain,
+            transport
+        })
+
+        // Test Client (Specifically for Anvil/Hardhat cheatcodes)
         const testClient = createTestClient({
             chain: dynamicChain,
             mode: 'anvil',
@@ -169,15 +208,12 @@ function App() {
         
         return {
             account,
-            walletClient: createWalletClient({
+            walletClient: account ? createWalletClient({
                 account,
                 chain: dynamicChain,
                 transport
-            }),
-            publicClient: createPublicClient({
-                chain: dynamicChain,
-                transport
-            }),
+            }) : undefined,
+            publicClient,
             testClient
         }
     } catch (e) {
@@ -342,7 +378,8 @@ function App() {
   }, [clients])
 
   useEffect(() => {
-    const ws = new WebSocket("ws://localhost:3000/ws")
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`)
 
     ws.onopen = () => {
       setLogs(p => [...p, { message: "Connected to ChainSmith Engine", timestamp: new Date().toLocaleTimeString() }])
@@ -772,10 +809,19 @@ function App() {
             {activeView === 'explorer' && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-indigo-500 rounded-r-full" />}
           </button>
 
+          <button 
+            onClick={() => setActiveView('converter')}
+            className={clsx("p-2 rounded-lg transition-all relative group", activeView === 'converter' ? "text-indigo-400 bg-slate-900" : "text-slate-500 hover:text-slate-300")}
+            title="Converter & Utils"
+          >
+            <Wand2 size={20} strokeWidth={1.5} />
+            {activeView === 'converter' && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-indigo-500 rounded-r-full" />}
+          </button>
+
           <div className="flex-1" />
           
           <UserProfile 
-            address={clients?.account.address}
+            address={clients?.account?.address}
             rpcUrl={rpcUrl}
             privateKey={privateKey}
             isConnected={isRpcConnected}
@@ -1092,14 +1138,14 @@ function App() {
                             key={tab.id} 
                             className={clsx("absolute inset-0 bg-slate-950", activeTabId === tab.id ? "z-10 block" : "z-0 hidden")}
                          >
-                            {tab.type === 'details' ? (
+                            {clients && (tab.type === 'details' ? (
                                 <ContractDetailsTab 
                                     contractName={tab.contractName}
                                     contractAddress={contractAddress || null}
                                     abi={abi}
                                     bytecode={bytecode || ""}
                                     publicClient={clients.publicClient}
-                                    walletClient={clients.walletClient}
+                                    walletClient={clients.walletClient!}
                                     rpcUrl={rpcUrl}
                                     isActive={activeTabId === tab.id}
                                     globalMode={globalMode}
@@ -1119,7 +1165,7 @@ function App() {
                                     bytecode={bytecode}
                                     contractAddress={contractAddress || null}
                                     publicClient={clients.publicClient}
-                                    walletClient={clients.walletClient}
+                                    walletClient={clients.walletClient!}
                                     onLog={log}
                                     onDeploySuccess={(addr) => handleDeploySuccess(tab.contractName, addr)}
                                     onDeployRequest={() => contractArtifact && openDeployTab(contractArtifact)}
@@ -1131,7 +1177,7 @@ function App() {
                                     onSnapshotUpdated={updateSnapshot}
                                     snapshotsCount={snapshots.length}
                                 />
-                            )}
+                            ))}
                          </div>
                      )
                  })}
@@ -1143,6 +1189,8 @@ function App() {
             </div>
         </div>
         </>
+        ) : activeView === 'converter' ? (
+            <ConverterView />
         ) : (
             <div className="flex-1 min-h-0">
                 {clients ? (
