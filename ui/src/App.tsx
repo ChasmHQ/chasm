@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
-import { Hammer, Zap, Plus, X, Box, ChevronRight, ChevronDown, Trash2, Globe, Wand2 } from 'lucide-react'
+import { Hammer, Zap, Plus, X, Box, ChevronRight, ChevronDown, Trash2, Globe, Wand2, FileCode, RefreshCw } from 'lucide-react'
 import { clsx } from 'clsx'
 import { createWalletClient, createPublicClient, createTestClient, http, custom, defineChain, type Address, type Block, type Transaction, type PublicClient, type WalletClient, type Hex, publicActions, walletActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -10,6 +10,8 @@ import { UserProfile } from './components/UserProfile'
 import { ContractDetailsTab } from './components/ContractDetailsTab'
 import { Explorer } from './components/Explorer'
 import { ConverterView } from './components/ConverterView'
+import { OpenZeppelinModal } from './components/OpenZeppelinModal'
+import { OzVersionPicker } from './components/OzVersionPicker'
 
 // Default Constants
 const DEFAULT_RPC = "http://127.0.0.1:8545"
@@ -34,6 +36,7 @@ const anvilChain = defineChain({
 
 interface ContractArtifact {
   name: string;
+  source_type?: 'src' | 'lib';
   artifact: {
       abi: any[];
       bytecode: {
@@ -49,6 +52,7 @@ interface DeployedInstance {
     address: Address;
     artifact: ContractArtifact['artifact'];
     mode?: 'live' | 'local';
+    via?: 'interface'; // connected via "At Address", not deployed by Chasm
 }
 
 interface StoredInstance {
@@ -56,6 +60,7 @@ interface StoredInstance {
     name: string;
     address: Address;
     mode?: 'live' | 'local';
+    via?: 'interface';
 }
 
 interface TabData {
@@ -118,11 +123,22 @@ function App() {
 
   // UI Toast State
   const [updateToast, setUpdateToast] = useState<{ message: string } | null>(null)
+
+  // OpenZeppelin modal state
+  const [showOzModal, setShowOzModal] = useState(false)
+  const [isRecompiling, setIsRecompiling] = useState(false)
+  const [ozCompileError, setOzCompileError] = useState('')
   
   // Sidebar Sections State
     const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(true)
+    const [isInterfaceOpen, setIsInterfaceOpen] = useState(true)
+    const [isLibOpen, setIsLibOpen] = useState(false)
     const [isDeployedOpen, setIsDeployedOpen] = useState(true)
     const [isLocalDeployedOpen, setIsLocalDeployedOpen] = useState(true)
+
+  // "At Address" state for Interface section
+    const [atAddressTarget, setAtAddressTarget] = useState<string | null>(null)
+    const [atAddressInput, setAtAddressInput] = useState('')
 
   // View State
   const [activeView, setActiveView] = useState<'contracts' | 'explorer' | 'converter'>('contracts')
@@ -298,6 +314,15 @@ function App() {
     tabsRef.current = tabs
   }, [tabs])
 
+  const handleRecompile = async () => {
+    setIsRecompiling(true)
+    try {
+      await fetch('/compile', { method: 'POST' })
+    } finally {
+      setTimeout(() => setIsRecompiling(false), 800)
+    }
+  }
+
   useEffect(() => {
     let mounted = true
     const fetchForkStatus = async () => {
@@ -410,6 +435,14 @@ function App() {
           }
         } else if (data.type === 'compile_error') {
             setLogs(p => [...p, { message: `Error: ${data.error}`, timestamp: new Date().toLocaleTimeString() }])
+            // Tampilkan popup OZ jika error terkait import @openzeppelin yang tidak ditemukan
+            if (
+              (data.error.includes('@openzeppelin') || data.error.includes('openzeppelin-contracts')) &&
+              data.error.includes('not found')
+            ) {
+              setOzCompileError(data.error)
+              setShowOzModal(true)
+            }
         }
       } catch (e) {
         setLogs(p => [...p, { message: String(event.data), timestamp: new Date().toLocaleTimeString() }])
@@ -525,6 +558,32 @@ function App() {
           // Optionally auto-open details tab for new instance
           openInstanceDetailsTab(newInstance)
       }
+  }
+
+  const handleAtAddress = (contract: ContractArtifact, address: string) => {
+      const trimmed = address.trim()
+      if (!trimmed.startsWith('0x') || trimmed.length !== 42) return
+
+      const newInstance: DeployedInstance = {
+          id: `${contract.name}-${trimmed}-${Date.now()}`,
+          name: contract.name,
+          address: trimmed as Address,
+          artifact: contract.artifact,
+          mode: globalMode,
+          via: 'interface'
+      }
+      setDeployedInstances(prev => [newInstance, ...prev])
+      setStoredInstances(prev => [{
+          id: newInstance.id,
+          name: newInstance.name,
+          address: newInstance.address,
+          mode: newInstance.mode,
+          via: 'interface'
+      }, ...prev])
+      setAtAddressTarget(null)
+      setAtAddressInput('')
+      setIsDeployedOpen(true)
+      openInstanceDetailsTab(newInstance)
   }
 
   const removeInstance = (id: string, e: React.MouseEvent) => {
@@ -841,36 +900,158 @@ function App() {
         <div className="flex-1 overflow-y-auto custom-scrollbar">
             
             {/* Workspace Section */}
-            <div className="border-b border-slate-800">
-                <div 
-                    onClick={() => setIsWorkspaceOpen(!isWorkspaceOpen)}
-                    className="flex items-center justify-between px-4 py-2 bg-slate-900 hover:bg-slate-800 cursor-pointer select-none"
-                >
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Workspace</span>
-                    {isWorkspaceOpen ? <ChevronDown size={14} className="text-slate-500"/> : <ChevronRight size={14} className="text-slate-500"/>}
+            {(() => {
+                // Only show deployable contracts in WORKSPACE — interfaces and abstract
+                // contracts have empty bytecode and cannot be deployed.
+                const isDeployable = (c: ContractArtifact) => {
+                    const obj = c.artifact?.bytecode?.object ?? ''
+                    return obj !== '' && obj !== '0x'
+                }
+                const srcContracts = contracts.filter(c => c.source_type !== 'lib' && isDeployable(c))
+                const interfaceContracts = contracts.filter(c => c.source_type !== 'lib' && !isDeployable(c))
+                const libContracts = contracts.filter(c => c.source_type === 'lib')
+                return (
+                <>
+                <div className="border-b border-slate-800">
+                    <div
+                        onClick={() => setIsWorkspaceOpen(!isWorkspaceOpen)}
+                        className="flex items-center justify-between px-4 py-2 bg-slate-900 hover:bg-slate-800 cursor-pointer select-none"
+                    >
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Workspace</span>
+                        {isWorkspaceOpen ? <ChevronDown size={14} className="text-slate-500"/> : <ChevronRight size={14} className="text-slate-500"/>}
+                    </div>
+
+                    {isWorkspaceOpen && (
+                        <div className="p-2 space-y-1">
+                            {srcContracts.length === 0 && <div className="px-2 text-xs text-slate-600 italic">No contracts found.</div>}
+                            {srcContracts.map(c => (
+                                <div key={c.name} className="flex items-center justify-between px-2 py-1.5 hover:bg-slate-800 rounded group transition-colors">
+                                    <span className="flex items-center gap-2 text-sm font-medium text-slate-300">
+                                        <Box size={14} className="text-slate-500"/>
+                                        {c.name}
+                                    </span>
+                                    <div className="flex items-center gap-0.5">
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleRecompile(); }}
+                                            title="Recompile"
+                                            disabled={isRecompiling}
+                                            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-700 text-slate-400 rounded transition-all disabled:opacity-30"
+                                        >
+                                            <RefreshCw size={12} className={isRecompiling ? 'animate-spin' : ''} />
+                                        </button>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); openDeployTab(c); }}
+                                            title="Deploy"
+                                            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-indigo-500/20 text-indigo-400 rounded transition-all"
+                                        >
+                                            <Plus size={14} />
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
-                
-                {isWorkspaceOpen && (
-                    <div className="p-2 space-y-1">
-                        {contracts.length === 0 && <div className="px-2 text-xs text-slate-600 italic">No contracts found.</div>}
-                        {contracts.map(c => (
-                            <div key={c.name} className="flex items-center justify-between px-2 py-1.5 hover:bg-slate-800 rounded group transition-colors">
-                                <span className="flex items-center gap-2 text-sm font-medium text-slate-300">
-                                    <Box size={14} className="text-slate-500"/>
-                                    {c.name}
-                                </span>
-                                <button 
-                                    onClick={(e) => { e.stopPropagation(); openDeployTab(c); }}
-                                    title="Deploy"
-                                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-indigo-500/20 text-indigo-400 rounded transition-all"
-                                >
-                                    <Plus size={14} />
-                                </button>
+
+                {/* Interface Section — interfaces & abstract contracts from src files */}
+                {interfaceContracts.length > 0 && (
+                    <div className="border-b border-slate-800">
+                        <div
+                            onClick={() => setIsInterfaceOpen(!isInterfaceOpen)}
+                            className="flex items-center justify-between px-4 py-2 bg-slate-900 hover:bg-slate-800 cursor-pointer select-none"
+                        >
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Interface</span>
+                                <span className="text-[9px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded-full">{interfaceContracts.length}</span>
                             </div>
-                        ))}
+                            {isInterfaceOpen ? <ChevronDown size={14} className="text-slate-500"/> : <ChevronRight size={14} className="text-slate-500"/>}
+                        </div>
+
+                        {isInterfaceOpen && (
+                            <div className="p-2 space-y-1">
+                                {interfaceContracts.map(c => (
+                                    <div key={c.name}>
+                                        <div className="flex items-center justify-between px-2 py-1.5 hover:bg-slate-800 rounded group transition-colors">
+                                            <span className="flex items-center gap-2 text-sm font-medium text-slate-300">
+                                                <FileCode size={14} className="text-slate-500"/>
+                                                {c.name}
+                                            </span>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    setAtAddressTarget(atAddressTarget === c.name ? null : c.name)
+                                                    setAtAddressInput('')
+                                                }}
+                                                title="Connect at address"
+                                                className="opacity-0 group-hover:opacity-100 px-1.5 py-0.5 text-[9px] font-bold text-indigo-400 hover:bg-indigo-500/20 rounded transition-all"
+                                            >
+                                                @ ADDR
+                                            </button>
+                                        </div>
+                                        {atAddressTarget === c.name && (
+                                            <div className="mx-2 mb-1 flex gap-1">
+                                                <input
+                                                    autoFocus
+                                                    type="text"
+                                                    value={atAddressInput}
+                                                    onChange={e => setAtAddressInput(e.target.value)}
+                                                    onKeyDown={e => { if (e.key === 'Enter') handleAtAddress(c, atAddressInput); if (e.key === 'Escape') setAtAddressTarget(null) }}
+                                                    placeholder="0x..."
+                                                    className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px] text-slate-200 focus:border-indigo-500 outline-none font-mono"
+                                                />
+                                                <button
+                                                    onClick={() => handleAtAddress(c, atAddressInput)}
+                                                    className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold rounded transition-colors"
+                                                >
+                                                    OK
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 )}
-            </div>
+
+                {/* Lib Section — only shown when lib contracts exist (local OZ install) */}
+                {libContracts.length > 0 && (
+                    <div className="border-b border-slate-800">
+                        <div
+                            onClick={() => setIsLibOpen(!isLibOpen)}
+                            className="flex items-center justify-between px-4 py-2 bg-slate-900 hover:bg-slate-800 cursor-pointer select-none"
+                        >
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Lib</span>
+                                <span className="text-[9px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded-full">{libContracts.length}</span>
+                            </div>
+                            {isLibOpen ? <ChevronDown size={14} className="text-slate-600"/> : <ChevronRight size={14} className="text-slate-600"/>}
+                        </div>
+
+                        {isLibOpen && (
+                            <div className="p-2 space-y-1">
+                                {libContracts.map(c => (
+                                    <div key={c.name} className="flex items-center justify-between px-2 py-1.5 hover:bg-slate-800 rounded group transition-colors">
+                                        <span className="flex items-center gap-2 text-sm font-medium text-slate-300">
+                                            <Box size={14} className="text-slate-500"/>
+                                            {c.name}
+                                        </span>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); openDeployTab(c); }}
+                                            title="Deploy"
+                                            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-indigo-500/20 text-indigo-400 rounded transition-all"
+                                        >
+                                            <Plus size={14} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+                </>
+                )
+            })()}
 
             {/* Deployed Section */}
             <div>
@@ -897,6 +1078,9 @@ function App() {
                                     <div>
                                         <div className="flex items-center gap-1.5 font-bold text-xs text-slate-200">
                                             {inst.name}
+                                            {inst.via === 'interface' && (
+                                                <span className="text-[9px] font-normal text-indigo-400 border border-indigo-500/30 px-1 rounded">interface</span>
+                                            )}
                                             <span className="text-[10px] font-normal text-slate-500">({inst.address.slice(0,4)}...{inst.address.slice(-4)})</span>
                                         </div>
                                     </div>
@@ -959,6 +1143,9 @@ function App() {
                                     <div>
                                         <div className="flex items-center gap-1.5 font-bold text-xs text-slate-200">
                                             {inst.name}
+                                            {inst.via === 'interface' && (
+                                                <span className="text-[9px] font-normal text-indigo-400 border border-indigo-500/30 px-1 rounded">interface</span>
+                                            )}
                                             <span className="text-[10px] font-normal text-slate-500">({inst.address.slice(0,4)}...{inst.address.slice(-4)})</span>
                                         </div>
                                     </div>
@@ -1037,6 +1224,16 @@ function App() {
             </span>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={handleRecompile}
+              disabled={isRecompiling}
+              title="Recompile all contracts"
+              className="flex items-center gap-1.5 text-[10px] uppercase font-bold px-3 py-1 rounded border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RefreshCw size={11} className={isRecompiling ? 'animate-spin' : ''} />
+              Recompile
+            </button>
+            <OzVersionPicker onOpenInstallModal={() => setShowOzModal(true)} />
             {globalMode === 'local' && (
               <div className="flex items-center gap-2 text-xs text-slate-400">
                 <span className="uppercase text-[10px] font-bold">Block</span>
@@ -1258,6 +1455,11 @@ function App() {
         </button>
       </div>
     )}
+    <OpenZeppelinModal
+      isOpen={showOzModal}
+      onClose={() => setShowOzModal(false)}
+      errorMessage={ozCompileError}
+    />
     {snapshotToast && (
       <div className="fixed bottom-4 left-4 z-50">
         <div
