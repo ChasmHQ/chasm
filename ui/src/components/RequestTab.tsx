@@ -21,6 +21,8 @@ import {
 
 import Editor from "react-simple-code-editor";
 import { Cheatcodes } from "./Cheatcodes";
+import { ParamInputs } from "./ParamInputs";
+import { isArrayType, coercePrimitive } from "../utils/abiUtils";
 import { highlight, languages } from "prismjs";
 import "prismjs/components/prism-json";
 import "prismjs/components/prism-clike";
@@ -66,20 +68,6 @@ const COMMON_KEYS = [
 
 type ValueUnit = "wei" | "gwei" | "ether";
 
-const isArrayType = (type: string) => /\[[0-9]*\]$/.test(type);
-
-const parseArrayType = (type: string) => {
-  const match = type.match(/^(.*)\[(\d*)\]$/);
-  if (!match) return { baseType: type, length: null as number | null };
-  const length = match[2] ? Number(match[2]) : null;
-  return { baseType: match[1], length: Number.isNaN(length) ? null : length };
-};
-
-const coercePrimitive = (val: string) => {
-  if (val === "true") return true;
-  if (val === "false") return false;
-  return val;
-};
 
 function UnitDisplay({ value }: { value: bigint }) {
   const [unit, setUnit] = useState<ValueUnit>("ether");
@@ -1096,83 +1084,11 @@ export function RequestTab({
           ) : requestViewMode === "form" ? (
             <div className="max-w-xl mx-auto space-y-6 w-full">
               <div className="space-y-4">
-                {inputsList.length > 0 ? (
-                  <div className="grid grid-cols-1 gap-5">
-                    {inputsList.map((input: any, i: number) => {
-                      const isArray = isArrayType(input.type);
-                      const { baseType, length } = parseArrayType(input.type);
-                      const rawVal = inputs[i];
-                      const arrayValues = Array.isArray(rawVal) ? rawVal : [];
-                      const displayValues =
-                        length !== null
-                          ? Array.from({ length }, (_, idx) => arrayValues[idx] ?? "")
-                          : arrayValues.length > 0
-                          ? arrayValues
-                          : [""];
-                      return (
-                        <div key={i} className="flex flex-col gap-1.5">
-                          <label className="text-xs font-medium text-slate-400">
-                            {input.name || `param_${i}`}{" "}
-                            <span className="text-slate-600 ml-1">
-                              ({input.type})
-                            </span>
-                          </label>
-                          {isArray ? (
-                            <div className="space-y-2">
-                              {displayValues.map((val, idx) => (
-                                <div key={idx} className="flex items-center gap-2">
-                                  <input
-                                    className="flex-1 bg-transparent border-b border-slate-700 py-2 px-1 text-sm text-slate-200 focus:border-indigo-500 outline-none transition-colors placeholder:text-slate-700"
-                                    placeholder={`Item ${idx + 1} (${baseType})`}
-                                    value={val}
-                                    onChange={(e) => {
-                                      const next = [...displayValues];
-                                      next[idx] = e.target.value;
-                                      setInputs((p) => ({ ...p, [i]: next }));
-                                    }}
-                                  />
-                                  {length === null && (
-                                    <button
-                                      onClick={() => {
-                                        const next = displayValues.filter((_, index) => index !== idx);
-                                        setInputs((p) => ({ ...p, [i]: next.length ? next : [""] }));
-                                      }}
-                                      className="text-[10px] uppercase font-bold text-slate-500 hover:text-red-400"
-                                      title="Remove item"
-                                    >
-                                      Remove
-                                    </button>
-                                  )}
-                                </div>
-                              ))}
-                              {length === null && (
-                                <button
-                                  onClick={() => setInputs((p) => ({ ...p, [i]: [...displayValues, ""] }))}
-                                  className="text-[10px] uppercase font-bold text-slate-400 hover:text-indigo-300"
-                                >
-                                  Add item
-                                </button>
-                              )}
-                            </div>
-                          ) : (
-                            <input
-                              className="bg-transparent border-b border-slate-700 py-2 px-1 text-sm text-slate-200 focus:border-indigo-500 outline-none transition-colors placeholder:text-slate-700"
-                              placeholder={`Enter ${input.type}`}
-                              value={typeof inputs[i] === "string" ? inputs[i] : ""}
-                              onChange={(e) =>
-                                setInputs((p) => ({ ...p, [i]: e.target.value }))
-                              }
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="text-slate-600 italic text-sm py-4">
-                    No parameters required.
-                  </div>
-                )}
+                <ParamInputs
+                  abiInputs={inputsList}
+                  values={inputs}
+                  onChange={setInputs}
+                />
 
                 {/* Options */}
                 <div className="pt-6 mt-2 grid grid-cols-2 gap-6">

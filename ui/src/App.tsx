@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
-import { Hammer, Zap, Plus, X, Box, ChevronRight, ChevronDown, Trash2, Globe, Wand2, FileCode, RefreshCw } from 'lucide-react'
+import { Hammer, Zap, Plus, X, Box, ChevronRight, ChevronDown, Trash2, Globe, Wand2, FileCode, RefreshCw, Layers } from 'lucide-react'
 import { clsx } from 'clsx'
 import { createWalletClient, createPublicClient, createTestClient, http, custom, defineChain, type Address, type Block, type Transaction, type PublicClient, type WalletClient, type Hex, publicActions, walletActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -10,8 +10,10 @@ import { UserProfile } from './components/UserProfile'
 import { ContractDetailsTab } from './components/ContractDetailsTab'
 import { Explorer } from './components/Explorer'
 import { ConverterView } from './components/ConverterView'
+import { MacroEditor } from './components/MacroEditor'
 import { OpenZeppelinModal } from './components/OpenZeppelinModal'
 import { OzVersionPicker } from './components/OzVersionPicker'
+import type { Macro } from './types/macro'
 
 // Default Constants
 const DEFAULT_RPC = "http://127.0.0.1:8545"
@@ -141,7 +143,12 @@ function App() {
     const [atAddressInput, setAtAddressInput] = useState('')
 
   // View State
-  const [activeView, setActiveView] = useState<'contracts' | 'explorer' | 'converter'>('contracts')
+  const [activeView, setActiveView] = useState<'contracts' | 'explorer' | 'converter' | 'macros'>('contracts')
+
+  // Macro State
+  const [macros, setMacros] = useState<Macro[]>([])
+  const [activeMacroId, setActiveMacroId] = useState<string | null>(null)
+  const hasLoadedMacros = useRef(false)
 
 
   // Explorer Data State
@@ -313,6 +320,49 @@ function App() {
   useEffect(() => {
     tabsRef.current = tabs
   }, [tabs])
+
+  // Macro load effect
+  useEffect(() => {
+    const raw = localStorage.getItem("chasm_macros")
+    if (!raw) { hasLoadedMacros.current = true; return }
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) setMacros(parsed)
+    } catch (e) {
+      console.error("Failed to load macros", e)
+    }
+    hasLoadedMacros.current = true
+  }, [])
+
+  // Macro save effect
+  useEffect(() => {
+    if (!hasLoadedMacros.current) return
+    try {
+      localStorage.setItem("chasm_macros", JSON.stringify(macros))
+    } catch (e) {
+      console.error("Failed to persist macros", e)
+    }
+  }, [macros])
+
+  const handleCreateMacro = useCallback((name: string) => {
+    const m: Macro = {
+      id: crypto.randomUUID(),
+      name,
+      steps: [],
+      createdAt: Date.now(),
+    }
+    setMacros((prev) => [...prev, m])
+    setActiveMacroId(m.id)
+  }, [])
+
+  const handleUpdateMacro = useCallback((updated: Macro) => {
+    setMacros((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+  }, [])
+
+  const handleDeleteMacro = useCallback((id: string) => {
+    setMacros((prev) => prev.filter((m) => m.id !== id))
+    setActiveMacroId((prev) => (prev === id ? null : prev))
+  }, [])
 
   const handleRecompile = async () => {
     setIsRecompiling(true)
@@ -868,13 +918,22 @@ function App() {
             {activeView === 'explorer' && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-indigo-500 rounded-r-full" />}
           </button>
 
-          <button 
+          <button
             onClick={() => setActiveView('converter')}
             className={clsx("p-2 rounded-lg transition-all relative group", activeView === 'converter' ? "text-indigo-400 bg-slate-900" : "text-slate-500 hover:text-slate-300")}
             title="Converter & Utils"
           >
             <Wand2 size={20} strokeWidth={1.5} />
             {activeView === 'converter' && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-indigo-500 rounded-r-full" />}
+          </button>
+
+          <button
+            onClick={() => setActiveView('macros')}
+            className={clsx("p-2 rounded-lg transition-all relative group", activeView === 'macros' ? "text-indigo-400 bg-slate-900" : "text-slate-500 hover:text-slate-300")}
+            title="Macros"
+          >
+            <Layers size={20} strokeWidth={1.5} />
+            {activeView === 'macros' && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-indigo-500 rounded-r-full" />}
           </button>
 
           <div className="flex-1" />
@@ -1388,6 +1447,24 @@ function App() {
         </>
         ) : activeView === 'converter' ? (
             <ConverterView />
+        ) : activeView === 'macros' ? (
+            <div className="flex-1 min-h-0">
+                <MacroEditor
+                    macros={macros}
+                    activeMacroId={activeMacroId}
+                    deployedInstances={deployedInstances}
+                    clients={clients ? { publicClient: clients.publicClient, walletClient: clients.walletClient } : null}
+                    localClients={localClients}
+                    ensureLocalClients={ensureLocalClients}
+                    globalMode={globalMode}
+                    rpcUrl={rpcUrl}
+                    onLog={log}
+                    onCreateMacro={handleCreateMacro}
+                    onUpdateMacro={handleUpdateMacro}
+                    onDeleteMacro={handleDeleteMacro}
+                    onSelectMacro={setActiveMacroId}
+                />
+            </div>
         ) : (
             <div className="flex-1 min-h-0">
                 {clients ? (
