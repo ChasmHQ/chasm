@@ -183,9 +183,20 @@ function App() {
         
         const transport = custom({
             async request({ method, params }) {
-                const isLocal = rpcUrl.includes("localhost") || rpcUrl.includes("127.0.0.1");
-                
-                if (isLocal) {
+                // Only skip the proxy for Chasm's own managed Anvil nodes (ports 8545/8546).
+                // Everything else — including other localhost ports — goes through the backend
+                // proxy to avoid CORS errors (different ports = different origins in browsers).
+                const isManagedAnvil = (() => {
+                    try {
+                        const parsed = new URL(rpcUrl);
+                        const host = parsed.hostname;
+                        const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+                        const isLoopback = host === 'localhost' || host === '127.0.0.1';
+                        return isLoopback && (port === '8545' || port === '8546');
+                    } catch { return false; }
+                })();
+
+                if (isManagedAnvil) {
                     const response = await fetch(rpcUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -199,12 +210,12 @@ function App() {
                     const response = await fetch('/proxy', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ 
+                        body: JSON.stringify({
                             url: rpcUrl,
-                            method, 
+                            method,
                             params,
-                            id: 1, 
-                            jsonrpc: '2.0' 
+                            id: 1,
+                            jsonrpc: '2.0'
                         }),
                     });
                     const data = await response.json();
