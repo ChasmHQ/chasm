@@ -103,3 +103,6 @@ Launch Chasm in any folder containing Solidity files by running `chasm .`. The t
 
 ---
 Built for the Ethereum development and security community.
+
+## Next development
+We will focusing on dynamic analysis to help auditor for debugging the smart contract, like tenderly simulations. It will been show all the stack traces, the reason why it failed, and give all the opcode operation that happends during the transaction. Also will been adding Fund Flow, and Gas Profiler for more clarity in transaction flow. If can will be re-making the revoke feature. 
