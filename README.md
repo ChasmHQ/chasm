@@ -1,18 +1,24 @@
-# sevm: a gdb-style Solidity debugger on Py-EVM
+# sevm: gdb for Solidity and the EVM
 
 > **Note**: sevm is alpha software. Commands and debugger behavior may change.
 
 > **Note**: Source-level stepping depends on unoptimized, non-via-IR builds. Optimized
 > code degrades Solidity source maps and makes stepping unreliable.
 
-A fullscreen, gdb-compatible interactive debugger for Solidity, running on Py-EVM. If
-you know gdb, you know sevm: `b`, `n`, `s`, `si`, `finish`, `bt`, `p`, `x/32xb`,
-`info registers`, and `set var` mean what you expect. The expressions are Solidity and
-the machine underneath is the EVM.
+sevm extends the Foundry test workflow with a live, gdb-style debugger for Solidity and
+the EVM. It runs `.t.sol` files on Py-EVM and pauses inside a transaction before the call
+frame unwinds.
 
-sevm stops *inside* a running transaction with the frame still alive. You can read
-uncommitted state, call view functions, rewrite a stack operand before the opcode consumes
-it, and force an out-of-gas at an exact instruction.
+At each stop, you have full control over the in-process blockchain state and the live EVM
+frame:
+
+- Move between high-level Solidity and low-level EVM views at the same execution point.
+- Inspect source, opcodes, stack, memory, storage, local variables, calldata, gas, and the
+  call stack.
+- Mutate execution in the middle of the transaction. Set local or storage variables,
+  rewrite stack or memory, change gas, and call Solidity functions.
+- Use supported Foundry cheatcodes against the paused state, including pranks,
+  `deal`/`store`/`load`, block environment changes, signing helpers, and `vm.assert*`.
 
 <!-- demo: record the TUI (vhs/asciinema) and embed here -->
 
@@ -42,21 +48,20 @@ Install sevm from a checkout with [uv](https://docs.astral.sh/uv/):
 uv tool install .
 ```
 
-Run the example web3 driver in the fullscreen debugger, open the plain-text frontend, or
-inspect the compiled contracts:
+Run a Foundry test in the fullscreen debugger, narrow the run to one test in the
+plain-text frontend, or inspect the compiled project:
+
+```bash
+sevm run test/Counter.t.sol
+sevm run --console -m testDeposit test/Vault.t.sol
+sevm compile .
+```
+
+Options go **before** the target. `sevm run` also accepts an unchanged web3.py driver;
+everything after a `.py` target is forwarded to that script:
 
 ```bash
 sevm run --contracts tests/contracts examples/debug_bank.py
-sevm run --console --contracts tests/contracts examples/debug_bank.py
-sevm compile tests/contracts
-```
-
-Options go **before** the target; everything after a `.py` target is forwarded to the
-script. The first stop is usually the constructor. Use `-x c` to continue past it, or set
-a breakpoint before continuing:
-
-```bash
-sevm run -x 'b Bank.sol:46' -x c --contracts tests/contracts examples/debug_bank.py
 ```
 
 Run `sevm run --help` and `sevm compile --help` for the complete option list.
