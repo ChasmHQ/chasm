@@ -958,11 +958,13 @@ def test_command_info_topics(deposit_debugger):
     assert not dbg.run("info nonsense").ok
 
 
-def test_info_frame_colours_the_selector_apart_from_the_arguments(forward_debugger):
+def test_info_frame_colours_the_selector_and_each_argument_word(forward_debugger):
     dbg, calldata = forward_debugger
     line = next(ln for ln in dbg.run("info frame").lines if "calldata" in ln)
     assert f"[bold yellow]0x{calldata[:4].hex()}[/bold yellow]" in line
-    assert f"[magenta]{calldata[4:].hex()}[/magenta]" in line
+    # forward(address,uint256): two words, coloured apart.
+    assert f"[magenta]{calldata[4:36].hex()}[/magenta]" in line
+    assert f"[cyan]{calldata[36:].hex()}[/cyan]" in line
 
 
 def test_calldata_reports_what_it_truncates():
@@ -970,6 +972,11 @@ def test_calldata_reports_what_it_truncates():
     assert _calldata(b"\xd0\xe3\x0d\xb0") == "[bold yellow]0xd0e30db0[/bold yellow]"
     text = _calldata(b"\x00\x00\x40\xc3" + b"\xab" * 100)
     assert "(+36 bytes)" in text
+    assert text.count("[magenta]") == 1 and text.count("[cyan]") == 1
+    # A cut mid-word colours only as far as the hex goes.
+    mid = _calldata(b"\x00\x00\x40\xc3" + b"\xab" * 64, limit=100)
+    assert f"[cyan]{'ab' * 18}[/cyan]" in mid
+    assert "(+14 bytes)" in mid
 
 
 def test_info_locals_names_and_values_the_frames_locals(deposit_debugger):

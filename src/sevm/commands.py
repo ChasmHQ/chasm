@@ -115,23 +115,32 @@ def _addr(raw: bytes | None) -> str:
     return "0x" + bytes(raw).hex()
 
 
-def _calldata(raw: bytes | None, limit: int = 128) -> str:
-    """Calldata with the selector coloured apart from the arguments.
+# Cycled over the argument words. Two is enough to show where one ends and the next
+# begins, and stays legible where a longer cycle would start reaching for dim colours.
+_ARG_COLOURS = ("magenta", "cyan")
+WORD_HEX = 64
 
-    The two are different kinds of thing sharing one hex blob, and telling them apart by
-    counting eight characters is exactly the sort of thing the debugger should do for you.
-    `limit` counts hex digits of arguments; what is cut is reported, never dropped silently.
+
+def _calldata(raw: bytes | None, limit: int = 128) -> str:
+    """Calldata with the selector and each 32-byte argument word coloured apart.
+
+    Counting hex characters to find where the second argument starts is exactly the sort
+    of thing the debugger should do for you. `limit` counts hex digits of arguments; what
+    is cut is reported, never dropped silently.
     """
     data = bytes(raw or b"")
     if not data:
         return "[dim]0x (empty)[/dim]"
-    selector = f"[bold yellow]0x{data[:4].hex()}[/bold yellow]"
+    out = [f"[bold yellow]0x{data[:4].hex()}[/bold yellow]"]
     args = data[4:].hex()
-    if not args:
-        return selector
-    shown, cut = args[:limit], (len(args) - limit + 1) // 2
-    tail = f" [dim]...(+{cut} bytes)[/dim]" if cut > 0 else ""
-    return f"{selector}[magenta]{shown}[/magenta]{tail}"
+    for start in range(0, min(len(args), limit), WORD_HEX):
+        colour = _ARG_COLOURS[start // WORD_HEX % len(_ARG_COLOURS)]
+        word = args[start : min(start + WORD_HEX, limit)]
+        out.append(f"[{colour}]{word}[/{colour}]")
+    cut = (len(args) - limit) // 2
+    if cut > 0:
+        out.append(f" [dim]...(+{cut} bytes)[/dim]")
+    return "".join(out)
 
 
 def _short(raw: bytes | None, keep: int = 4) -> str:
@@ -1657,7 +1666,7 @@ HELP_TOPICS = {
                          [dim]abbreviated `info r`[/dim]
   info frame             the EVM frame: depth, kind, artifact, gas, address,
                          code_address, sender, value, calldata, internal call stack
-                         [dim]calldata is coloured selector then arguments[/dim]
+                         [dim]calldata colours the selector and each argument word apart[/dim]
   info args              the arguments of the frame you are in, named and decoded
                          [dim]an internal frame reports its own parameters, not calldata[/dim]
   info locals            the frame's locals; see [cyan]help locals[/cyan]
