@@ -1,0 +1,6 @@
+[profile.default]
+src = "src"
+test = "test"
+libs = ["lib"]
+# sevm forces the optimizer OFF for debuggable builds regardless of this file.
+optimizer = false

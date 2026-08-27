@@ -1,0 +1,139 @@
+/* sevm layout.
+   One accent per data class, defined in widgets.py and mirrored here in the borders,
+   so a pane's colour always means the same thing no matter which pane you look at. */
+
+Screen {
+    layers: base;
+    background: $surface;
+}
+
+/* Syntax highlighting comes from Rich's own palette, which is fixed; everything else
+   follows the ANSI theme, so the panes match whatever the terminal is set to. */
+
+#status {
+    height: 1;
+    background: $panel;
+    color: $text;
+}
+
+#main {
+    height: 1fr;
+}
+
+#left {
+    width: 62%;
+}
+
+#right {
+    width: 38%;
+}
+
+/* SOURCE takes whatever the low-level row is not using, so hiding that row (F2)
+   hands the whole left column to the source. */
+#source {
+    scrollbar-size: 1 1;
+    height: 1fr;
+    min-height: 6;
+    border: round $success;
+    border-title-color: $success;
+    border-title-style: bold;
+    padding: 0 1;
+}
+
+#lowlevel {
+    height: 45%;
+    min-height: 8;
+}
+
+/* Panes scroll rather than spilling past their border, and each fills its row. */
+#disasm, #stack, #memory {
+    height: 100%;
+}
+
+#disasm {
+    scrollbar-size: 1 1;
+    width: 27%;
+    border: round $warning;
+    border-title-color: $warning;
+    padding: 0 1;
+}
+
+/* The stack names the frame's locals, so it needs room for a value AND a label. */
+#stack {
+    scrollbar-size: 1 1;
+    width: 33%;
+    border: round $accent;
+    border-title-color: $accent;
+    padding: 0 1;
+}
+
+/* MEMORY shows 8-byte giant words, so it wants the widest share it can get: every
+   extra 17 columns is one more word per row. */
+#memory {
+    scrollbar-size: 1 1;
+    width: 40%;
+    border: round $primary;
+    border-title-color: $primary;
+    padding: 0 1;
+}
+
+#callstack {
+    scrollbar-size: 1 1;
+    height: 30%;
+    min-height: 5;
+    border: round $secondary;
+    border-title-color: $secondary;
+    padding: 0 1;
+}
+
+#variables {
+    scrollbar-size: 1 1;
+    height: 34%;
+    min-height: 5;
+    border: round $accent;
+    border-title-color: $accent;
+    padding: 0 1;
+}
+
+#storage {
+    scrollbar-size: 1 1;
+    height: 1fr;
+    min-height: 5;
+    border: round $warning;
+    border-title-color: $warning;
+    padding: 0 1;
+}
+
+#log {
+    scrollbar-size: 1 1;
+    height: 30%;
+    min-height: 4;
+    border: none;
+    border-top: solid $panel;
+    background: $surface;
+    padding: 0 1;
+}
+
+#prompt {
+    height: 3;
+    border: tall $success;
+}
+
+#prompt:focus {
+    border: tall $accent;
+}
+
+Footer {
+    background: $panel;
+}
+
+/* The pane you are scrolling is obvious at a glance. */
+Pane:focus, SourcePane:focus, CommandLog:focus {
+    border: round $accent-lighten-2;
+    border-title-color: $accent-lighten-2;
+}
+
+Pane > PaneBody, SourcePane > PaneBody, CommandLog > PaneBody {
+    width: auto;
+    height: auto;
+}

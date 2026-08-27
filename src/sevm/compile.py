@@ -1,0 +1,547 @@
+"""Solidity compilation and the artifact model.
+
+solcx only, by decision. Everything downstream depends on the `Artifact` dataclass and
+nothing else, so a Foundry `out/*.json` importer can be added later by producing the same
+dataclass without touching the debugger.
+
+Debug builds are compiled with the optimizer OFF and via-IR OFF. That is not a default,
+it is a requirement: optimized codegen fuses and reorders instructions, which degrades the
+source map and destroys the stack-slot heuristic that local-variable support will need.
+`compile_project` refuses to silently produce an artifact that cannot be debugged well.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Any
+
+import solcx
+
+DEFAULT_SOLC_VERSION = "0.8.28"
+
+# Everything the debugger needs, requested in one pass.
+_OUTPUT_SELECTION = {
+    "*": {
+        "*": [
+            "abi",
+            "evm.bytecode.object",
+            "evm.bytecode.sourceMap",
+            "evm.deployedBytecode.object",
+            "evm.deployedBytecode.sourceMap",
+            "evm.deployedBytecode.immutableReferences",
+            "evm.methodIdentifiers",
+            "storageLayout",
+        ],
+        "": ["ast"],
+    }
+}
+
+
+class CompileError(RuntimeError):
+    """solc rejected the input. Carries the raw diagnostics."""
+
+    def __init__(self, message: str, diagnostics: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics or []
+
+
+@dataclass(frozen=True)
+class SourceFile:
+    """One .sol file as solc sees it."""
+
+    key: str  # the identifier used inside solc input/output, e.g. "Vault.sol"
+    abs_path: str
+    text: str
+    file_id: int = -1  # solc's numeric source index, used by source maps
+
+    @property
+    def name(self) -> str:
+        return os.path.basename(self.abs_path)
+
+
+@dataclass
+class Artifact:
+    """One compiled contract, with everything the debugger maps against."""
+
+    name: str
+    source_key: str
+    abi: list[dict]
+    bytecode: bytes  # creation code
+    deployed_bytecode: bytes  # runtime code
+    source_map: str  # for `bytecode` (constructor debugging)
+    deployed_source_map: str  # for `deployed_bytecode` (the common case)
+    storage_layout: dict
+    method_identifiers: dict[str, str]
+    immutable_references: dict[str, list[dict]] = field(default_factory=dict)
+    # Byte range of the `contract X { ... }` declaration in its source file. The eval
+    # injector needs this: a file can hold several contracts, and splicing into the last
+    # closing brace in the file would target the wrong one.
+    source_range: tuple[int, int] = (-1, -1)
+
+    @property
+    def qualified_name(self) -> str:
+        return f"{self.source_key}:{self.name}"
+
+    @property
+    def selectors(self) -> dict[bytes, str]:
+        """4-byte selector -> full signature, e.g. b'\\x26\\x78\\x45\\x90' -> 'unsafeStore(uint256,uint256)'."""
+        return {bytes.fromhex(sel): sig for sig, sel in self.method_identifiers.items()}
+
+
+@dataclass
+class Project:
+    """A compiled set of sources plus the lookups the debugger performs at runtime."""
+
+    sources: dict[str, SourceFile]  # by solc source key
+    artifacts: dict[str, Artifact]  # by qualified name
+    asts: dict[str, dict]  # by solc source key
+    solc_version: str
+    optimized: bool = False
+    # solc import remappings (Foundry projects); needed to recompile for evaluation.
+    remappings: list[str] = field(default_factory=list)
+
+    _code_index: dict[bytes, str] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        for art in self.artifacts.values():
+            if art.deployed_bytecode:
+                self._code_index[_code_fingerprint(art.deployed_bytecode, art)] = (
+                    art.qualified_name
+                )
+
+    # -- lookups ------------------------------------------------------------
+
+    def source_by_id(self, file_id: int) -> SourceFile | None:
+        for src in self.sources.values():
+            if src.file_id == file_id:
+                return src
+        return None
+
+    def artifact_for_code(self, runtime_code: bytes) -> Artifact | None:
+        """Identify a deployed contract from the code sitting at its address.
+
+        Matches on the bytecode with the trailing CBOR metadata stripped and any
+        immutable slots zeroed, so a contract with immutables still resolves.
+        """
+        if not runtime_code:
+            return None
+        exact = self._code_index.get(_code_fingerprint(runtime_code, None))
+        if exact is not None:
+            return self.artifacts[exact]
+        # Retry per-artifact so each one's immutable offsets can be masked.
+        for art in self.artifacts.values():
+            if not art.deployed_bytecode:
+                continue
+            if len(_strip_metadata(runtime_code)) != len(
+                _strip_metadata(art.deployed_bytecode)
+            ):
+                continue
+            if _code_fingerprint(runtime_code, art) == _code_fingerprint(
+                art.deployed_bytecode, art
+            ):
+                return art
+        return None
+
+    def artifact(self, name: str) -> Artifact | None:
+        """Look up by contract name or by qualified 'File.sol:Name'."""
+        if name in self.artifacts:
+            return self.artifacts[name]
+        matches = [a for a in self.artifacts.values() if a.name == name]
+        return matches[0] if len(matches) == 1 else None
+
+
+# -- bytecode identity -------------------------------------------------------
+
+
+def _strip_metadata(code: bytes) -> bytes:
+    """Drop solc's trailing CBOR metadata blob.
+
+    Layout is `<code> <cbor> <uint16 be length of cbor>`. The length is only trusted
+    when it lands inside the buffer, so non-solc code passes through untouched.
+    """
+    if len(code) < 2:
+        return code
+    meta_len = int.from_bytes(code[-2:], "big")
+    total = meta_len + 2
+    if 0 < total <= len(code):
+        return code[: len(code) - total]
+    return code
+
+
+def _code_fingerprint(code: bytes, artifact: Artifact | None) -> bytes:
+    """Metadata-stripped, immutable-masked hash of runtime code."""
+    body = bytearray(_strip_metadata(code))
+    if artifact is not None:
+        for refs in artifact.immutable_references.values():
+            for ref in refs:
+                start, length = int(ref["start"]), int(ref["length"])
+                if start + length <= len(body):
+                    body[start : start + length] = b"\x00" * length
+    return hashlib.sha256(bytes(body)).digest()
+
+
+# -- compilation -------------------------------------------------------------
+
+
+def _contract_ranges(ast: dict) -> dict[str, tuple[int, int]]:
+    """Contract name -> (start, end) byte offsets, from a source unit's AST."""
+    ranges: dict[str, tuple[int, int]] = {}
+
+    def walk(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        if node.get("nodeType") in ("ContractDefinition", "LibraryDefinition"):
+            parts = (node.get("src") or "0:0:0").split(":")
+            start, length = int(parts[0]), int(parts[1])
+            ranges[node.get("name", "")] = (start, start + length)
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                walk(value)
+
+    walk(ast)
+    return ranges
+
+
+def _read_sol(abs_path: str, key: str) -> SourceFile:
+    with open(abs_path, encoding="utf-8") as f:
+        return SourceFile(key=key, abs_path=abs_path, text=f.read())
+
+
+def _read_sources(paths: Sequence[str]) -> dict[str, SourceFile]:
+    """Expand paths (files or directories) into solc source entries keyed by basename."""
+    found: dict[str, SourceFile] = {}
+    for path in paths:
+        abs_path = os.path.abspath(path)
+        if os.path.isdir(abs_path):
+            for root, _dirs, files in os.walk(abs_path):
+                for fname in sorted(files):
+                    if fname.endswith(".sol"):
+                        full = os.path.join(root, fname)
+                        key = os.path.relpath(full, abs_path)
+                        found[key] = _read_sol(full, key)
+        elif os.path.isfile(abs_path):
+            key = os.path.basename(abs_path)
+            found[key] = _read_sol(abs_path, key)
+        else:
+            raise CompileError(f"no such source path: {path}")
+    if not found:
+        raise CompileError(f"no .sol files found under: {', '.join(paths)}")
+    return found
+
+
+def compile_standard(
+    sources: dict[str, str],
+    solc_version: str = DEFAULT_SOLC_VERSION,
+    optimize: bool = False,
+    evm_version: str | None = None,
+    output_selection: dict | None = None,
+    remappings: Sequence[str] | None = None,
+) -> dict:
+    """Thin solc standard-JSON wrapper. Raises CompileError with parsed diagnostics."""
+    settings: dict[str, Any] = {
+        "optimizer": {"enabled": bool(optimize)},
+        "outputSelection": output_selection or _OUTPUT_SELECTION,
+    }
+    if remappings:
+        settings["remappings"] = list(remappings)
+    if evm_version:
+        settings["evmVersion"] = evm_version
+    payload = {
+        "language": "Solidity",
+        "sources": {k: {"content": v} for k, v in sources.items()},
+        "settings": settings,
+    }
+    try:
+        return solcx.compile_standard(payload, solc_version=solc_version)
+    except solcx.exceptions.SolcError as exc:
+        raise CompileError(str(exc)) from exc
+
+
+def ensure_solc(version: str = DEFAULT_SOLC_VERSION) -> None:
+    """Install the pinned solc if this machine does not have it yet."""
+    installed = {str(v) for v in solcx.get_installed_solc_versions()}
+    if version not in installed:
+        solcx.install_solc(version)
+
+
+def compile_project(
+    paths: Sequence[str],
+    solc_version: str = DEFAULT_SOLC_VERSION,
+    optimize: bool = False,
+    evm_version: str | None = None,
+) -> Project:
+    """Compile every .sol under `paths` into a debuggable Project."""
+    ensure_solc(solc_version)
+    sources = _read_sources(list(paths))
+    out = compile_standard(
+        {k: s.text for k, s in sources.items()},
+        solc_version=solc_version,
+        optimize=optimize,
+        evm_version=evm_version,
+    )
+    return _build_project(out, sources, solc_version, optimize)
+
+
+def _build_project(
+    out: dict,
+    sources: dict[str, SourceFile],
+    solc_version: str,
+    optimize: bool,
+    remappings: Sequence[str] | None = None,
+) -> Project:
+    """Assemble a Project from solc standard-JSON output and the source map. Shared by the
+    plain and Foundry compile paths."""
+    # solc assigns each source a numeric id; source maps reference it, so carry it.
+    asts: dict[str, dict] = {}
+    for key, entry in out.get("sources", {}).items():
+        file_id = int(entry.get("id", -1))
+        if key in sources:
+            sources[key] = SourceFile(
+                key=key,
+                abs_path=sources[key].abs_path,
+                text=sources[key].text,
+                file_id=file_id,
+            )
+        if "ast" in entry:
+            asts[key] = entry["ast"]
+
+    ranges_by_source = {key: _contract_ranges(ast) for key, ast in asts.items()}
+
+    artifacts: dict[str, Artifact] = {}
+    for source_key, contracts in out.get("contracts", {}).items():
+        for name, data in contracts.items():
+            evm = data.get("evm", {})
+            art = Artifact(
+                name=name,
+                source_key=source_key,
+                abi=data.get("abi", []),
+                bytecode=bytes.fromhex(evm.get("bytecode", {}).get("object", "")),
+                deployed_bytecode=bytes.fromhex(
+                    evm.get("deployedBytecode", {}).get("object", "")
+                ),
+                source_map=evm.get("bytecode", {}).get("sourceMap", "") or "",
+                deployed_source_map=evm.get("deployedBytecode", {}).get("sourceMap", "")
+                or "",
+                storage_layout=data.get("storageLayout", {}) or {},
+                method_identifiers=evm.get("methodIdentifiers", {}) or {},
+                immutable_references=evm.get("deployedBytecode", {}).get(
+                    "immutableReferences", {}
+                )
+                or {},
+                source_range=ranges_by_source.get(source_key, {}).get(name, (-1, -1)),
+            )
+            artifacts[art.qualified_name] = art
+
+    return Project(
+        sources=sources,
+        artifacts=artifacts,
+        asts=asts,
+        solc_version=solc_version,
+        optimized=optimize,
+        remappings=list(remappings or []),
+    )
+
+
+# ======================================================================
+# Foundry project support
+# ======================================================================
+
+# The bundled minimal forge-std shipped inside the package (see vendor/forge-std). Used
+# when a target .sol is not part of a real Foundry project, or the project has no
+# lib/forge-std, so a standalone `Test.sol` still compiles with no `forge install`.
+BUNDLED_FORGE_STD_SRC = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "vendor", "forge-std", "src"
+)
+
+# Directories never walked when collecting a project's sources.
+_SKIP_DIRS = frozenset({".git", "node_modules", "out", "cache", "broadcast", ".venv"})
+
+DEFAULT_FOUNDRY_TOML = """\
+[profile.default]
+src = "src"
+test = "test"
+libs = ["lib"]
+# sevm forces the optimizer OFF for debuggable builds regardless of this file.
+optimizer = false
+"""
+
+
+def _load_toml(text: str) -> dict:
+    """Parse TOML, preferring the stdlib tomllib (3.11+) with a tiny fallback for 3.10."""
+    try:
+        import tomllib
+
+        return tomllib.loads(text)
+    except ModuleNotFoundError:
+        pass
+    # Minimal fallback: only the flat/[section] key = value shapes a foundry.toml needs.
+    data: dict[str, Any] = {}
+    section = data
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            path = line[1:-1].split(".")
+            section = data
+            for part in path:
+                section = section.setdefault(part.strip(), {})  # type: ignore[assignment]
+            continue
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if val.startswith("[") and val.endswith("]"):
+            items = [v.strip().strip("\"'") for v in val[1:-1].split(",") if v.strip()]
+            section[key] = items
+        elif val.lower() in ("true", "false"):
+            section[key] = val.lower() == "true"
+        else:
+            section[key] = val.strip("\"'")
+    return data
+
+
+def find_foundry_root(start: str) -> str | None:
+    """Walk up from `start` (a file or directory) to the nearest dir with a foundry.toml."""
+    here = os.path.abspath(start)
+    if os.path.isfile(here):
+        here = os.path.dirname(here)
+    while True:
+        if os.path.isfile(os.path.join(here, "foundry.toml")):
+            return here
+        parent = os.path.dirname(here)
+        if parent == here:
+            return None
+        here = parent
+
+
+@dataclass
+class FoundryConfig:
+    root: str
+    src: str = "src"
+    test: str = "test"
+    libs: tuple[str, ...] = ("lib",)
+    solc_version: str | None = None
+    evm_version: str | None = None
+    remappings: list[str] = field(default_factory=list)
+
+
+def read_foundry_config(root: str) -> FoundryConfig:
+    """Read `<root>/foundry.toml` (profile.default) if present, else sensible defaults."""
+    cfg = FoundryConfig(root=root)
+    toml_path = os.path.join(root, "foundry.toml")
+    if os.path.isfile(toml_path):
+        with open(toml_path, encoding="utf-8") as fh:
+            parsed = _load_toml(fh.read())
+        profile = (parsed.get("profile", {}) or {}).get("default", {}) or {}
+        cfg.src = profile.get("src", cfg.src)
+        cfg.test = profile.get("test", cfg.test)
+        libs = profile.get("libs", list(cfg.libs))
+        cfg.libs = tuple(libs) if isinstance(libs, list) else (libs,)
+        cfg.solc_version = profile.get("solc") or profile.get("solc_version")
+        cfg.evm_version = profile.get("evm_version")
+        rms = profile.get("remappings", [])
+        cfg.remappings = list(rms) if isinstance(rms, list) else [rms]
+    # A standalone remappings.txt overlays / supplements foundry.toml remappings.
+    rm_txt = os.path.join(root, "remappings.txt")
+    if os.path.isfile(rm_txt):
+        with open(rm_txt, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    cfg.remappings.append(line)
+    return cfg
+
+
+def _autodetect_lib_remappings(root: str, libs: Sequence[str]) -> list[str]:
+    """Foundry's implicit `<name>/=lib/<name>/src/` remappings for each installed lib."""
+    out: list[str] = []
+    for lib in libs:
+        lib_dir = os.path.join(root, lib)
+        if not os.path.isdir(lib_dir):
+            continue
+        for name in sorted(os.listdir(lib_dir)):
+            dep = os.path.join(lib_dir, name)
+            if not os.path.isdir(dep):
+                continue
+            src_sub = os.path.join(dep, "src")
+            rel = f"{lib}/{name}/src/" if os.path.isdir(src_sub) else f"{lib}/{name}/"
+            out.append(f"{name}/={rel}")
+    return out
+
+
+def _collect_project_sources(
+    root: str, extra_files: Sequence[str] = ()
+) -> dict[str, SourceFile]:
+    """Every .sol under `root` (minus build/junk dirs), keyed by path relative to root."""
+    found: dict[str, SourceFile] = {}
+    for cur, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        for fname in sorted(files):
+            if fname.endswith(".sol"):
+                full = os.path.join(cur, fname)
+                key = os.path.relpath(full, root).replace(os.sep, "/")
+                found[key] = _read_sol(full, key)
+    for extra in extra_files:
+        full = os.path.abspath(extra)
+        key = os.path.relpath(full, root).replace(os.sep, "/")
+        if key not in found and os.path.isfile(full):
+            found[key] = _read_sol(full, key)
+    return found
+
+
+def _bundled_forge_std_sources() -> dict[str, SourceFile]:
+    """The packaged forge-std, keyed as if it lived at lib/forge-std/src/*."""
+    out: dict[str, SourceFile] = {}
+    for fname in sorted(os.listdir(BUNDLED_FORGE_STD_SRC)):
+        if fname.endswith(".sol"):
+            full = os.path.join(BUNDLED_FORGE_STD_SRC, fname)
+            key = f"lib/forge-std/src/{fname}"
+            out[key] = _read_sol(full, key)
+    return out
+
+
+def compile_foundry_project(
+    root: str,
+    *,
+    target_file: str | None = None,
+    solc_version: str | None = None,
+    evm_version: str | None = None,
+) -> Project:
+    """Compile a Foundry project (or a standalone test dir) into a debuggable Project.
+
+    Resolves remappings (foundry.toml + remappings.txt + implicit lib remappings) and
+    injects the bundled forge-std when the project has no lib/forge-std, so a lone
+    `Test.sol` compiles. The optimizer is forced OFF, as for every sevm build.
+    """
+    cfg = read_foundry_config(root)
+    solc = solc_version or cfg.solc_version or DEFAULT_SOLC_VERSION
+    ensure_solc(solc)
+
+    extra = [target_file] if target_file else []
+    sources = _collect_project_sources(root, extra)
+
+    remappings = _autodetect_lib_remappings(root, cfg.libs) + list(cfg.remappings)
+    has_forge_std = any("forge-std/=" in r for r in remappings) or os.path.isdir(
+        os.path.join(root, "lib", "forge-std")
+    )
+    if not has_forge_std:
+        sources.update(_bundled_forge_std_sources())
+        remappings.append("forge-std/=lib/forge-std/src/")
+
+    out = compile_standard(
+        {k: s.text for k, s in sources.items()},
+        solc_version=solc,
+        optimize=False,
+        evm_version=evm_version or cfg.evm_version,
+        remappings=remappings,
+    )
+    return _build_project(out, sources, solc, False, remappings=remappings)

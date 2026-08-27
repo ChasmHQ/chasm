@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sevm"
+version = "0.1.0"
+description = "A gdb-style interactive Solidity/EVM debugger on Py-EVM"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "sevm authors" }]
+keywords = ["solidity", "evm", "ethereum", "debugger", "py-evm", "web3"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Debuggers",
+]
+
+# Runtime dependencies. Every third-party package imported by the sources under
+# src/sevm is declared here (not left to transitive resolution). `eth`, `eth_abi`,
+# `eth_utils` and `eth_account` all ship with web3[tester], but sevm imports them
+# directly, so they are named explicitly.
+dependencies = [
+    "web3[tester]>=7.0",
+    "py-solc-x>=2.0",
+    "textual>=8.0",
+    "rich>=15.0",
+    "pygments>=2.20",
+    "eth-abi>=5.2",
+    "eth-utils>=5.0",
+    "eth-account>=0.13",
+]
+
+[project.scripts]
+sevm = "sevm.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/your-org/sevm"
+Documentation = "https://github.com/your-org/sevm/blob/main/README.md"
+
+# src layout: the package lives under src/. Hatchling includes package data
+# files (e.g. tui/sevm.tcss) automatically.
+[tool.hatch.build.targets.wheel]
+packages = ["src/sevm"]
+
+[dependency-groups]
+# uv-native dev group: `uv sync` installs these by default.
+dev = [
+    "pytest>=8.0",
+    "textual-dev>=1.8", # `textual console` for debugging the debugger
+    "ruff>=0.9",
+    "mypy>=1.13",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Put tests/ on sys.path so the shared `harness` module imports cleanly, and rely
+# on the installed (editable) `sevm` package for `import sevm.*` - no sys.path hacks.
+pythonpath = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 90
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade (modernize typing: Dict->dict, Optional[X]->X | None)
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501",   # line length is owned by the formatter; the rest are unsplittable strings
+    "RUF012", # ClassVar for mutable class attrs fights Textual's BINDINGS/CSS idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Unpacking a shared fixture tuple and using only some fields is idiomatic here.
+"tests/**" = ["RUF059"]
+
+[tool.mypy]
+python_version = "3.10"
+# Pragmatic, not strict: this wraps an untyped EVM stack (py-evm, web3) where full
+# strictness would drown real signal in third-party Any-noise. Tighten over time.
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true
