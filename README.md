@@ -320,8 +320,19 @@ $3 = 0xe49663c38505702a80c082069aa4ea858bb87c2b324bb676c028d21aa819624e  (bytes3
 
 Because it *is* Solidity, operator precedence, checked arithmetic, `ether`/`gwei`/`days`
 units, casts, `keccak256`, `abi.encode`, `type(uint256).max`, struct/mapping access, and
-calls to `internal`/`private` functions all work. `msg.sender`/`msg.value` report the
-paused frame's values. Results are cached per expression, so a `display` costs one compile.
+calls to `internal`/`private` functions all work. Results are cached per expression, so a
+`display` costs one compile.
+
+`msg.*` reads the frame you are stopped in, calldata included:
+
+```
+(sevm) p msg.sig
+$4 = 0x26784590  (bytes4)
+(sevm) p msg.data.length
+$5 = 68  (uint256)
+(sevm) p abi.decode(msg.data[36:], (uint256))
+$6 = 64  (uint256)
+```
 
 ## Local variables
 

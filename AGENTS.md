@@ -134,7 +134,7 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (310 tests; ~2 min, solc compile is the slow part)
+uv run pytest -q        # test suite (319 tests; ~2 min, solc compile is the slow part)
 SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
@@ -218,6 +218,9 @@ rather than surfacing as "unimplemented cheatcode" at run time.
    debuggable artifact.
 8. Implement the `vm.assert*` cheats as real comparisons. forge-std calls the `*Decimal`
    and `*ApproxEq*` forms unconditionally, so a blanket revert fails passing assertions.
+9. Bind `msg.data`/`msg.sig` from the frame. The injected `__sevm_eval` is reached by a
+   real call, so read directly they report *that* call's calldata (`0x365a2820` plus the
+   bound locals), silently and plausibly wrong.
 
 Underlying Py-EVM monkeypatch gotchas (inherited from the tracer, still apply): restore
 the raw classmethod descriptor not the bound method; stack items are `int` or `bytes`;
@@ -226,7 +229,7 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 310 tests pass as of
-2026-08-27 (4 more with `SEVM_NETWORK_TESTS=1`), covering Foundry multi-test + cheatcode
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 319 tests pass as of
+2026-08-28 (4 more with `SEVM_NETWORK_TESTS=1`), covering Foundry multi-test + cheatcode
 coverage, library install and remapping derivation, the assertion engine, the Yul assembly
 surface, and the snapshot refresh after a mutation.

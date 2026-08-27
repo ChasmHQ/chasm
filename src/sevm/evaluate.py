@@ -26,6 +26,11 @@ Passing them as params rather than literals keeps the cache useful: compiled cod
 only on names/types, not values, so `display amount - fee` costs one compile per session,
 not per step. Solidity's own scoping shadows a state variable of the same name, same as a
 real local.
+
+`msg.data` and `msg.sig` ride in the same way. The injected function is reached by a real
+call, so read directly they would describe *that* call (`__sevm_eval()` plus the bound
+locals), not the frame; both are rewritten to parameters carrying the paused frame's own
+calldata. Every other `msg.*` field is truthful already, mirrored by `_build_message`.
 """
 
 from __future__ import annotations
@@ -46,6 +51,19 @@ from .locals import referenced_names
 
 EVAL_FUNCTION = "__sevm_eval"
 EVAL_SELECTOR = function_signature_to_4byte_selector(f"{EVAL_FUNCTION}()")
+
+# msg field -> (parameter name, declared type, abi type). `bytes calldata` rather than
+# `bytes memory` so `msg.data[4:]` still slices, which is how anyone reads arguments out
+# of raw calldata.
+MSG_FIELDS: dict[str, tuple[str, str, str]] = {
+    "data": ("__sevm_msg_data", "bytes calldata", "bytes"),
+    "sig": ("__sevm_msg_sig", "bytes4", "bytes4"),
+}
+
+_MSG_FIELD = re.compile(r"\bmsg\s*\.\s*(data|sig)\b")
+# One capture group, so `split` alternates code, literal, code, ... and the literals can
+# be put back untouched.
+_STRING_LITERAL = re.compile(r"(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')")
 
 
 @dataclass(frozen=True)
@@ -95,6 +113,48 @@ def bindings_for(expression: str, locals_available: Sequence[Any]) -> list[Bindi
                 declared_type=_declared_parameter_type(local.abi_type),
                 abi_type=local.abi_type,
                 value=local.abi_value,
+            )
+        )
+    return out
+
+
+def rewrite_msg(expression: str) -> tuple[str, list[str]]:
+    """Point `msg.data`/`msg.sig` at the paused frame instead of the injected call.
+
+    Returns the expression to compile and the fields it used, in the order they appear
+    (which is the order `msg_bindings` must encode them in). String literals are left
+    alone, so `bytes("msg.data")` still says what it says.
+    """
+    used: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        field = match.group(1)
+        if field not in used:
+            used.append(field)
+        return MSG_FIELDS[field][0]
+
+    parts = _STRING_LITERAL.split(expression)
+    rewritten = [
+        part if index % 2 else _MSG_FIELD.sub(replace, part)
+        for index, part in enumerate(parts)
+    ]
+    return "".join(rewritten), used
+
+
+def msg_bindings(frame: Any, fields: Sequence[str]) -> list[Binding]:
+    """The frame's real calldata, ready to pass into the injected function."""
+    calldata = bytes(getattr(frame, "calldata", b"") or b"")
+    # Short calldata (a create frame has none) gives msg.sig 0x00000000, as in Solidity.
+    values = {"data": calldata, "sig": calldata[:4].ljust(4, b"\x00")}
+    out = []
+    for field in fields:
+        name, declared_type, abi_type = MSG_FIELDS[field]
+        out.append(
+            Binding(
+                name=name,
+                declared_type=declared_type,
+                abi_type=abi_type,
+                value=values[field],
             )
         )
     return out
@@ -411,11 +471,14 @@ class Evaluator:
         blocked = unbindable_reference(expression, bindings)
         if blocked:
             raise EvalError(blocked)
-        bound = bindings_for(expression, bindings)
+        # `expression` stays as typed, for the result and the history; `compiled` is the
+        # same expression with msg.data/msg.sig turned into parameters.
+        compiled, msg_fields = rewrite_msg(expression)
+        bound = bindings_for(compiled, bindings) + msg_bindings(frame, msg_fields)
         parameters = _parameter_list(bound)
 
         started = time.time()
-        code, return_type = self._compiled(artifact, expression, parameters)
+        code, return_type = self._compiled(artifact, compiled, parameters)
         compile_ms = (time.time() - started) * 1000.0
 
         state = computation.state
@@ -498,8 +561,9 @@ class Evaluator:
         blocked = unbindable_reference(expression, bindings)
         if blocked:
             raise EvalError(blocked)
-        parameters = _parameter_list(bindings_for(expression, bindings))
-        return self._infer_type(artifact, expression, parameters) or "void"
+        compiled, msg_fields = rewrite_msg(expression)
+        bound = bindings_for(compiled, bindings) + msg_bindings(frame, msg_fields)
+        return self._infer_type(artifact, compiled, _parameter_list(bound)) or "void"
 
 
 def _build_message(
@@ -533,8 +597,15 @@ def _clean_solc_error(text: str, expression: str) -> str:
             ("TypeError:", "DeclarationError:", "ParserError:", "SyntaxError:")
         ):
             message = line.split(":", 1)[1].strip()
-            return f"{message} (in `{expression}`)"
-    return f"could not compile `{expression}`"
+            return _undo_msg_rewrite(f"{message} (in `{expression}`)")
+    return _undo_msg_rewrite(f"could not compile `{expression}`")
+
+
+def _undo_msg_rewrite(text: str) -> str:
+    """Report the error against `msg.data`, not the parameter it was rewritten to."""
+    for field, (name, _declared, _abi) in MSG_FIELDS.items():
+        text = text.replace(name, f"msg.{field}")
+    return text
 
 
 def make_eval_hook(evaluator: Evaluator):

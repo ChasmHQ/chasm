@@ -115,6 +115,25 @@ def _addr(raw: bytes | None) -> str:
     return "0x" + bytes(raw).hex()
 
 
+def _calldata(raw: bytes | None, limit: int = 128) -> str:
+    """Calldata with the selector coloured apart from the arguments.
+
+    The two are different kinds of thing sharing one hex blob, and telling them apart by
+    counting eight characters is exactly the sort of thing the debugger should do for you.
+    `limit` counts hex digits of arguments; what is cut is reported, never dropped silently.
+    """
+    data = bytes(raw or b"")
+    if not data:
+        return "[dim]0x (empty)[/dim]"
+    selector = f"[bold yellow]0x{data[:4].hex()}[/bold yellow]"
+    args = data[4:].hex()
+    if not args:
+        return selector
+    shown, cut = args[:limit], (len(args) - limit + 1) // 2
+    tail = f" [dim]...(+{cut} bytes)[/dim]" if cut > 0 else ""
+    return f"{selector}[magenta]{shown}[/magenta]{tail}"
+
+
 def _short(raw: bytes | None, keep: int = 4) -> str:
     text = _addr(raw)
     if len(text) <= 2 + keep * 2 + 2:
@@ -1104,9 +1123,7 @@ class CommandProcessor:
         for key in ("address", "code_address", "sender"):
             result.add(f"[cyan]{key:<14}[/cyan] {_addr(info[key])}")
         result.add(f"[cyan]{'value':<14}[/cyan] {_wei(info['value'])}")
-        result.add(
-            f"[cyan]{'calldata':<14}[/cyan] 0x{bytes(info['calldata']).hex()[:128]}"
-        )
+        result.add(f"[cyan]{'calldata':<14}[/cyan] {_calldata(info['calldata'])}")
         if info["internal"]:
             result.add(
                 f"[cyan]{'internal':<14}[/cyan] "
@@ -1597,7 +1614,7 @@ HELP_SUMMARY = """
   [cyan]disas[/cyan]semble            disassembly around the pc
   [cyan]copy[/cyan] [CMD]                  put a command's output on the system clipboard
   [cyan]i[/cyan]nfo TOPIC             registers, breakpoints, frame, args, locals,
-                         storage, gas, logs, sources, functions
+                         storage, gas, logs, sources, functions [dim](help info)[/dim]
 
 [bold]Mutation[/bold]
   [cyan]set var[/cyan] X = V          write storage through Solidity: [dim]set var balances[a] = 5 ether[/dim]
@@ -1630,10 +1647,30 @@ HELP_SUMMARY = """
   A pane you scroll stays where you left it; scroll back, or click the marker in
   its border, to have it follow execution again.
 
-[dim]help <topic> for detail. topics: breakpoints, print, memory, mutation, assembly, cheatcodes, foundry, gas, locals[/dim]
+[dim]help <topic> for detail. topics: breakpoints, print, memory, mutation, assembly, cheatcodes, foundry, gas, locals, info[/dim]
 """
 
 HELP_TOPICS = {
+    "info": """
+[bold]info TOPIC[/bold]
+  info registers         pc, opcode, gas, depth, stack height, addresses, static, step
+                         [dim]abbreviated `info r`[/dim]
+  info frame             the EVM frame: depth, kind, artifact, gas, address,
+                         code_address, sender, value, calldata, internal call stack
+                         [dim]calldata is coloured selector then arguments[/dim]
+  info args              the arguments of the frame you are in, named and decoded
+                         [dim]an internal frame reports its own parameters, not calldata[/dim]
+  info locals            the frame's locals; see [cyan]help locals[/cyan]
+  info storage [C]       every state variable of C (default: this contract), decoded
+                         from the layout, each marked warm or cold
+  info gas               limit/used/remaining/refund plus a per-line and per-opcode
+                         profile; see [cyan]help gas[/cyan]
+  info logs              events emitted so far in this frame, named against the ABI
+  info breakpoints       breakpoints and watchpoints, with hit counts
+                         [dim]abbreviated `info b`; `info watchpoints` is the same list[/dim]
+  info sources           the compiled sources and their file ids
+  info functions [PAT]   every function, with visibility and line, filtered by PAT
+""",
     "breakpoints": """
 [bold]Breakpoints[/bold]
   b Bank.sol:46             a source line (snapped forward to the next line with code)
@@ -1663,6 +1700,12 @@ snapshot that is thrown away afterwards, so it cannot disturb the run.
   p keccak256(abi.encode(owner))     any builtin
   p address(this).balance
   p $storage[1] + 1 ether            mix in low-level convenience variables
+
+`msg.*` reads the frame you are stopped in, `msg.data` and `msg.sig` included: they carry
+the frame's own calldata, not the call the debugger makes to evaluate the expression.
+
+  p msg.sig                          the selector that got you here
+  p abi.decode(msg.data[4:], (uint256))   arguments straight out of calldata
 
 Results enter the value history as $1, $2 ... and can be reused in later expressions.
 `call EXPR` is the same but KEEPS the effects, which is how you mutate through Solidity.

@@ -18,10 +18,12 @@ import os
 import re
 
 import pytest
+from eth_abi import encode as abi_encode
+from eth_utils import function_signature_to_4byte_selector
 from harness import bank_fixture, project
 
 from sevm.breakpoints import BreakpointSet
-from sevm.commands import CommandProcessor, CommandResult
+from sevm.commands import CommandProcessor, CommandResult, _calldata
 from sevm.compile import _strip_metadata
 from sevm.decode import (
     StorageDecoder,
@@ -31,7 +33,7 @@ from sevm.decode import (
     mapping_slot,
 )
 from sevm.disasm import CALL_OPCODES, OPCODES, Disassembly, disassemble
-from sevm.evaluate import Evaluator, make_eval_hook
+from sevm.evaluate import Evaluator, make_eval_hook, rewrite_msg
 from sevm.frames import FunctionIndex
 from sevm.session import (
     DebugSession,
@@ -102,6 +104,27 @@ def deposit_debugger(bank):
 
     dbg = Debugger(proj_, txfn)
     yield dbg
+    dbg.close()
+
+
+@pytest.fixture
+def forward_debugger(bank):
+    """Stopped in `forward(address,uint256)`, a frame whose calldata carries arguments.
+
+    Yields the debugger and the calldata the transaction was sent with, computed here
+    rather than read back off the frame so the assertions have something to compare to.
+    """
+    w3, proj_, contract, callee, _alice = bank
+    calldata = function_signature_to_4byte_selector(
+        "forward(address,uint256)"
+    ) + abi_encode(["address", "uint256"], [callee.address, 21])
+
+    def txfn():
+        tx = contract.functions.forward(callee.address, 21).transact({"gas": 300_000})
+        w3.eth.wait_for_transaction_receipt(tx)
+
+    dbg = Debugger(proj_, txfn)
+    yield dbg, calldata
     dbg.close()
 
 
@@ -683,6 +706,8 @@ def test_stop_on_panic(bank):
         ("accounts[owner].frozen", "bool"),
         ("msg.value", "uint256"),
         ("msg.sender", "address"),
+        ("msg.data", "bytes memory"),
+        ("msg.sig", "bytes4"),
         ("address(this).balance", "uint256"),
         ("keccak256(abi.encode(owner))", "bytes32"),
         ("owner == msg.sender", "bool"),
@@ -714,6 +739,47 @@ def test_evaluate_msg_context_matches_the_paused_frame(deposit_debugger, bank):
     _w3, _proj, _contract, _callee, alice = bank
     result = deposit_debugger.session.inspect("evaluate", "msg.sender")
     assert result.value.lower() == alice.address.lower()
+
+
+def test_evaluate_msg_data_is_the_frames_calldata(forward_debugger):
+    """Read directly, msg.data would report the debugger's own eval call."""
+    dbg, calldata = forward_debugger
+    assert dbg.session.inspect("evaluate", "msg.data").value == calldata
+    assert dbg.session.inspect("evaluate", "msg.sig").value == calldata[:4]
+    assert dbg.session.inspect("evaluate", "msg.data.length").value == len(calldata)
+
+
+def test_evaluate_msg_data_slices_like_calldata(forward_debugger):
+    """`bytes memory` would compile but refuse the slice, which is the point of it."""
+    dbg, _calldata = forward_debugger
+    assert (
+        dbg.session.inspect("evaluate", "abi.decode(msg.data[36:], (uint256))").value
+        == 21
+    )
+
+
+def test_evaluate_msg_data_rides_alongside_a_local(deposit_debugger):
+    dbg = deposit_debugger
+    dbg.run("b Bank.sol:46")
+    dbg.run("c")
+    # deposit() takes no arguments, so its calldata is the bare selector.
+    result = dbg.session.inspect("evaluate", "msg.data.length + amount")
+    assert result.value == 4 + 2 * 10**18
+
+
+def test_evaluate_leaves_msg_data_in_a_string_literal_alone(deposit_debugger):
+    result = deposit_debugger.session.inspect("evaluate", 'bytes("msg.data").length')
+    assert result.value == len("msg.data")
+
+
+def test_rewrite_msg_rewrites_code_and_reports_what_it_bound():
+    assert rewrite_msg("msg.data.length") == ("__sevm_msg_data.length", ["data"])
+    assert rewrite_msg("msg . sig") == ("__sevm_msg_sig", ["sig"])
+    # Order is the order of first appearance, which is the order they are encoded in.
+    assert rewrite_msg("msg.sig == bytes4(msg.data)")[1] == ["sig", "data"]
+    assert rewrite_msg("msg.sender") == ("msg.sender", [])
+    assert rewrite_msg('bytes("msg.data")') == ('bytes("msg.data")', [])
+    assert rewrite_msg("mymsg.data") == ("mymsg.data", [])
 
 
 def test_evaluate_does_not_disturb_the_run(deposit_debugger):
@@ -890,6 +956,20 @@ def test_command_info_topics(deposit_debugger):
         assert result.ok, f"info {topic}: {result.error}"
         assert result.lines, f"info {topic} produced nothing"
     assert not dbg.run("info nonsense").ok
+
+
+def test_info_frame_colours_the_selector_apart_from_the_arguments(forward_debugger):
+    dbg, calldata = forward_debugger
+    line = next(ln for ln in dbg.run("info frame").lines if "calldata" in ln)
+    assert f"[bold yellow]0x{calldata[:4].hex()}[/bold yellow]" in line
+    assert f"[magenta]{calldata[4:].hex()}[/magenta]" in line
+
+
+def test_calldata_reports_what_it_truncates():
+    assert "empty" in _calldata(b"")
+    assert _calldata(b"\xd0\xe3\x0d\xb0") == "[bold yellow]0xd0e30db0[/bold yellow]"
+    text = _calldata(b"\x00\x00\x40\xc3" + b"\xab" * 100)
+    assert "(+36 bytes)" in text
 
 
 def test_info_locals_names_and_values_the_frames_locals(deposit_debugger):
