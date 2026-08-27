@@ -1622,12 +1622,13 @@ HELP_SUMMARY = """
   $pc $gas $gasused $depth $sp $step $stack[N] $mem[0x40] $storage[1] $1 $2 ...
 
 [bold]In the TUI[/bold]
-  [cyan]f4[/cyan]                    return to the current debug state
   [cyan]f2[/cyan]                    hide the low-level panes; SOURCE takes the space
   [cyan]copy[/cyan] [dim]CMD[/dim]              run CMD and put its output on the system clipboard
   [cyan]copy[/cyan]                  the last output again, untruncated
 
   STACK labels the slots that hold this frame's locals.
+  A pane you scroll stays where you left it; scroll back, or click the marker in
+  its border, to have it follow execution again.
 
 [dim]help <topic> for detail. topics: breakpoints, print, memory, mutation, assembly, cheatcodes, foundry, gas, locals[/dim]
 """

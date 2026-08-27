@@ -31,7 +31,6 @@ from .widgets import (
     CommandLog,
     DisassemblyPane,
     MemoryPane,
-    Pane,
     SourcePane,
     StackPane,
     StatusBar,
@@ -77,7 +76,6 @@ class SevmApp(App):
         Binding("f9", "toggle_breakpoint", "breakpoint", show=True),
         Binding("f2", "toggle_lowlevel", "low level", show=True),
         Binding("f1", "cmd('help')", "help", show=True),
-        Binding("f4", "sync_panes", "back to pc", show=False),
         # Ctrl+C is two conventions at once: copy in a terminal, interrupt in a
         # debugger. A live selection decides, the way every editor resolves it.
         # `super+c` is Cmd+C, so the platform's own copy chord works where the terminal
@@ -260,33 +258,6 @@ class SevmApp(App):
             if self._history_pos >= len(self._input_history)
             else self._input_history[self._history_pos]
         )
-
-    SCROLLABLE_PANES = (
-        "#source",
-        "#disasm",
-        "#stack",
-        "#memory",
-        "#callstack",
-        "#variables",
-        "#storage",
-        "#log",
-    )
-
-    def _visible_panes(self) -> list[Pane]:
-        panes = []
-        for selector in self.SCROLLABLE_PANES:
-            try:
-                pane = self.query_one(selector, Pane)
-            except Exception:
-                continue
-            if pane.display and pane.region:
-                panes.append(pane)
-        return panes
-
-    def action_sync_panes(self) -> None:
-        """Put every pane back on the current debug state."""
-        for pane in self._visible_panes():
-            pane.scroll_to_anchor()
 
     def action_clear_log(self) -> None:
         self.query_one("#log", CommandLog).clear()

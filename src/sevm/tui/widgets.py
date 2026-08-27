@@ -312,6 +312,12 @@ class Pane(VerticalScroll):
 
     TITLE = ""
     ANCHOR_HINT = "back to pc"
+    # SOURCE and DISASSEMBLY exist to follow the pc, so they re-centre at every stop no
+    # matter where you left them. Every other pane holds the position you scrolled it
+    # to: a pane you scrolled is a pane you are reading, and yanking it back to the top
+    # on the next `next`/`step` throws that reading away. Scroll it back onto the anchor
+    # (or click the border marker) and it follows again.
+    FOLLOWS_PC = False
     # Panes are scrolled with the wheel, so they never take focus: a click that stole it
     # from the prompt would send your next keystrokes nowhere.
     can_focus = False
@@ -323,6 +329,8 @@ class Pane(VerticalScroll):
         self._rendered: Any = ""
         self._anchor_line: int | None = None  # content row to keep in view
         self._marker = ""
+        self._user_scrolled = False
+        self._anchoring = False  # true while *we* are the ones scrolling
 
     def compose(self) -> ComposeResult:
         yield self._body
@@ -343,6 +351,7 @@ class Pane(VerticalScroll):
 
     def clear(self, message: str = "") -> None:
         self._anchor_line = None
+        self._user_scrolled = False
         self._rendered = Content.styled(message or "", "dim")
         self._body.update(self._rendered)
         self._update_anchor_marker()
@@ -366,20 +375,34 @@ class Pane(VerticalScroll):
     def anchor_at(self, line: int | None, centre: bool = True) -> None:
         """Record the row that represents the current debug state, and scroll to it."""
         self._anchor_line = line
-        if line is None:
+        if line is None or (self._user_scrolled and not self.FOLLOWS_PC):
             self._update_anchor_marker()
             return
         self.scroll_to_anchor()
+
+    def anchor_target(self) -> int:
+        """The scroll position that puts the anchor row where the pane wants it."""
+        return max(0, (self._anchor_line or 0) - self.visible_rows // 2)
 
     def scroll_to_anchor(self) -> None:
         if self._anchor_line is None:
             self._update_anchor_marker()
             return
-        target = max(0, self._anchor_line - self.visible_rows // 2)
-        # `animate=False` matters: an animated scroll lands a frame later, and the
-        # marker would flicker on for that frame every time the debugger steps.
-        self.scroll_to(y=target, animate=False)
+        self._scroll_ourselves(self.anchor_target())
         self.call_after_refresh(self._update_anchor_marker)
+
+    def _scroll_ourselves(self, y: int) -> None:
+        """Scroll without it counting as the user having scrolled."""
+        self._user_scrolled = False
+        self._anchoring = True
+        try:
+            # `animate=False` matters twice over: an animated scroll lands a frame
+            # later, so the marker would flicker on for that frame every time the
+            # debugger steps, and the move would land outside this guard and read as
+            # the user's.
+            self.scroll_to(y=y, animate=False)
+        finally:
+            self._anchoring = False
 
     @property
     def at_anchor(self) -> bool:
@@ -401,6 +424,11 @@ class Pane(VerticalScroll):
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
+        if not self._anchoring and int(old_value) != int(new_value):
+            # Watching the scroll position rather than the wheel catches every way a
+            # pane moves by hand: wheel, scrollbar drag, scrollbar page click. Landing
+            # back on the anchor is how you say "follow along again".
+            self._user_scrolled = int(new_value) != self.anchor_target()
         self._update_anchor_marker()
 
 
@@ -421,7 +449,7 @@ class SourcePane(Pane):
     """
 
     TITLE = "SOURCE"
-    ANCHOR_HINT = "f4 back to pc"
+    FOLLOWS_PC = True
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -617,7 +645,7 @@ class StoragePane(Pane):
 
 class DisassemblyPane(Pane):
     TITLE = "DISASSEMBLY"
-    ANCHOR_HINT = "f4 back to pc"
+    FOLLOWS_PC = True
 
     def render_disassembly(
         self, rows: Sequence[dict], snap: FrameSnapshot | None
@@ -865,12 +893,31 @@ class CommandLog(Pane):
         del self._lines[: max(0, len(self._lines) - self.MAX_LINES)]
         self.show(_page(self._lines))
         self._anchor_line = max(0, len(self._lines) - 1)
+        if self._user_scrolled:
+            # Scrolled back to read something: new output must not yank you to the end,
+            # any more than it does in a terminal's scrollback.
+            self._update_anchor_marker()
+        else:
+            self.scroll_to_anchor()
+
+    def anchor_target(self) -> int:
+        # The newest line means the bottom, not a centred row.
+        return self.max_scroll_y
+
+    def scroll_to_anchor(self) -> None:
+        # `scroll_end` rather than the base scroll: the end is only known once the new
+        # content has laid out, which is why it defers to after the refresh. The move
+        # therefore lands outside `_anchoring`, and is recognised as ours by arriving
+        # exactly on `anchor_target`.
+        self._user_scrolled = False
         self.scroll_end(animate=False)
+        self.call_after_refresh(self._update_anchor_marker)
 
     def clear(self, message: str = "") -> None:
         self._lines = []
         self.show(Content.styled(message or "", "dim"))
         self._anchor_line = None
+        self._user_scrolled = False
         self._update_anchor_marker()
 
     @property

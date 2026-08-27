@@ -1958,16 +1958,92 @@ def test_panes_scroll_and_flag_when_off_the_current_state(bank):
         source.scroll_to(y=0, animate=False)
         await pilot.pause()
         scrolled = (source.at_anchor, source.border_subtitle)
-        app.action_sync_panes()
+        source.action_jump_to_anchor()
         await pilot.pause()
         return at_stop, scrolled, (source.at_anchor, source.border_subtitle)
 
     at_stop, scrolled, resynced = run_tui(session, app, size, body)
     assert at_stop[0] is True and not (at_stop[1] or "")
-    assert scrolled[0] is False and "f4 back to pc" in scrolled[1], (
+    assert scrolled[0] is False and "back to pc" in scrolled[1], (
         "scrolling away must say so"
     )
     assert resynced[0] is True and not (resynced[1] or "")
+
+
+def test_source_follows_the_pc_even_after_you_scroll_it(bank):
+    """SOURCE and DISASSEMBLY exist to follow execution; stepping re-centres them."""
+    session, proj_, app, size = tui_app(bank)
+
+    async def body(pilot):
+        await stop_at_credit(app, pilot, proj_)
+        source = app.query_one("#source")
+        source.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        away = (source.scroll_offset.y, source.at_anchor)
+        app.run_command("next")
+        await asyncio.sleep(2.0)
+        await pilot.pause()
+        return away, (source.scroll_offset.y, source.at_anchor)
+
+    away, after = run_tui(session, app, size, body)
+    assert away[1] is False, "the test must first scroll the pane off the stop"
+    assert after[1] is True, "SOURCE must come back to the pc on the next step"
+    assert after[0] != away[0]
+
+
+def test_a_scrolled_pane_stays_put_across_a_step(bank):
+    """Scrolling a pane is reading it; stepping must not throw that reading away."""
+    session, proj_, app, size = tui_app(bank)
+
+    async def body(pilot):
+        await stop_at_credit(app, pilot, proj_)
+        memory = app.query_one("#memory")
+        memory.scroll_to(y=3, animate=False)
+        await pilot.pause()
+        away = memory.scroll_offset.y
+        app.run_command("next")
+        await asyncio.sleep(2.0)
+        await pilot.pause()
+        stayed = memory.scroll_offset.y
+        # Scrolling back onto the current state opts back into following it.
+        memory.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        app.run_command("next")
+        await asyncio.sleep(2.0)
+        await pilot.pause()
+        return away, stayed, memory.scroll_offset.y
+
+    away, stayed, following = run_tui(session, app, size, body)
+    assert away > 0, "the test must first scroll MEMORY away from the top"
+    assert stayed == away, f"MEMORY jumped from {away} back to {stayed} on `next`"
+    assert following == 0
+
+
+def test_the_log_stops_following_while_you_read_back(bank):
+    """New output must not yank the log to the end while you are reading scrollback."""
+    session, proj_, app, size = tui_app(bank)
+
+    async def body(pilot):
+        await stop_at_credit(app, pilot, proj_)
+        log = app.query_one("#log")
+        for n in range(60):
+            log.write(f"line {n}")
+        await pilot.pause()
+        at_end = log.scroll_offset.y
+        log.scroll_to(y=at_end - 5, animate=False)
+        await pilot.pause()
+        away = log.scroll_offset.y
+        log.write("more output")
+        await pilot.pause()
+        held = log.scroll_offset.y
+        log.action_jump_to_anchor()
+        await pilot.pause()
+        return at_end, away, held, log.scroll_offset.y, log.max_scroll_y
+
+    at_end, away, held, resynced, end = run_tui(session, app, size, body)
+    assert at_end > 0 and away == at_end - 5
+    assert held == away, "writing to the log must not move a log you scrolled back"
+    assert resynced == end, "the marker must put the log back on the newest line"
 
 
 def test_source_pane_holds_the_whole_file(bank):
