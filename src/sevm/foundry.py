@@ -164,6 +164,8 @@ def compile_test(
     evm_version: str | None = None,
     install_missing: bool = True,
     on_notice: Callable[[str], None] | None = None,
+    use_cache: bool = True,
+    force: bool = False,
 ) -> Project:
     return compile_foundry_project(
         root,
@@ -173,6 +175,8 @@ def compile_test(
         install_missing=install_missing,
         ensure_forge_std=True,
         on_notice=on_notice,
+        use_cache=use_cache,
+        force=force,
     )
 
 

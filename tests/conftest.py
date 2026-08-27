@@ -35,6 +35,17 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip)
 
 
+@pytest.fixture(autouse=True)
+def isolated_cache(tmp_path, monkeypatch):
+    """Point the user-level cache at tmp for every test.
+
+    Without this a test would read the developer's real `~/.cache/sevm/solc-versions.json`
+    and quietly ignore its own mocked release list, and the suite would leave entries
+    behind on the machine that ran it.
+    """
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+
+
 def _git(*args: str, cwd: str) -> None:
     subprocess.run(
         ["git", *args],

@@ -21,6 +21,7 @@ import solcx
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
+from . import cache
 from .libs import (
     Dependency,
     LibError,
@@ -377,7 +378,10 @@ def resolve_solc_version(
     # Foundry-exact: consider every installable release and pick the highest match, then
     # install it if missing. Fall back to the installed set when offline.
     try:
-        installable = solcx.get_installable_solc_versions()
+        installable = [
+            Version(v)
+            for v in cache.installable_versions(solcx.get_installable_solc_versions)
+        ]
     except Exception:
         installable = []
     selected = _select_from(constraints, installable)
@@ -684,8 +688,9 @@ def resolve_dependencies(
     install_missing: bool = True,
     ensure: Sequence[tuple[str, str]] = (),
     on_notice: Callable[[str], None] | None = None,
-) -> tuple[dict[str, SourceFile], list[str], list[Dependency]]:
-    """Walk the imports, install what is missing, and return (extra sources, remappings, installed).
+) -> tuple[dict[str, SourceFile], list[str], list[Dependency], dict[str, list[str]]]:
+    """Walk the imports, install what is missing, and return (extra sources, remappings,
+    installed, import edges).
 
     `ensure` names (prefix, sample import) pairs to install even when nothing imports them
     yet, which is how a `.sol` target always ends up with a real forge-std.
@@ -735,7 +740,7 @@ def resolve_dependencies(
         key: SourceFile(key=key, abs_path=os.path.join(root, key), text=text)
         for key, text in closure.extra.items()
     }
-    return extra, remappings, installed
+    return extra, remappings, installed, closure.edges
 
 
 def _already_resolved(prefix: str, root: str, remappings: Sequence[str]) -> bool:
@@ -774,19 +779,24 @@ def compile_foundry_project(
     install_missing: bool = True,
     ensure_forge_std: bool = False,
     on_notice: Callable[[str], None] | None = None,
+    use_cache: bool = True,
+    force: bool = False,
 ) -> Project:
     """Compile a Foundry project (or a standalone directory) into a debuggable Project.
 
     Remappings come from foundry.toml + remappings.txt + the implicit `lib/` ones; anything
     still unresolved is installed from its real repository and remapped. New remappings are
     written to `<root>/remappings.txt` so `forge` resolves the project the same way.
+
+    Results are cached per compilation unit (see `cache.py`); `force` recompiles and
+    rewrites the entry, `use_cache=False` neither reads nor writes.
     """
     cfg = read_foundry_config(root)
     extra_files = [target_file] if target_file else []
     sources = _collect_project_sources(root, extra_files, source_dirs, cfg.libs)
 
     ensure = [(FORGE_STD, FORGE_STD_SAMPLE_IMPORT)] if ensure_forge_std else []
-    lib_sources, remappings, installed = resolve_dependencies(
+    lib_sources, remappings, installed, edges = resolve_dependencies(
         root,
         sources,
         cfg,
@@ -808,11 +818,82 @@ def compile_foundry_project(
     )
     ensure_solc(solc)
 
+    texts = {k: s.text for k, s in sources.items()}
+    store = cache.open_cache(root, use_cache)
+    settings = cache.settings_hash(
+        solc, optimize, evm_version or cfg.evm_version, remappings, _OUTPUT_SELECTION
+    )
+    hashes = cache.hash_sources(texts)
+    unit = cache.unit_hash(settings, hashes)
+
+    out = None if store is None or force else store.load(unit)
+    if out is not None:
+        if on_notice:
+            on_notice(f"cache hit ({len(texts)} sources)")
+    else:
+        out = _compile_unit(
+            texts,
+            solc=solc,
+            optimize=optimize,
+            evm_version=evm_version or cfg.evm_version,
+            remappings=remappings,
+            base=None if store is None or force else store.base_for(settings, set(texts)),
+            hashes=hashes,
+            edges=edges,
+            on_notice=on_notice,
+        )
+        if store is not None:
+            store.store(unit, out, settings, hashes)
+
+    return _build_project(out, sources, solc, optimize, remappings=remappings)
+
+
+def _cacheable(out: dict) -> dict:
+    """The parts of solc's output the cache and `_build_project` need."""
+    return {"sources": out.get("sources", {}), "contracts": out.get("contracts", {})}
+
+
+def _partial_selection(dirty: Sequence[str]) -> dict:
+    """Ask solc for output on the dirty sources only; everything else is reused."""
+    return {key: dict(_OUTPUT_SELECTION["*"]) for key in sorted(dirty)}
+
+
+def _compile_unit(
+    texts: dict[str, str],
+    *,
+    solc: str,
+    optimize: bool,
+    evm_version: str | None,
+    remappings: Sequence[str],
+    base: tuple[dict, dict[str, str]] | None,
+    hashes: dict[str, str],
+    edges: dict[str, list[str]],
+    on_notice: Callable[[str], None] | None,
+) -> dict:
+    """Run solc for this unit, narrowing the request to what changed when possible."""
+    if base is not None:
+        base_doc, base_hashes = base
+        dirty = cache.dirty_sources(hashes, base_hashes, edges)
+        if cache.worth_partial(dirty, len(texts)):
+            out = compile_standard(
+                texts,
+                solc_version=solc,
+                optimize=optimize,
+                evm_version=evm_version,
+                remappings=remappings,
+                output_selection=_partial_selection(sorted(dirty)),
+            )
+            merged = cache.merge_output(base_doc, out, dirty)
+            if merged is not None:
+                if on_notice:
+                    on_notice(f"recompiled {len(dirty)} of {len(texts)} sources")
+                return merged
+
     out = compile_standard(
-        {k: s.text for k, s in sources.items()},
+        texts,
         solc_version=solc,
         optimize=optimize,
-        evm_version=evm_version or cfg.evm_version,
+        evm_version=evm_version,
         remappings=remappings,
     )
-    return _build_project(out, sources, solc, optimize, remappings=remappings)
+    return _cacheable(out)
