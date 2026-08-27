@@ -286,10 +286,10 @@ class BreakpointSet:
                     if pc in bp.pcs:
                         hits.append(bp)
                 else:  # line, function
-                    # A contract-scoped breakpoint fires only in that contract's code. If
-                    # the running code is unrecognised (contract_name is None, e.g. a
-                    # constructor's creation code), a scoped breakpoint must NOT fire, or a
-                    # coincidental pc match in another same-file contract triggers it.
+                    # Contract-scoped breakpoint fires only in that contract. If
+                    # contract_name is None (unrecognised code, e.g. constructor creation
+                    # code), it must not fire, or a coincidental pc match in another
+                    # same-file contract triggers it.
                     if bp.contract and bp.contract != contract_name:
                         continue
                     if pc in bp.pcs:

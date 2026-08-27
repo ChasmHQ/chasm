@@ -1,10 +1,9 @@
 """The fullscreen TUI.
 
-Threading, which is the only genuinely delicate part: `continue` and `next` block until
-the VM stops, so every command runs on a Textual thread worker. The worker never touches
-a widget; it posts a message and the app's message handler does the rendering on the
-event loop. That is the documented Textual pattern and it is also the only one that keeps
-the debugger responsive while the EVM is running.
+`continue` and `next` block until the VM stops, so every command runs on a Textual
+thread worker. The worker never touches a widget; it posts a message and the app's
+message handler renders on the event loop. Standard Textual pattern, and the only one
+that keeps the UI responsive while the EVM runs.
 """
 
 from __future__ import annotations
@@ -113,8 +112,7 @@ class SevmApp(App):
         self._pending_startup: list[str] = []
         self.show_lowlevel = True
         self.busy = False
-        # Wear the terminal's own colours. Textual's themes do not persist across runs
-        # and a debugger has no business overriding a palette the user already chose.
+        # Wear the terminal's own colours; Textual themes don't persist across runs anyway.
         self.theme = "ansi-dark"
         self._input_history: list[str] = []
         self._history_pos = 0
@@ -240,9 +238,8 @@ class SevmApp(App):
     def _recall(self, text: str) -> None:
         """Put a history entry in the prompt with the cursor after it.
 
-        Setting `value` leaves the cursor at column zero, so the recalled command sits to
-        the right of it and typing inserts at the front. Every shell puts you at the end,
-        ready to edit.
+        Setting `value` alone leaves the cursor at column zero; every shell puts you at
+        the end, ready to edit.
         """
         prompt = self.query_one("#prompt", Input)
         prompt.value = text
@@ -450,15 +447,12 @@ class SevmApp(App):
     # ==================================================================
 
     def on_text_selected(self, event: events.TextSelected) -> None:
-        """Copy the moment a drag ends, so no key is needed at all.
+        """Copy on drag release, no key needed.
 
-        This matters most on macOS, where Cmd+C is usually swallowed by the terminal
-        before any full-screen program sees it. Copying on release sidesteps the question
-        of which chord arrives. A plain click selects nothing and is left alone, so the
-        clipboard is only ever replaced by a real drag.
-
-        The highlight is deliberately left up: it is the only feedback that says what
-        went to the clipboard, and Textual clears it on the next click anyway.
+        Sidesteps macOS terminals swallowing Cmd+C before a full-screen program sees it.
+        A plain click selects nothing, so only a real drag replaces the clipboard. The
+        highlight is left up as the only feedback of what was copied; Textual clears it
+        on the next click.
         """
         self.action_copy_selection()
 
@@ -477,10 +471,9 @@ class SevmApp(App):
     def copy_to_clipboard(self, text: str) -> None:
         """Copy through the platform's own tool, falling back to Textual's OSC 52.
 
-        Textual copies by emitting OSC 52, which has to survive every layer between here
-        and the window manager: tmux drops it unless `set-clipboard` is on, and some
-        terminals ignore it outright. Piping to `pbcopy`/`wl-copy`/`xclip` either works or
-        reports why, and the text lands where Cmd+V will find it.
+        Textual's OSC 52 has to survive every layer to the window manager: tmux drops it
+        unless `set-clipboard` is on, and some terminals ignore it outright. Piping to
+        `pbcopy`/`wl-copy`/`xclip` either works or reports why.
         """
         what = describe_amount(text)
         try:

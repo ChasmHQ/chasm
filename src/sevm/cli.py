@@ -19,7 +19,7 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
-from .compile import CompileError, compile_project
+from .compile import CompileError, compile_foundry_project, find_foundry_root
 from .evaluate import Evaluator, make_eval_hook
 from .session import DebugSession, Finished, StepMode
 
@@ -87,8 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--no-mouse",
         action="store_true",
-        help="disable mouse reporting, handing text selection back to the "
-        "terminal (drag as you would in any other program).",
+        help="disable mouse reporting, handing text selection back to the terminal",
     )
     run.add_argument(
         "-x",
@@ -116,7 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
         "-y",
         "--yes",
         action="store_true",
-        help="(.sol tests) assume yes: create a default foundry.toml without prompting",
+        help="assume yes: write foundry.toml and install missing libraries without prompting",
+    )
+    run.add_argument(
+        "--no-install",
+        action="store_true",
+        help="never fetch a library; fail if an import is not already on disk",
     )
 
     compile_cmd = sub.add_parser(
@@ -124,6 +128,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compile_cmd.add_argument("contracts", help="directory or file of .sol sources")
     compile_cmd.add_argument("--solc", default=None)
+    compile_cmd.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="assume yes: write foundry.toml and install missing libraries without prompting",
+    )
+    compile_cmd.add_argument(
+        "--no-install",
+        action="store_true",
+        help="never fetch a library; fail if an import is not already on disk",
+    )
 
     return parser
 
@@ -131,12 +146,34 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_compile(args: argparse.Namespace) -> int:
     from rich.console import Console
 
+    from .foundry import prepare_project
+
     console = Console()
-    kwargs = {"solc_version": args.solc} if args.solc else {}
+    target = os.path.abspath(args.contracts)
+    if not os.path.exists(target):
+        console.print(f"[bold red]no such path:[/bold red] {args.contracts}")
+        return 1
+
+    base = target if os.path.isdir(target) else os.path.dirname(target)
+    prepared = prepare_project(
+        base,
+        assume_yes=args.yes,
+        allow_install=not args.no_install,
+        needs_forge_std=False,
+    )
+    root = prepared.root
+    source_dirs = [base] if os.path.isdir(target) and base != root else None
     try:
-        project = compile_project([args.contracts], **kwargs)
+        project = compile_foundry_project(
+            root,
+            target_file=None if os.path.isdir(target) else target,
+            source_dirs=source_dirs,
+            solc_version=args.solc,
+            install_missing=prepared.may_install,
+            on_notice=lambda msg: console.print(f"[dim]{msg}[/dim]", highlight=False),
+        )
     except CompileError as exc:
-        console.print(f"[bold red]compile failed:[/bold red] {exc}")
+        console.print(f"[bold red]compile failed:[/bold red] {exc}", highlight=False)
         return 1
     console.print(f"[green]solc {project.solc_version}[/green], optimizer off")
     for key, src in project.sources.items():
@@ -163,7 +200,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     # Everything after the script is forwarded to it verbatim, so a sevm option placed
-    # there silently does nothing. That is a confusing failure; name it.
+    # there silently does nothing; name that failure instead of leaving it confusing.
     stray = [
         a
         for a in args.args
@@ -179,6 +216,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "match",
             "match-contract",
             "yes",
+            "no-install",
         }
     ]
     if stray:
@@ -194,7 +232,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     return _run_python(console, args)
 
 
+def _warn_if_declined(console: Any, prepared: Any) -> None:
+    """Say why nothing was installed. Without a terminal the prompt cannot even be shown."""
+    if not prepared.declined or not prepared.missing:
+        return
+    console.print(
+        f"[yellow]note:[/yellow] not installing {', '.join(prepared.missing)}. "
+        "Pass -y to allow it.",
+        highlight=False,
+    )
+
+
 def _run_python(console: Any, args: argparse.Namespace) -> int:
+    from .foundry import prepare_project
+
     script = args.script
     contracts = _find_contracts_dir(script, args.contracts)
     if not os.path.isdir(contracts):
@@ -204,12 +255,34 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
         )
         return 1
 
-    console.print(f"[dim]compiling {contracts} ...[/dim]")
-    kwargs = {"solc_version": args.solc} if args.solc else {}
+    # The contracts keep their own directory as the compile root unless they sit inside a
+    # Foundry project, whose foundry.toml/remappings/lib then apply as they do to a test.
+    contracts = os.path.abspath(contracts)
+    root = find_foundry_root(contracts) or contracts
+    source_dirs = [contracts] if os.path.abspath(root) != contracts else None
+    prepared = prepare_project(
+        contracts,
+        assume_yes=args.yes,
+        allow_install=not args.no_install,
+        # A web3 driver only needs forge-std if its contracts import it, and then the
+        # import scan installs it; do not fetch it for contracts that never mention it.
+        needs_forge_std=False,
+        source_dirs=source_dirs,
+    )
+
+    console.print(f"[dim]compiling {contracts} ...[/dim]", highlight=False)
+    _warn_if_declined(console, prepared)
     try:
-        project = compile_project([contracts], optimize=args.optimize, **kwargs)
+        project = compile_foundry_project(
+            prepared.root,
+            source_dirs=source_dirs,
+            solc_version=args.solc,
+            optimize=args.optimize,
+            install_missing=prepared.may_install,
+            on_notice=lambda msg: console.print(f"[dim]{msg}[/dim]", highlight=False),
+        )
     except CompileError as exc:
-        console.print(f"[bold red]compile failed:[/bold red] {exc}")
+        console.print(f"[bold red]compile failed:[/bold red] {exc}", highlight=False)
         return 1
     if args.optimize:
         console.print(
@@ -218,10 +291,11 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
         )
     console.print(
         f"[dim]{len(project.artifacts)} contract(s): "
-        f"{', '.join(a.name for a in project.artifacts.values())}[/dim]"
+        f"{', '.join(a.name for a in project.artifacts.values())}[/dim]",
+        highlight=False,
     )
     target = _run_script(script, args.args)
-    return _debug(console, project, target, args, foundry_mode=False)
+    return _debug(console, project, target, args, foundry_mode=True)
 
 
 def _run_foundry(console: Any, args: argparse.Namespace) -> int:
@@ -229,18 +303,27 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
         compile_test,
         discover_tests,
         make_tests_driver,
-        resolve_project,
+        prepare_project,
         select_tests,
     )
 
     sol = args.script
-    root, existing = resolve_project(sol, assume_yes=args.yes)
-    kind = "foundry project" if existing else "standalone test"
-    console.print(f"[dim]{kind} at {root}; compiling ...[/dim]")
+    prepared = prepare_project(
+        sol, assume_yes=args.yes, allow_install=not args.no_install
+    )
+    kind = "foundry project" if prepared.existing else "standalone test"
+    console.print(f"[dim]{kind} at {prepared.root}; compiling ...[/dim]", highlight=False)
+    _warn_if_declined(console, prepared)
     try:
-        project = compile_test(sol, root, solc_version=args.solc)
+        project = compile_test(
+            sol,
+            prepared.root,
+            solc_version=args.solc,
+            install_missing=prepared.may_install,
+            on_notice=lambda msg: console.print(f"[dim]{msg}[/dim]", highlight=False),
+        )
     except CompileError as exc:
-        console.print(f"[bold red]compile failed:[/bold red] {exc}")
+        console.print(f"[bold red]compile failed:[/bold red] {exc}", highlight=False)
         return 1
 
     targets = discover_tests(project)
@@ -260,7 +343,9 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
         )
         return 1
     names = ", ".join(f"{t.contract}.{t.function}" for t in selected)
-    console.print(f"[dim]debugging {len(selected)} test(s): {names}[/dim]")
+    console.print(
+        f"[dim]debugging {len(selected)} test(s): {names}[/dim]", highlight=False
+    )
     driver = make_tests_driver(project, selected)
     return _debug(
         console,
@@ -356,9 +441,9 @@ def _debug(
     app = SevmApp(
         session, evaluator, first_event=first, startup_commands=startup_commands
     )
-    # Mouse on: every pane renders Textual `Content`, which the framework knows how to
-    # select, highlight and copy. Drag to select, ctrl+c to copy. `--no-mouse` hands
-    # selection back to the terminal for anyone who prefers it that way.
+    # Mouse on: every pane renders Textual `Content`, which the framework can
+    # select/highlight/copy (drag to select, ctrl+c to copy). `--no-mouse` hands
+    # selection back to the terminal.
     app.run(mouse=not args.no_mouse)
     return 0
 

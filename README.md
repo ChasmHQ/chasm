@@ -45,30 +45,133 @@ worker thread, and stops the first time execution enters code it recognises (mat
 bytecode). The first stop is usually the constructor; use `-x c` to skip past it, or set a
 breakpoint first with `-x 'b Bank.sol:46' -x c`.
 
+Contracts here get the same treatment as a Foundry test: an import of
+`forge-std/console.sol` or `@openzeppelin/contracts/...` is installed and remapped, a
+`foundry.toml` above them is honoured, and `vm.*` cheatcodes work at the prompt.
+
 ## Foundry tests and cheatcodes
 
-`sevm run` also debugs a Foundry test, dispatched by extension: a `.py` argument is the
-web3 driver above; a `.sol` argument is a Foundry test.
+`sevm run` dispatches on the extension: a `.py` argument is the web3 driver above, a `.sol`
+argument is a Foundry test.
 
 ```bash
-sevm run path/to/Counter.t.sol                 # fullscreen TUI, first test function
-sevm run --console -m testDeposit MyTest.t.sol # plain text, pick a test by name
+sevm run test/Counter.t.sol                     # fullscreen TUI, opens in the first test
+sevm run --console -m testDeposit Vault.t.sol   # plain text, one test by name
 ```
 
-For each test function sevm does a fresh deploy + `setUp()` + the test call (forge's
-per-test isolation) and opens at the first line of the first test. `continue` runs to the
-next test body. `-m/--match` narrows to functions matching a substring;
-`--match-contract` narrows the contract.
+Each test gets a fresh deploy + `setUp()` + the test call, as forge isolates them, and the
+debugger opens on the first line of the first test. `continue` runs to the next test body.
+`-m/--match` narrows to test functions matching a substring, `--match-contract` to a
+contract.
 
-A lone `Test.sol` works with no `forge install`: sevm ships a minimal `forge-std` (`Vm`,
-`Test`, `console`). Point it inside a real Foundry project and it uses that project's
-layout, `solc` version, and remappings (`foundry.toml` + `remappings.txt` + `lib/`);
-`-y` accepts a default `foundry.toml` without prompting.
+### A lone .t.sol with nothing installed
 
-Cheatcodes are interpreted against live Py-EVM state and `console.log` prints as you step.
-Supported: `warp roll fee chainId coinbase deal etch store load prank startPrank
-stopPrank addr sign assume label`. You can also fire one at the prompt against the current
-frame:
+```solidity
+// /tmp/scratch/Vault.t.sol
+import {Test} from "forge-std/Test.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+contract VaultTest is Test {
+    address alice = address(0xA11CE);
+
+    function testDeal() public {
+        vm.deal(alice, 3 ether);
+        assertEq(alice.balance, 3 ether);
+    }
+}
+```
+
+```console
+$ sevm run --console -y /tmp/scratch/Vault.t.sol
+standalone test at /tmp/scratch; compiling ...
+installing forge-std from https://github.com/foundry-rs/forge-std @ v1.16.2
+installing @openzeppelin/contracts from https://github.com/OpenZeppelin/openzeppelin-contracts @ v5.7.0
+wrote 2 remapping(s) to remappings.txt
+debugging 1 test(s): VaultTest.testDeal
+Breakpoint 1, VaultTest.testDeal() at Vault.t.sol:11
+  11          vm.deal(alice, 3 ether);
+(sevm)
+```
+
+That run leaves a directory `forge` also understands:
+
+```
+/tmp/scratch
+├── Vault.t.sol
+├── foundry.toml        [profile.default] with libs = ["lib"], no src/test
+├── remappings.txt      forge-std/=lib/forge-std/src/
+│                       @openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+└── lib
+    ├── forge-std                 v1.16.2
+    └── openzeppelin-contracts    v5.7.0
+```
+
+Drop `-y` and sevm asks once before writing anything:
+
+```console
+$ sevm run --console /tmp/scratch/Vault.t.sol
+sevm will:
+  - create /tmp/scratch/foundry.toml
+  - install forge-std, @openzeppelin/contracts into /tmp/scratch/lib
+[y/N]
+```
+
+Answer `n` and sevm writes nothing, compiling against what is already there. `--no-install`
+skips the prompt and refuses the same way:
+
+```console
+$ sevm run --console --no-install /tmp/scratch/Vault.t.sol
+standalone test at /tmp/scratch; compiling ...
+compile failed: unresolved import 'forge-std/Test.sol' in Vault.t.sol, and sevm was told
+not to install it. Run again with -y to let it, or install it yourself:
+  forge install <org>/<repo>
+  echo 'forge-std/=lib/<repo>/src/' >> remappings.txt
+```
+
+### Inside a Foundry project
+
+```console
+$ sevm run --console test/Token.t.sol
+foundry project at /work/mytoken; compiling ...
+debugging 2 test(s): TokenTest.testMintAsOwner, TokenTest.testMintPrankRevertsForNonOwner
+Breakpoint 1, TokenTest.testMintAsOwner() at test/Token.t.sol:18
+  18          token.mint(bob, 100);
+```
+
+Nothing is fetched: the project's `foundry.toml`, `remappings.txt` and `lib/` are used as
+they are, including its `solc` pin and `evm_version`. forge-std is cloned only when `lib/`
+has none.
+
+### How an import is resolved
+
+sevm looks up the prefix in its own table (`forge-std`, `ds-test`, `solmate`, `solady`,
+openzeppelin), then in npm's registry metadata for anything else, and clones the repository
+it finds at the newest release tag. Prereleases are skipped. The remapping comes from where
+the imported file actually landed in the clone, so `src/`, `contracts/` and flat layouts
+all work.
+
+A clone is a pin. sevm never updates it; to move a version, delete `lib/<name>` or run
+`forge install <org>/<repo>@<tag>` yourself. git is required, the `forge` binary is not,
+and only the first run for a given library needs the network.
+
+### Cheatcodes
+
+Cheatcodes run against live Py-EVM state and `console.log` prints as you step. Implemented:
+`warp roll fee chainId coinbase deal etch store load prank startPrank stopPrank addr sign
+assume label`, plus the full `vm.assert*` family (`assertEq`, `assertGt`,
+`assertApproxEqRel`, the `*Decimal` forms, 116 overloads) that forge-std's own `assertEq`
+calls into. A failed assertion stops the debugger where it broke, with the comparison:
+
+```console
+(sevm) c
+Stopped on error: reverted: "assertion failed: 100 != 120"
+  StdAssertions.assertEq(uint256, uint256) at lib/forge-std/src/StdAssertions.sol:121
+ 121              vm.assertEq(left, right);
+(sevm) up
+#1  FailTest.testBalance() at Fail.t.sol:9
+```
+
+Fire one at the prompt against the frame you are stopped in:
 
 ```
 (sevm) vm.warp(12345)
@@ -76,13 +179,12 @@ frame:
 $1 = 12345  (uint256)
 ```
 
-Interactive arguments are simple literals, not full Solidity expressions. `help
-cheatcodes` lists the implemented set with a line of help each, generated from the
-registry so it cannot drift from what is actually implemented.
+Interactive arguments are plain literals, not Solidity expressions. `help cheatcodes` lists
+the implemented set, generated from the registry so it cannot drift; `help foundry` covers
+project resolution and installs.
 
-**Not yet supported:** `expectRevert`/`expectEmit`/`expectCall`/`mockCall`, `ffi`,
-forking, and fuzz/invariant argument generation. In the bundled `forge-std`, assertions
-**revert** on failure; point sevm at a real forge-std for non-reverting semantics.
+**Not yet supported:** `expectRevert`/`expectEmit`/`expectCall`/`mockCall`, `ffi`, forking,
+and fuzz/invariant argument generation.
 
 ## The screen
 
@@ -288,8 +390,13 @@ Transactions do **not** need an explicit `gas=`. `eth_estimateGas` binary-search
 limit by running the transaction repeatedly, so its early probes fail out-of-gas by design;
 sevm runs those with the hook suspended and reports how many it skipped in `info frame`.
 
-Tested against web3 7.16, py-evm 0.12.1b1, eth-tester 0.13.0b1, solc 0.8.28, Textual 8.2.8,
-Python 3.12.
+`git` must be on PATH: sevm clones missing libraries itself and never shells out to
+`forge`. The first run for a given library needs the network; after that the clone under
+`lib/` is reused. solc is downloaded on demand into `~/.solcx`, at the version the
+pragmas ask for or the one `foundry.toml` pins.
+
+Tested against web3 7.16, py-evm 0.12.1b1, eth-tester 0.13.0b1, solc 0.8.28, forge-std
+1.16.2, Textual 8.2.8, Python 3.12.
 
 ## How it works
 
@@ -314,6 +421,7 @@ are real journal checkpoints.
 | `evaluate.py` | Solidity expression evaluation by source injection |
 | `decode.py` | storage layout decoding, calldata and revert decoding |
 | `foundry.py` / `cheatcodes.py` | Foundry test driver / cheatcode interpreter |
+| `libs.py` | import scanning, library lookup, clone, remapping |
 | `commands.py` | the gdb command surface, shared by both frontends |
 | `console.py` / `tui/` | plain-text and Textual frontends |
 | `cli.py` | `sevm run` and `sevm compile` |
@@ -321,10 +429,15 @@ are real journal checkpoints.
 ## Tests
 
 ```bash
-python3 -m pytest tests/test_sevm.py -q
+uv run pytest -q                                   # 307 tests, no network
+SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against real forge-std and npm
 ```
 
 Covers artifacts and source maps, the stop policy for every step mode, breakpoints and
 watchpoints, cross-contract frames, reverts and panics, expression evaluation, storage
-decoding, local variables across scoping, the whole command surface, mutation, and a
-headless render of the TUI.
+decoding, local variables across scoping, the whole command surface, mutation, library
+install and remapping derivation, the assertion engine, and a headless render of the TUI.
+
+The default run clones forge-std from a git repo built in `tmp_path`, so it needs no
+network. The `network` tests install the real forge-std and openzeppelin, and one of them
+fails if forge-std declares an assertion sevm does not implement.

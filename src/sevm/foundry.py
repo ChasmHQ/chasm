@@ -15,16 +15,17 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from .compile import (
     DEFAULT_FOUNDRY_TOML,
+    STANDALONE_FOUNDRY_TOML,
     Project,
     compile_foundry_project,
     find_foundry_root,
+    read_foundry_config,
+    unresolved_prefixes,
 )
-
-# Base contracts bundled with sevm or ubiquitous in forge-std; never a test target.
-_NON_TEST_CONTRACTS = frozenset({"Test", "Vm", "console", "console2", "StdAssertions"})
 
 
 @dataclass(frozen=True)
@@ -34,33 +35,125 @@ class TestTarget:
     has_setup: bool
 
 
-def resolve_project(sol_path: str, assume_yes: bool = False) -> tuple[str, bool]:
-    """Find the Foundry project root for `sol_path`.
+@dataclass(frozen=True)
+class Prepared:
+    """What `sevm run` may do to the target directory, after asking."""
 
-    Returns (root, is_existing_project). If no foundry.toml is found, the file's directory
-    becomes the root; the user is prompted to write a default foundry.toml (auto-yes with
-    `assume_yes`). Either way compilation proceeds against the bundled forge-std.
+    root: str
+    existing: bool  # a foundry.toml was already there
+    may_install: bool  # the user let sevm fetch missing libraries
+    declined: bool = False  # asked, and the answer was no (or there was no terminal)
+    missing: tuple[str, ...] = ()  # libraries that would have been installed
+
+
+def _forge_std_present(root: str) -> bool:
+    cfg = read_foundry_config(root)
+    if any(r.split("=")[0].rstrip("/") == "forge-std" for r in cfg.remappings):
+        return True
+    return any(os.path.isdir(os.path.join(root, lib, "forge-std")) for lib in cfg.libs)
+
+
+def _infer_root(start: str) -> str:
+    """Root for a target with no foundry.toml above it.
+
+    A file's own directory, unless a directory within a few levels up holds `src/` and
+    `test/`: that is a Foundry project someone has not written a foundry.toml for yet, and
+    `test/lib/forge-std` is not where it belongs.
     """
-    root = find_foundry_root(sol_path)
-    if root is not None:
-        return root, True
+    here = start if os.path.isdir(start) else os.path.dirname(os.path.abspath(start))
+    probe = here
+    for _ in range(4):
+        if os.path.isdir(os.path.join(probe, "src")) and os.path.isdir(
+            os.path.join(probe, "test")
+        ):
+            return probe
+        parent = os.path.dirname(probe)
+        if not parent or parent == probe:
+            break
+        probe = parent
+    return here
 
-    root = os.path.dirname(os.path.abspath(sol_path))
-    toml_path = os.path.join(root, "foundry.toml")
-    create = assume_yes
-    if not assume_yes and sys.stdin.isatty():
-        prompt = (
-            f"No foundry.toml found. Create a default one at {toml_path}?\n"
-            f"{DEFAULT_FOUNDRY_TOML}\n[y/N] "
+
+def prepare_project(
+    path: str,
+    *,
+    assume_yes: bool = False,
+    allow_install: bool = True,
+    needs_forge_std: bool = True,
+    source_dirs: Sequence[str] | None = None,
+) -> Prepared:
+    """Find the Foundry root for `path`, asking before writing anything into it.
+
+    With no foundry.toml above it, the target's own directory becomes the root. Libraries
+    the sources import but cannot reach are cloned into `lib/`. Both are gated by one
+    prompt, which `assume_yes` skips; declining still runs, against what is on disk.
+
+    A `.sol` target always needs forge-std, so it always gets a foundry.toml. A web3
+    driver's contracts get one only when something has to be installed for them.
+    """
+    found = find_foundry_root(path)
+    existing = found is not None
+    root = found or _infer_root(path)
+
+    missing: list[str] = []
+    if allow_install:
+        missing = unresolved_prefixes(root, source_dirs)
+        if (
+            needs_forge_std
+            and not _forge_std_present(root)
+            and "forge-std" not in missing
+        ):
+            missing.insert(0, "forge-std")
+
+    write_toml = not existing and (needs_forge_std or bool(missing))
+    planned = []
+    if write_toml:
+        planned.append(f"create {os.path.join(root, 'foundry.toml')}")
+    if missing:
+        libs = ", ".join(missing)
+        planned.append(f"install {libs} into {os.path.join(root, 'lib')}")
+    if not planned:
+        return Prepared(
+            root=root,
+            existing=existing,
+            may_install=allow_install,
+            missing=tuple(missing),
         )
+
+    approved = assume_yes
+    if not approved and sys.stdin.isatty():
+        prompt = "sevm will:\n" + "".join(f"  - {p}\n" for p in planned) + "[y/N] "
         try:
-            create = input(prompt).strip().lower() in ("y", "yes")
+            approved = input(prompt).strip().lower() in ("y", "yes")
         except EOFError:
-            create = False
-    if create and not os.path.exists(toml_path):
-        with open(toml_path, "w", encoding="utf-8") as fh:
-            fh.write(DEFAULT_FOUNDRY_TOML)
-    return root, False
+            approved = False
+    if not approved:
+        return Prepared(
+            root=root,
+            existing=existing,
+            may_install=False,
+            declined=True,
+            missing=tuple(missing),
+        )
+
+    if write_toml:
+        _write_default_toml(root)
+    return Prepared(
+        root=root, existing=existing, may_install=True, missing=tuple(missing)
+    )
+
+
+def _write_default_toml(root: str) -> None:
+    """A project layout gets the standard src/test config; a lone file gets neither."""
+    toml_path = os.path.join(root, "foundry.toml")
+    if os.path.exists(toml_path):
+        return
+    has_layout = os.path.isdir(os.path.join(root, "src")) and os.path.isdir(
+        os.path.join(root, "test")
+    )
+    body = DEFAULT_FOUNDRY_TOML if has_layout else STANDALONE_FOUNDRY_TOML
+    with open(toml_path, "w", encoding="utf-8") as fh:
+        fh.write(body)
 
 
 def compile_test(
@@ -69,20 +162,30 @@ def compile_test(
     *,
     solc_version: str | None = None,
     evm_version: str | None = None,
+    install_missing: bool = True,
+    on_notice: Callable[[str], None] | None = None,
 ) -> Project:
     return compile_foundry_project(
         root,
         target_file=os.path.abspath(sol_path),
         solc_version=solc_version,
         evm_version=evm_version,
+        install_missing=install_missing,
+        ensure_forge_std=True,
+        on_notice=on_notice,
     )
 
 
-def discover_tests(project: Project) -> list[TestTarget]:
-    """Every no-argument `test*`/`invariant*` function across the project's contracts."""
+def discover_tests(project: Project, libs: Sequence[str] = ("lib",)) -> list[TestTarget]:
+    """Every no-argument `test*`/`invariant*` function across the project's own contracts.
+
+    Library sources are skipped wholesale: real forge-std brings ~15 base contracts, and a
+    name list would have to chase every release.
+    """
+    prefixes = tuple(f"{lib.rstrip('/')}/" for lib in libs)
     targets: list[TestTarget] = []
     for art in project.artifacts.values():
-        if art.name in _NON_TEST_CONTRACTS:
+        if art.source_key.startswith(prefixes):
             continue
         fns = [e for e in art.abi if e.get("type") == "function"]
         has_setup = any(e.get("name") == "setUp" for e in fns)
@@ -121,17 +224,34 @@ def select_test(
     return pool[0] if pool else None
 
 
+class TestFailed(RuntimeError):
+    """A test transaction reverted. forge would print a failure; sevm ends the run with one."""
+
+
+def _receipt(w3: object, tx: object, what: str) -> Any:
+    """Wait for a receipt and refuse a failed one.
+
+    eth-tester reports a reverted transaction as `status = 0` rather than raising, so
+    without this check a test whose assertion fails looks like a test that passed.
+    """
+    receipt = w3.eth.wait_for_transaction_receipt(tx)  # type: ignore[attr-defined]
+    if receipt.get("status") == 0:
+        raise TestFailed(f"{what} reverted")
+    return receipt
+
+
 def _run_one_test(w3: object, art: object, target: TestTarget) -> None:
     """Fresh deploy + setUp + the test call, as forge isolates each test."""
+    name = f"{target.contract}.{target.function}"
     factory = w3.eth.contract(abi=art.abi, bytecode=art.bytecode.hex())  # type: ignore[attr-defined]
     tx = factory.constructor().transact({"gas": 30_000_000})
-    address = w3.eth.wait_for_transaction_receipt(tx)["contractAddress"]  # type: ignore[attr-defined]
+    address = _receipt(w3, tx, f"{target.contract} deployment")["contractAddress"]
     instance = w3.eth.contract(address=address, abi=art.abi)  # type: ignore[attr-defined]
     if target.has_setup:
         tx = instance.functions.setUp().transact({"gas": 30_000_000})
-        w3.eth.wait_for_transaction_receipt(tx)  # type: ignore[attr-defined]
+        _receipt(w3, tx, f"{target.contract}.setUp()")
     tx = instance.functions[target.function]().transact({"gas": 30_000_000})
-    w3.eth.wait_for_transaction_receipt(tx)  # type: ignore[attr-defined]
+    _receipt(w3, tx, name)
 
 
 def make_test_driver(project: Project, target: TestTarget) -> Callable[[], None]:

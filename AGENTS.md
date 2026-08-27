@@ -27,30 +27,58 @@ sevm/
 │   ├── compile.py        # solc via py-solc-x → artifacts; `compile_foundry_project`
 │   ├── session.py        # the debug session / VM control (largest module)
 │   ├── cheatcodes.py     # Foundry cheatcode engine (VM/console intercept, registry)
+│   ├── libs.py           # dependency resolution: imports -> repo -> clone -> remapping
 │   ├── assembly.py       # Yul/inline-assembly parser + executor over the live frame
 │   ├── foundry.py        # Foundry test runner: resolve project, discover, driver
 │   ├── commands.py       # gdb-style command dispatch (+ `vm.*` cheats, Yul at the prompt)
 │   ├── evaluate.py       # Solidity expression evaluation
 │   ├── frames.py, srcmap.py, locals.py, decode.py, disasm.py, breakpoints.py
 │   ├── console.py        # plain-text frontend (`--console`)
-│   ├── vendor/forge-std/ # bundled minimal forge-std (Vm/Test/console.sol), package data
 │   └── tui/              # Textual fullscreen frontend (app.py, widgets.py, sevm.tcss)
-├── tests/                # test_sevm.py + test_foundry.py + harness.py + fixtures/
+├── tests/                # test_sevm.py + test_foundry.py + test_libs.py + conftest.py
 └── examples/debug_bank.py
 ```
 
 `sevm run` dispatches by extension: `.py` attaches to a web3 driver (below); `.sol`
-compiles + runs a Foundry test. With no `-m` filter it debugs every test in the file: a
+compiles + runs a Foundry test. Both paths resolve dependencies the same way and both run
+with `foundry_mode` on. With no `-m` filter it debugs every test in the file: a
 fresh deploy + `setUp` + test per function, a breakpoint on each body, opening at the first
-and stepping to each on `continue`. Function/line breakpoints are contract-scoped
-(`Breakpoint.contract`), so a shared pc in another same-file contract (e.g. a helper's
-creation code, where the running artifact is unrecognised) does not mis-fire them.
+and stepping to each on `continue`. A test transaction that reverts fails the run
+(`foundry.TestFailed`); eth-tester reports it as `status = 0` rather than raising, so
+without that check a failing assertion looks like a passing test. Function/line breakpoints
+are contract-scoped (`Breakpoint.contract`), so a shared pc in another same-file contract
+(e.g. a helper's creation code, where the running artifact is unrecognised) does not
+mis-fire them.
+
 Cheatcodes are intercepted in the patched loop right after the precompile check (calls to
 the VM / console addresses); `session.foundry_mode` etches a byte at those addresses so
 Solidity's `extcodesize` guard on `vm.*` calls does not revert before dispatch. A prank is
 applied at the calling opcode (`_exec_opcode` swaps the caller's `storage_address`), so
 value, gas and `msg.sender` all follow it as in forge. See README "Foundry tests and
 cheatcodes" for the user-facing surface and v1 limits.
+
+## Library resolution (libs.py)
+
+sevm ships no forge-std. `compile_foundry_project` walks the import graph
+(`libs.import_closure`), and anything unresolved is installed: prefix -> `libs.ALIASES`,
+else npm registry metadata (`repository.url`) -> `git clone --depth 1 --branch <newest
+stable tag>` into `<root>/lib/<name>`, with the remapping derived from where the imported
+file landed inside the clone (so `src/`, `contracts/` and flat layouts all work). New
+remappings are appended to `remappings.txt` so `forge` resolves the project identically.
+git is required; the `forge` binary is never invoked. `--no-install` resolves from disk
+only. `foundry.prepare_project` gates every write behind one prompt (`-y` skips it,
+non-tty declines) and writes `STANDALONE_FOUNDRY_TOML` (no `src`/`test` keys) for a lone
+`.sol`, `DEFAULT_FOUNDRY_TOML` when the root already has `src/` + `test/`. Without a
+foundry.toml the root is the target's own directory, unless a directory a few levels up
+holds `src/` + `test/` (`_infer_root`), so `test/Foo.t.sol` in an un-configured project
+does not get `test/lib/forge-std`.
+
+Only the project's own sources are collected by directory walk; library sources enter
+solely through the import closure. Real forge-std's `assertEq` and friends delegate to
+`vm.assertEq`/`assertGt`/`assertApproxEqAbs` (116 overloads in its `Vm.sol`), all
+registered programmatically in `cheatcodes.py` from an op x type matrix and sharing a
+`family` so `help cheatcodes` prints one row instead of 116. They implement the comparison
+for real: the `*Decimal` and `*ApproxEq*` forms are called even when the assertion holds.
 
 A Yul builtin typed at the prompt (`mstore(0x80, 1)`, or the explicit `asm ...`) is parsed
 by `assembly.py` and executed by Py-EVM's own opcode functions against the paused
@@ -92,7 +120,8 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (219 tests; ~2 min, solc compile is the slow part)
+uv run pytest -q        # test suite (307 tests; ~2 min, solc compile is the slow part)
+SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
 uv run mypy src         # type check (pragmatic config, not strict)
@@ -113,6 +142,13 @@ after the script is forwarded to it. Recognition of user contracts is by bytecod
 (runtime code matched against compiled artifacts, metadata hash stripped, immutables
 masked), so an unmodified web3 script works as a `run` target.
 
+## Comment and help-text style
+
+Use the `code-comment-style` skill before writing or reviewing code comments,
+docstrings, argparse `help=` strings, or the in-app `help`/`help <topic>` text in
+`commands.py`. It covers writing new code (default to no comment) as well as cleanup
+passes (compress, don't delete load-bearing facts).
+
 ## Dependencies
 
 Declared in `pyproject.toml`. Rule: every third-party package imported under `src/sevm`
@@ -123,9 +159,8 @@ are named explicitly. Dev-only tools (`pytest`, `textual-dev`) live in the PEP 7
 
 The Textual stylesheet `src/sevm/tui/sevm.tcss` is package data loaded relative to
 `app.py`; hatchling includes it in the wheel automatically. If you move or rename it,
-update `CSS_PATH` in `tui/app.py` and re-check `uv build` still bundles it. The bundled
-forge-std under `src/sevm/vendor/forge-std/src/*.sol` is package data the same way (located
-at runtime via `BUNDLED_FORGE_STD_SRC` in `compile.py`); `uv build` bundles it too.
+update `CSS_PATH` in `tui/app.py` and re-check `uv build` still bundles it. It is the only
+package data left: forge-std is no longer vendored.
 
 solc is fetched on demand by py-solc-x into `~/.solcx` (not vendored). Tests and examples
 use solc 0.8.28.
@@ -139,12 +174,22 @@ and deploys over an in-process Py-EVM chain; `test_sevm.py` imports fixtures wit
 from the editable install. Fixtures are self-contained under `tests/contracts/`
 (`Bank.sol`, `Locals.sol`, `Vault.sol`) — do not reach outside the project for a contract.
 
-`test_foundry.py` covers the Foundry path and the cheatcode engine. Its fixtures are two
-layouts: `tests/foundry_solo/` (a standalone `.t.sol` that leans on the bundled forge-std,
-no `lib/`) and `tests/foundry_project/` (a real project with `foundry.toml`,
-`remappings.txt`, `src/`, `test/`, and its own vendored `lib/forge-std/src/` to prove the
-project's lib wins over the bundled one). Cheats are asserted end to end by running each
-test to completion and requiring no revert (the test's own `assertEq`s prove the effect).
+`test_foundry.py` covers the Foundry path and the cheatcode engine; `test_libs.py` covers
+dependency resolution and install. The suite never touches the network: `conftest.py`
+builds a git repo from `tests/fixtures/forge_std_fake/` (forge-std-shaped, assertions
+delegating to `vm.assert*` like the real thing, plus a `test/` tree with an unlinked
+library that must never reach solc) and points `libs.ALIASES["forge-std"]` at it over
+`file://`, so the real clone/tag-selection/remapping code runs offline. Fixture layouts:
+`tests/foundry_solo/` (standalone `.t.sol`, no `lib/`, drives the install path) and
+`tests/foundry_project/` (a project with `foundry.toml`, `remappings.txt`, `src/`, `test/`
+and its own `lib/forge-std/src/`, which must be used untouched). Both are copied into
+`tmp_path` before use so an install never writes into the repo. Cheats are asserted end to
+end by running each test to completion (the test's own `assertEq`s prove the effect).
+
+Tests marked `network` reach the real forge-std, npm and openzeppelin repositories, and
+are skipped unless `SEVM_NETWORK_TESTS=1`. One of them asserts sevm implements every
+`assert*` the current forge-std declares, so a new overload upstream fails the suite
+rather than surfacing as "unimplemented cheatcode" at run time.
 
 ## Invariants — do NOT reintroduce these bugs (each cost a debugging session; detail in PLAN.md §12)
 
@@ -154,6 +199,11 @@ test to completion and requiring no revert (the test's own `assertEq`s prove the
 4. Choose the snapped breakpoint line across *all* artifacts before collecting pcs.
 5. Truncate TUI cells with Rich `no_wrap` columns, not by hand.
 6. Run the unknown-verb fallback (`_not_a_command`) inside `execute()`'s error boundary.
+7. Compile library sources only through the import closure. A directory walk drags in a
+   library's own `test/`, whose unlinked-library placeholders (`__$...$__`) have no
+   debuggable artifact.
+8. Implement the `vm.assert*` cheats as real comparisons. forge-std calls the `*Decimal`
+   and `*ApproxEq*` forms unconditionally, so a blanket revert fails passing assertions.
 
 Underlying Py-EVM monkeypatch gotchas (inherited from the tracer, still apply): restore
 the raw classmethod descriptor not the bound method; stack items are `int` or `bytes`;
@@ -161,6 +211,8 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 
 ## Verified environment
 
-web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28,
-CPython 3.12. `requires-python = ">=3.10"`. All 219 tests pass as of 2026-08-26 (incl. Foundry multi-test + cheatcode coverage, the
-Yul assembly surface, and the snapshot refresh after a mutation).
+web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 307 tests pass as of
+2026-08-27 (4 more with `SEVM_NETWORK_TESTS=1`), covering Foundry multi-test + cheatcode
+coverage, library install and remapping derivation, the assertion engine, the Yul assembly
+surface, and the snapshot refresh after a mutation.

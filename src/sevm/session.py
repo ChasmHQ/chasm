@@ -172,8 +172,8 @@ class DebugSession:
         self.line_indexes = build_line_indexes(project.sources.values())
         self.stop_at_start = stop_at_start
         self.skip_to_source = skip_to_source
-        # Stopping *at* the failing instruction, with the frame still alive, is the thing
-        # a post-mortem trace cannot give you. On by default for that reason.
+        # Stops at the failing instruction with the frame still alive, unlike a post-mortem
+        # trace. On by default.
         self.stop_on_revert = True
 
         self._cmd_q: queue.Queue[Any] = queue.Queue()
@@ -193,6 +193,8 @@ class DebugSession:
         self.gas_by_opcode: dict[str, int] = {}
         self.last_snapshot: FrameSnapshot | None = None
         self.exit_error: str | None = None
+        # Decoded reason of the last transaction that reverted; a receipt is only status 0.
+        self.last_revert: str | None = None
 
         # Stop policy state, only mutated on the VM thread.
         # The first stop uses STEP so the session opens on the user's first line of
@@ -330,14 +332,12 @@ class DebugSession:
     def refresh_snapshot(self) -> FrameSnapshot | None:
         """Re-read the live frame into `last_snapshot` after a mutation.
 
-        A snapshot is a copy taken at the pause, so a command that writes memory, the
-        stack or a local leaves every pane rendering the state as it was *before* the
-        write. Anything read back through an inspect op (storage) updated already; this
-        brings the copied parts of the picture along with it, so `mstore(0x80, 1)` and
-        `set $stack[0] = 5` show up where the user just looked.
+        A snapshot is a copy taken at the pause; a write to memory, stack or a local
+        would otherwise leave every pane showing the pre-write state (storage reads
+        already go live). This copies the mutated fields back in.
 
-        Silently returns the existing snapshot if the program is no longer stopped: a
-        mutation is always followed by a refresh, and a resume in between is not an error.
+        Returns the existing snapshot if the program is no longer stopped; a mutation
+        is always followed by a refresh, and a resume in between is not an error.
         """
         if self.finished or self.last_snapshot is None:
             return self.last_snapshot
@@ -636,6 +636,8 @@ class DebugSession:
                 finally:
                     if frame is not None:
                         session._exit_frame(frame)
+            if computation.is_origin_computation and computation.is_error:
+                session._record_transaction_revert(computation)
             return computation
 
         return patched
@@ -643,6 +645,12 @@ class DebugSession:
     # ==================================================================
     # cheatcodes (VM thread)
     # ==================================================================
+
+    def _record_transaction_revert(self, computation: Any) -> None:
+        """Keep the top-level revert reason: a receipt only carries `status = 0`."""
+        from .decode import decode_revert
+
+        self.last_revert = decode_revert(bytes(computation.output or b""))
 
     def _ensure_cheat_code(self, state: Any) -> None:
         """Etch a byte at the cheatcode and console addresses so `extcodesize` is non-zero.

@@ -16,6 +16,7 @@ import contextlib
 import difflib
 import re
 import shlex
+import textwrap
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -33,6 +34,7 @@ from .cheatcodes import (
     format_cheat_result,
     parse_cheat_arg,
 )
+from .cheatcodes import all_specs as cheat_specs
 from .cheatcodes import listing as cheat_listing
 from .decode import StorageDecoder, decode_calldata
 from .evaluate import EvalError, EvalResult, Evaluator
@@ -142,8 +144,8 @@ class CommandProcessor:
         self.displays: list[tuple[int, str]] = []
         self._display_counter = 0
         # `selected_row` indexes the backtrace as the user sees it; `selected_frame` is
-        # the EVM frame that row lives in, which is what inspect commands target. They
-        # are not the same number: several Solidity frames share one EVM frame.
+        # the EVM frame it lives in, which inspect commands target. Not the same number:
+        # several Solidity frames share one EVM frame.
         self.selected_row: int = 0
         self.selected_frame: int | None = None  # None means the innermost
         # Which internal (Solidity) frame inside that EVM frame is selected. Several
@@ -242,11 +244,9 @@ class CommandProcessor:
     def execute(self, line: str) -> CommandResult:
         """Run one prompt line. Never raises: a failure comes back as `result.error`.
 
-        That guarantee is load-bearing rather than defensive. The console frontend calls
-        this from its read loop and the TUI calls it from a worker thread that owns the
-        `busy` flag, so an exception escaping here does not print a traceback and carry
-        on: it ends the console session outright, and in the TUI it kills the worker with
-        `busy` still set, wedging the prompt for the rest of the run.
+        Load-bearing, not defensive: the TUI calls this from a worker thread owning the
+        `busy` flag, so an escaped exception would end the console session, or in the TUI
+        kill the worker with `busy` still set and wedge the prompt for the rest of the run.
         """
         line = line.strip()
         if not line:
@@ -269,10 +269,10 @@ class CommandProcessor:
         # Interactive Foundry cheatcode: `vm.warp(12345)`, `vm.deal(alice, 1 ether)`.
         if line.startswith("vm.") and "(" in line and line.endswith(")"):
             return self._remember(self.cmd_cheat(line))
-        # Inline assembly: `mstore(0x80, 1)`, `sstore(3, add(sload(3), 1))`. Substitution
-        # comes first so `$storage[1]` is a number by the time the line is judged as Yul;
-        # a line that still will not lex is Solidity that merely starts with a builtin's
-        # name, and falls through to the verb table below.
+        # Inline assembly: `mstore(0x80, 1)`, `sstore(3, add(sload(3), 1))`. Substitute
+        # first so `$storage[1]` is a number before the line is judged as Yul; a line
+        # that still won't lex is Solidity that merely starts with a builtin's name, and
+        # falls through to the verb table below.
         if has_builtin_head(line):
             substituted = self._substitute(line)
             if lexes(substituted):
@@ -293,10 +293,9 @@ class CommandProcessor:
         except ValueError:
             args = rest.split()
         result = handler(args, rest)
-        # `copy` itself is excluded from the "last output" memo, or a bare `copy` would
-        # just re-copy the previous copy's own "copied N characters" message. Compare the
-        # underlying functions: every `self.cmd_copy` lookup builds a fresh bound method,
-        # so `is` on those is never true and the guard would silently never fire.
+        # `copy` is excluded from the "last output" memo, or a bare `copy` would re-copy
+        # its own "copied N characters" message. Compare `__func__`, not `is`: every
+        # `self.cmd_copy` lookup builds a fresh bound method, so `is` would never match.
         if getattr(handler, "__func__", None) is CommandProcessor.cmd_copy:
             return result
         return self._remember(result)
@@ -310,17 +309,16 @@ class CommandProcessor:
     def _not_a_command(self, line: str, verb: str) -> CommandResult:
         """gdb prints an expression's value when the verb is not a command; so do we.
 
-        A typo, though, is a typo: reporting `Undeclared identifier` for `brekapoint 12`
-        sends the user looking for a variable they never wrote. When the line reads like a
-        command rather than like an expression, say so and offer the nearest verb.
+        A typo is still a typo, though: `Undeclared identifier` for `brekapoint 12` sends
+        the user looking for a variable they never wrote. When the line reads like a
+        command, say so and offer the nearest verb instead.
         """
         try:
             return self.cmd_print([], line)
         except (SessionError, EvalError) as exc:
             if not _looks_like_a_command(line):
-                # `bogusop(1)` is a call solc could not resolve, and the likeliest reason
-                # at this prompt is a misremembered Yul builtin rather than a Solidity
-                # function, so point at the list instead of leaving it at "Undeclared".
+                # `bogusop(1)` is a call solc couldn't resolve; likeliest a misremembered
+                # Yul builtin, so point at the list instead of leaving it at "Undeclared".
                 if _CALL_SHAPED.match(line) and "Undeclared identifier" in str(exc):
                     raise SessionError(
                         f"{exc}; if you meant inline assembly, `help assembly` lists "
@@ -373,8 +371,8 @@ class CommandProcessor:
         `source` has already been through `_substitute`, so `mstore(0x80, $storage[1])`
         and `sstore(0, $stack[0])` arrive here as plain numbers.
 
-        Unlike `p`, which runs on a throwaway state snapshot, this writes for real: it is
-        the low-level twin of `set var`, reaching the places Solidity has no syntax for.
+        Unlike `p`, which runs on a throwaway snapshot, this writes for real: the
+        low-level twin of `set var`, reaching places Solidity has no syntax for.
         """
         rows = self._inspect("assembly", source)
         result = CommandResult(mutated=True)
@@ -1373,10 +1371,9 @@ class CommandProcessor:
     def cmd_copy(self, args: list[str], rest: str) -> CommandResult:
         """`copy [command]`: put a command's output on the system clipboard.
 
-        Selecting text with the mouse is the terminal's job, and under tmux that means
-        either holding shift or teaching tmux to pipe the drag somewhere useful. This is
-        the way round it: `copy p balances[alice]` runs the command and puts its plain
-        text where Cmd+V will find it, no dragging and nothing truncated to a pane width.
+        Mouse selection under tmux needs shift-held or a pipe config. This sidesteps it:
+        `copy p balances[alice]` runs the command and puts plain text where Cmd+V finds
+        it, nothing truncated to a pane width.
         """
         target = rest.strip()
         if target:
@@ -1450,10 +1447,9 @@ def _escape(text: str) -> str:
 def escape_markup(text: str) -> str:
     """Escape *every* bracket, for strings that are wholly the user's.
 
-    `_escape` above is selective, because the lines it protects are markup we built with
-    user text spliced into them. An error or a notice is the other way round: the whole
-    string is quoted input, and a stray `[/]` in it is a MarkupError waiting to escape a
-    frontend's render loop.
+    `_escape` above is selective because it protects markup we built with user text
+    spliced in. An error or notice is the whole string as quoted input, and a stray
+    `[/]` in it is a MarkupError waiting to escape a frontend's render loop.
     """
     return rich_escape(str(text))
 
@@ -1503,10 +1499,10 @@ def _looks_like_a_command(line: str) -> bool:
 def _did_you_mean(verb: str, verbs: dict) -> str:
     """The nearest real verbs, gdb-style, or "" when nothing is close enough.
 
-    One- and two-letter aliases are excluded from the candidates: they match almost
-    anything short, and suggesting `b` for `bkr` is noise rather than help. Ties on
-    edit distance are broken by the shared prefix, which is what puts `break` ahead of
-    `print` for `brekpoint`: both score the same, only one starts the way the typo does.
+    One- and two-letter aliases are excluded: they match almost anything short, so
+    suggesting `b` for `bkr` is noise. Ties on edit distance break by shared prefix,
+    which puts `break` ahead of `print` for `brekpoint` (same score, one matches the
+    typo's start).
     """
     candidates = [name for name in verbs if len(name) > 2]
     matches = difflib.get_close_matches(verb, candidates, n=4, cutoff=0.55)
@@ -1573,7 +1569,7 @@ def _event_name(abi: Sequence[dict], topics: Sequence[int]) -> str:
 
 
 HELP_SUMMARY = """
-[bold]Execution[/bold]     (gdb verbs, gdb abbreviations)
+[bold]Execution[/bold]
   [cyan]c[/cyan]ontinue               run until a breakpoint
   [cyan]n[/cyan]ext [N]                  next Solidity line, stepping over calls
   [cyan]s[/cyan]tep [N]                  next Solidity line, stepping into calls
@@ -1603,23 +1599,24 @@ HELP_SUMMARY = """
   [cyan]i[/cyan]nfo TOPIC             registers, breakpoints, frame, args, locals,
                          storage, gas, logs, sources, functions
 
-[bold]Mutation[/bold]  (the part a read-only debugger cannot do)
+[bold]Mutation[/bold]
   [cyan]set var[/cyan] X = V          write storage through Solidity: [dim]set var balances[a] = 5 ether[/dim]
                          a bare local name writes its stack slot: [dim]set var fee = 1 ether[/dim]
   [cyan]set[/cyan] $pc = 0x108        jump; [cyan]set[/cyan] $gas = N; [cyan]set[/cyan] $stack[0] = V; [cyan]set[/cyan] $storage[1] = V
 
-[bold]Assembly[/bold]  (Yul, run for real against the frame you are stopped in)
+[bold]Assembly[/bold]
   [cyan]mstore[/cyan](0x80, 1)        type a builtin call straight at the prompt
   [cyan]sload[/cyan](3)               reads print their value and enter the history as $N
   [cyan]sstore[/cyan](3, add(sload(3), 1))    calls nest, exactly as in `assembly { }`
   [cyan]asm[/cyan] YUL                the explicit form; takes `;`-separated statements
                          [dim]every write shows up in the panes at once[/dim]
 
-[bold]Foundry cheatcodes[/bold]  (applied to the live state, as in forge)
+[bold]Foundry cheatcodes[/bold]
   [cyan]vm.warp[/cyan](1735689600)    block.timestamp; [cyan]vm.roll[/cyan](N) block.number
   [cyan]vm.deal[/cyan](addr, 10 ether)   set a balance
   [cyan]vm.prank[/cyan](addr)         rewrite msg.sender for the next call
   [cyan]vm.store[/cyan] / [cyan]vm.load[/cyan] / [cyan]vm.etch[/cyan] / [cyan]vm.label[/cyan] / [cyan]vm.sign[/cyan] / [cyan]vm.addr[/cyan]
+  [cyan]vm.assertEq[/cyan](a, b)      the assertions forge-std calls; see [cyan]help cheatcodes[/cyan]
 
 [bold]Convenience variables[/bold]
   $pc $gas $gasused $depth $sp $step $stack[N] $mem[0x40] $storage[1] $1 $2 ...
@@ -1632,8 +1629,7 @@ HELP_SUMMARY = """
 
   STACK labels the slots that hold this frame's locals.
 
-[dim]help <topic> for detail. topics: breakpoints, print, memory, mutation, assembly,
-cheatcodes, gas, locals[/dim]
+[dim]help <topic> for detail. topics: breakpoints, print, memory, mutation, assembly, cheatcodes, foundry, gas, locals[/dim]
 """
 
 HELP_TOPICS = {
@@ -1713,9 +1709,9 @@ real meter delta per instruction rather than from a cost table.
   b LOC if amount > 1     conditions over them
   set var fee = 1 ether  writes the local's stack slot
 
-solc emits no location information for locals, so sevm reconstructs it: the AST gives the
-name, type and scope, and the run gives the stack slot. A local shadows a state variable
-of the same name, exactly as it does in the contract.
+solc emits no location info for locals; sevm reconstructs it from the AST (name, type,
+scope) plus the stack slot at the current pc. A local shadows a state variable of the
+same name, as in the contract.
 
 Not readable, reported as <unavailable> rather than guessed at:
   assembly variables     no AST declaration exists
@@ -1734,9 +1730,8 @@ def _assembly_help() -> str:
     return (
         """
 [bold]Inline assembly (Yul)[/bold]
-A Yul builtin typed at the prompt runs on the frame you are stopped in, using the real
-opcode implementations. This is the low-level twin of `set var`: `p` answers questions on a
-state snapshot that is then thrown away, assembly writes to the machine that is running.
+A Yul builtin typed at the prompt runs for real, on the frame you are stopped in. Unlike
+`p`, which evaluates on a throwaway snapshot, assembly writes to the live machine.
 
   mstore(0x80, 1)                     write memory
   sstore(3, add(sload(3), 1))         read-modify-write a slot, nested as in Yul
@@ -1744,21 +1739,17 @@ state snapshot that is then thrown away, assembly writes to the machine that is 
   keccak256(0x80, 0x40)               hash a memory range
   asm mstore(0x40, 0xa0); mstore8(0xa0, 0x61)     `asm` also takes several statements
 
-Arguments are decimal or hex literals, `1 ether`, `true`/`false`, a 32-byte string
-literal ("hi", right-padded exactly as Yul pads it), a nested call, or any convenience
-variable: [dim]mstore(0x80, $storage[1])[/dim], [dim]sstore(0, $stack[0])[/dim].
+Arguments: decimal or hex literals, `1 ether`, `true`/`false`, a right-padded string
+literal ("hi"), a nested call, or a convenience variable, e.g. `mstore(0x80, $storage[1])`.
 
-Two things are deliberately not faithful:
-  * gas is metered, reported, and then handed back, so poking at the machine cannot
-    turn a transaction that succeeds into one that runs out of gas;
-  * memory expansion an op causes is kept, because the op really did write there.
+Gas is metered and refunded, so this can't turn a passing run into an out-of-gas. Memory
+expansion sticks, since the write really happened.
 
-Refused, with the reason, when you try: jump, jumpi, pc, push*, dup*, swap* (Yul excludes
-these itself) and stop, return, revert, invalid, selfdestruct (they would end the frame
-under you; `finish` runs it to its end instead).
+Refused: jump/jumpi/pc/push*/dup*/swap* (Yul excludes these itself) and
+stop/return/revert/invalid/selfdestruct (would end the frame; use `finish` instead).
 
-`mstore(...)` at the prompt is assembly, but `p mstore(...)` is still Solidity, so a
-contract with a function of the same name stays reachable.
+`mstore(...)` at the prompt is assembly; `p mstore(...)` is Solidity, so a contract
+function of the same name stays reachable.
 
 [bold]Builtins[/bold]
 """
@@ -1772,31 +1763,61 @@ def _cheatcode_help() -> str:
     rows = [
         f"  vm.{spec.signature:<42} {spec.doc}" for spec in cheat_listing() if spec.doc
     ]
+    names = sorted({spec.name for spec in cheat_specs() if spec.family == "assert"})
+    asserts = textwrap.wrap(
+        "  ".join(names), width=84, initial_indent="  ", subsequent_indent="  "
+    )
     return (
         """
 [bold]Foundry cheatcodes[/bold]
-The same cheatcodes a `.t.sol` calls are available at the prompt, applied to the live
-state of the frame you are stopped in. Arguments are plain literals: an integer,
-`1 ether`, a 0x address or bytes value, `true`/`false`, or a quoted string.
+The same cheatcodes a `.t.sol` calls, available at the prompt against the live state of
+the frame you are stopped in. Arguments are plain literals: an integer, `1 ether`, a 0x
+address or bytes value, `true`/`false`, or a quoted string.
 
   vm.warp(1735689600)
   vm.deal(0xf39F..2266, 10 ether)
   vm.startPrank(0xf39F..2266)
   vm.load(0xf39F..2266, 0x00)      returning cheats print their result
 
-A cheatcode called from Solidity inside the debugged test is intercepted the same way, so
-`vm.prank(...)` in the test and `vm.prank(...)` at the prompt do the same thing. An
-unimplemented selector reverts with a clear message rather than silently doing nothing.
+`vm.prank(...)` at the prompt and inside the test hit the same intercept. An unimplemented
+selector reverts with a clear message instead of doing nothing.
 
 [bold]Implemented[/bold]
 """
         + "\n".join(rows)
-        + "\n"
+        + "\n\n[bold]Assertions[/bold]\n"
+        + "\n".join(asserts)
+        + """
+
+forge-std's own `assertEq(a, b)` calls these, so a failed assertion in a test reverts with
+`assertion failed: 1 != 2` (or your own message, when you pass one).
+"""
     )
 
 
 HELP_TOPICS["assembly"] = _assembly_help()
 HELP_TOPICS["asm"] = HELP_TOPICS["assembly"]
 HELP_TOPICS["yul"] = HELP_TOPICS["assembly"]
+HELP_TOPICS["foundry"] = """
+[bold]Foundry projects and libraries[/bold]
+sevm compiles a `.t.sol` the way forge does, and installs what is missing first.
+
+  sevm run test/Counter.t.sol        inside a project: its foundry.toml, remappings.txt
+                                     and lib/ are used as they are
+  sevm run /tmp/scratch/Demo.t.sol   outside one: writes foundry.toml, clones forge-std
+                                     into lib/, appends remappings.txt
+  sevm run -y ...                    skip the confirmation prompt
+  sevm run --no-install ...          resolve from disk only; refuse a missing import
+
+An unresolved import is looked up in sevm's table, then on npm, and cloned from its git
+repository at the newest release tag:
+
+  import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+  -> lib/openzeppelin-contracts, and the remapping to reach it
+
+Libraries are cloned, never updated: the pin stays until you change it, as with
+`forge install`. git is required; the `forge` binary is not.
+"""
+
 HELP_TOPICS["cheatcodes"] = _cheatcode_help()
 HELP_TOPICS["vm"] = HELP_TOPICS["cheatcodes"]

@@ -1,33 +1,31 @@
 """Solidity expression evaluation at a breakpoint.
 
-The trick, verified in research/spikes/spike_solidity_eval.py: instead of writing a
-Solidity interpreter, borrow the real one. Splice
+Trick (verified in research/spikes/spike_solidity_eval.py): borrow the real Solidity
+compiler instead of writing an interpreter. Splice
 
     function __sevm_eval() public payable returns (T) { return (<expr>); }
 
-into the paused contract's own source, compile it, swap the runtime code at the target
-address on a state snapshot, run it, decode the output, and revert.
+into the paused contract's source, compile it, swap the runtime code at the target
+address on a state snapshot, run it, decode the output, revert. This gets operator
+precedence, checked arithmetic, `ether`/`gwei`/`days` units, casts, `keccak256`,
+`abi.encode`, struct/mapping access, internal/private calls, and every future Solidity
+feature correct for free, where a hand-written evaluator would approximate and sometimes
+get it wrong.
 
-What that buys, for free and permanently correct: operator precedence, checked
-arithmetic, `ether`/`gwei`/`days` units, casts, `keccak256`, `abi.encode`, struct and
-mapping access, calls to internal and private functions, and every future Solidity
-feature. A hand-written evaluator would approximate all of it and get some of it wrong.
+Return type isn't known up front: first attempt compiles as `uint256`, and on mismatch
+the real type is read out of solc's diagnostic. Two compiles worst case (~40ms), cached
+per (source, expression).
 
-The return type is not known up front, so the first attempt compiles as `uint256` and, on
-a mismatch, the real type is read out of solc's own diagnostic. Two compiles worst case,
-about 40 ms, and the compiled result is cached per (source, expression).
-
-Local variables ride in as *parameters* of the injected function, with their values in
-the call's calldata:
+Local variables ride in as *parameters* of the injected function, values in the call's
+calldata:
 
     function __sevm_eval(uint256 fee, uint256 amount) public payable returns (uint256)
     { return (amount - fee); }
 
-Passing them rather than splicing them in as literals is what keeps the cache useful. The
-compiled code depends only on the names and types, which do not change while you sit on a
-line, so `display amount - fee` costs one compile for the whole session instead of one per
-step. Solidity's own scoping does the rest: a parameter shadows a state variable of the
-same name, exactly as the real local does.
+Passing them as params rather than literals keeps the cache useful: compiled code depends
+only on names/types, not values, so `display amount - fee` costs one compile per session,
+not per step. Solidity's own scoping shadows a state variable of the same name, same as a
+real local.
 """
 
 from __future__ import annotations
@@ -78,9 +76,9 @@ def _declared_parameter_type(abi_type: str) -> str:
 def bindings_for(expression: str, locals_available: Sequence[Any]) -> list[Binding]:
     """Pick the locals an expression actually mentions.
 
-    Only what is referenced gets injected. A frame full of locals we cannot materialise
-    must not stop `p totalDeposits` from working, and an unreferenced name has no
-    business changing the compiled code or the cache key.
+    Only referenced locals get injected, so a frame full of unmaterialisable locals
+    doesn't stop `p totalDeposits` from working, and unreferenced names don't affect
+    the compiled code or cache key.
     """
     wanted = referenced_names(expression)
     out: list[Binding] = []
@@ -105,9 +103,8 @@ def bindings_for(expression: str, locals_available: Sequence[Any]) -> list[Bindi
 def unbindable_reference(expression: str, locals_available: Sequence[Any]) -> str | None:
     """The error for an expression that names a local we cannot pass in.
 
-    Without this the name would quietly resolve to a state variable of the same name, or
-    to nothing, and the user would be told the identifier is undeclared when it is right
-    there on the screen.
+    Without this the name would quietly resolve to a same-named state variable or to
+    nothing, reporting "undeclared identifier" for a name that's right there on screen.
     """
     wanted = referenced_names(expression)
     for local in locals_available:
@@ -131,10 +128,9 @@ def _parameter_list(bindings: Sequence[Binding]) -> str:
     return ", ".join(b.parameter for b in bindings)
 
 
-# Type probe. Nothing in Solidity implicitly converts to a locally-declared struct, so
-# declaring this as the return type guarantees solc reports the expression's ACTUAL type
-# in its diagnostic. Probing with `uint256` instead would silently widen a `uint96` or a
-# `uint8` and the debugger would lie about the type.
+# Type probe: nothing implicitly converts to a locally-declared struct, so solc's error
+# reports the expression's actual type. Probing with `uint256` would silently widen a
+# `uint96`/`uint8` and the debugger would lie about the type.
 PROBE_STRUCT = "__SevmProbe"
 PROBE_DECL = f"struct {PROBE_STRUCT} {{ uint8 __sevm_x; }}"
 PROBE_TYPE = f"{PROBE_STRUCT} memory"
@@ -230,8 +226,8 @@ def _inject(
 ) -> str:
     """Add the eval function just inside the target contract's closing brace.
 
-    `contract_range` comes from the AST. Falling back to the last `}` in the file is
-    wrong whenever a file declares more than one contract, which is the common case.
+    `contract_range` comes from the AST; falling back to the file's last `}` is wrong
+    whenever a file declares more than one contract (the common case).
     """
     start, end = contract_range
     if start >= 0 and 0 < end <= len(source) and source[end - 1] == "}":
@@ -264,9 +260,8 @@ def _format_value(value: Any, abi_type: str) -> str:
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_format_value(v, "") for v in value) + "]"
     if isinstance(value, int):
-        # Show an ether reading only in the range where wei is a plausible reading:
-        # 0.001 ether up to a billion. Above that the number is a hash, an address cast,
-        # or type(uintN).max, and "721457446580647764635779334144 ether" is noise.
+        # Only show an ether reading where wei is a plausible reading (0.001 ether to a
+        # billion). Above that it's likely a hash, address cast, or type(uintN).max.
         if abi_type.startswith("uint") and 10**15 <= value < 10**27:
             whole, frac = divmod(value, 10**18)
             if frac == 0:
@@ -330,11 +325,11 @@ class Evaluator:
     def _infer_type(
         self, artifact: Artifact, expression: str, parameters: str = ""
     ) -> str | None:
-        """Ask solc what the expression's type is, by making it complain.
+        """Ask solc the expression's type by making it complain.
 
-        Compiles the expression as a return of an unreachable struct type, which nothing
-        implicitly converts to, so the diagnostic always names the true type. Returns None
-        for a void expression (a bare call), which is compiled as a statement instead.
+        Compiles the expression as a return of an unreachable struct type (nothing
+        converts to it), so the diagnostic always names the true type. Returns None for
+        a void expression (a bare call), compiled as a statement instead.
         """
         key = (artifact.qualified_name, expression, parameters)
         if key in self._type_cache:
@@ -399,8 +394,8 @@ class Evaluator:
     ) -> Any:
         """Evaluate `expression` in the paused frame.
 
-        Runs on the VM thread while the hook is parked. Effects are reverted unless
-        `keep` is set, which is gdb's `call` verb: evaluate and commit.
+        Runs on the VM thread while the hook is parked. Effects revert unless `keep` is
+        set (gdb's `call` verb: evaluate and commit).
         """
         expression = expression.strip().rstrip(";")
         if not expression:
@@ -512,8 +507,8 @@ def _build_message(
 ) -> Any:
     """A message that mirrors the paused frame so `msg.*` reads truthfully.
 
-    `should_transfer_value` is off: we want `msg.value` to report the paused frame's
-    value without moving ether a second time.
+    `should_transfer_value` is off so `msg.value` reports the paused frame's value
+    without moving ether a second time.
     """
     from eth.vm.message import Message
 

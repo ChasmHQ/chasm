@@ -57,6 +57,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+markers = ["network: hits the network; run with SEVM_NETWORK_TESTS=1"]
 testpaths = ["tests"]
 # Put tests/ on sys.path so the shared `harness` module imports cleanly, and rely
 # on the installed (editable) `sevm` package for `import sevm.*` - no sys.path hacks.

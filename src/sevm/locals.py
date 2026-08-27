@@ -1,29 +1,27 @@
 """Local variables: the AST says what they are, the run says where they are.
 
-solc's standard JSON carries no location information for locals. It does carry, in the
-AST, every `VariableDeclaration`: name, type, data location, the exact source range, and
-the id of the enclosing scope. What is missing is only the stack slot, and that is
-recoverable at run time from the source map, which is the technique Truffle and Remix
-use.
+solc's standard JSON has no location info for locals, but the AST carries every
+`VariableDeclaration` (name, type, data location, source range, enclosing scope id).
+Only the stack slot is missing, recoverable at run time from the source map (same
+technique Truffle and Remix use).
 
-Two observations, both verified against real traces in `research/spikes/`:
+Two observations, verified against real traces in `research/spikes/`:
 
   1. **Frame base.** An internal Solidity call is an `i`-marked JUMP. At the JUMPDEST it
      lands on, the stack holds the caller's frame plus the return label plus the
-     arguments, so the parameters occupy the slots directly below the entry height.
+     arguments, so parameters occupy the slots directly below entry height.
 
   2. **Allocation site.** The instruction that allocates a local is attributed to the
-     `VariableDeclaration` node's *own* source range (`uint256 fee`), which solc keeps
-     distinct from the enclosing statement's range (`uint256 fee = _fee(amount)`). The
-     stack height immediately before that instruction is the local's absolute position,
-     and absolute positions do not move while the frame lives.
+     `VariableDeclaration` node's own source range (`uint256 fee`), distinct from the
+     enclosing statement's range (`uint256 fee = _fee(amount)`). Stack height immediately
+     before that instruction is the local's absolute position, which doesn't move while
+     the frame lives.
 
-`session.py` does the observing; this module owns the static half (what is declared and
-where it is in scope) and the decoding half (a stack word plus a type becomes a value).
+`session.py` does the observing; this module owns the static half (what's declared and
+where it's in scope) and the decoding half (a stack word plus a type becomes a value).
 
-Nothing here guesses. A local whose slot was never observed, or whose scope does not
-contain the current instruction, reports `<unavailable>` with a reason, because a
-plausible wrong number is worse than an honest gap.
+Nothing here guesses: a local whose slot was never observed, or outside its scope,
+reports `<unavailable>` with a reason. A plausible wrong number is worse than a gap.
 """
 
 from __future__ import annotations
@@ -69,12 +67,11 @@ def _parse_src(src: str) -> tuple[int, int, int]:
 def stack_slots(type_string: str, location: str) -> int | None:
     """How many stack slots a local of this type occupies, or None if we cannot say.
 
-    Legacy (non-via-IR) codegen keeps one word per value, one pointer per memory
-    reference, and one slot number per storage reference. The exceptions are calldata
-    dynamic types, which carry offset *and* length, and external function types, which
-    carry address *and* selector. Returning None for anything unrecognised is deliberate:
-    an unknown width shifts every slot below it, so the honest answer propagates outward
-    as `<unavailable>` instead of misreading the neighbours.
+    Legacy (non-via-IR) codegen uses one word per value, one pointer per memory
+    reference, one slot per storage reference. Exceptions: calldata dynamic types carry
+    offset+length, external function types carry address+selector. None is deliberate for
+    anything unrecognised, since an unknown width would shift every slot below it; better
+    to propagate `<unavailable>` than misread the neighbours.
     """
     t = re.sub(r"\s+", " ", (type_string or "").strip())
     if not t:
@@ -172,11 +169,9 @@ class FunctionLocals:
 
 
 class LocalsIndex:
-    """Every local declaration in the project, indexed the three ways sevm needs.
-
-    By function, to lay out a frame; by exact source range, to spot the allocating
-    instruction in the source map; and by source offset, to answer "what is in scope
-    here".
+    """Every local declaration in the project, indexed three ways: by function (frame
+    layout), by exact source range (spot the allocating instruction in the source map),
+    and by source offset ("what is in scope here").
     """
 
     def __init__(self, asts: dict[str, dict]) -> None:
@@ -194,8 +189,7 @@ class LocalsIndex:
         """Put every list in the order solc pushes them: params, returns, then locals.
 
         The AST walk visits a function's body before its parameter list, so insertion
-        order is not allocation order, and allocation order is what the frame layout is
-        measured in.
+        order isn't allocation order, and allocation order is what frame layout needs.
         """
         for entry in self.by_function.values():
             entry.params.sort(key=lambda v: v.start)
@@ -209,8 +203,8 @@ class LocalsIndex:
     def _index_scopes(self, node: Any) -> None:
         """Pass one: every scope-owning node's source range, keyed by its AST id.
 
-        A declaration names its scope by id, not by range, so the ranges have to be
-        collected before the declarations can be placed.
+        A declaration names its scope by id, not by range, so ranges must be collected
+        before declarations can be placed.
         """
         if isinstance(node, list):
             for item in node:
@@ -319,10 +313,9 @@ class LocalsIndex:
         return self.by_range.get((file_id, start, length))
 
     def owned_by_modifier(self, var: LocalVar) -> bool:
-        """A modifier's body is inlined into the function it decorates.
-
-        Its locals therefore live in the same EVM frame and on the same stack, but they
-        belong to the ModifierDefinition, so they are not in the function's own layout.
+        """A modifier's body is inlined into the function it decorates, so its locals
+        live in the same EVM frame/stack but belong to the ModifierDefinition, not the
+        function's own layout.
         """
         return var.function_id in self.modifier_ids
 
@@ -361,13 +354,12 @@ class LocalsIndex:
 def declaration_pcs(pc_map: Any, index: LocalsIndex) -> dict[int, LocalVar]:
     """pc -> the declaration that instruction allocates.
 
-    Built once per code object. `session.py` turns this into a dict lookup per opcode,
-    which is what keeps the observation cheap enough to run on every instruction.
+    Built once per code object so `session.py` can do a cheap dict lookup per opcode,
+    running on every instruction.
 
-    Parameters are excluded on purpose. They are pushed by the *caller*, so their slots
-    come from the frame base instead, and solc's ABI decoder sometimes attributes an
-    instruction to a parameter's declaration range, which would record a position that
-    belongs to no frame.
+    Parameters are excluded: they're pushed by the caller, so their slots come from the
+    frame base instead, and solc's ABI decoder sometimes attributes an instruction to a
+    parameter's declaration range, which would record a position belonging to no frame.
     """
     out: dict[int, LocalVar] = {}
     if pc_map is None:
@@ -464,9 +456,9 @@ def _decode_memory(
 ) -> tuple[str, str, Any]:
     """Decode a memory reference type by following its pointer.
 
-    Solidity's memory layout is uniform: a dynamic array or string is a length word
-    followed by its elements, a struct or fixed array is its members in order, and every
-    member is one word, holding either a value or another pointer.
+    Solidity's memory layout is uniform: a dynamic array/string is a length word
+    followed by elements; a struct/fixed array is its members in order; every member is
+    one word holding either a value or another pointer.
     """
     t = _base_type(type_string)
     if depth > 3:

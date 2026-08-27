@@ -8,7 +8,7 @@ from typing import Any
 from eth_account import Account
 from web3 import EthereumTesterProvider, Web3
 
-from sevm.compile import Project, compile_project
+from sevm.compile import DEFAULT_SOLC_VERSION, Project, compile_project
 
 CONTRACTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts")
 
@@ -16,9 +16,16 @@ _project_cache: dict[str, Project] = {}
 
 
 def project() -> Project:
-    """Compile tests/contracts once per process; solc is the slow part."""
+    """Compile tests/contracts once per process; solc is the slow part.
+
+    Pinned to DEFAULT_SOLC_VERSION on purpose: the suite asserts on source maps and stack
+    layouts, so it must not float to whatever the newest pragma-compatible release happens
+    to be (nor download one mid-test). CLI runs auto-detect; this fixture does not.
+    """
     if "p" not in _project_cache:
-        _project_cache["p"] = compile_project([CONTRACTS_DIR])
+        _project_cache["p"] = compile_project(
+            [CONTRACTS_DIR], solc_version=DEFAULT_SOLC_VERSION
+        )
     return _project_cache["p"]
 
 

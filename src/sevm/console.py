@@ -25,11 +25,10 @@ class ConsoleFrontend:
         self.last_line = ""
 
     def _emit(self, result: CommandResult) -> None:
-        # `lines` are markup we built, with any user text already escaped into them.
-        # `notice` and `error` quote what the user typed, so they are escaped here: an
-        # error naming `balances[nope]` would otherwise lose the bracket to a style tag,
-        # and one containing an unmatched `[/...]` would raise MarkupError out of the
-        # read loop and end the session over a typo.
+        # `lines` are markup we built, with user text already escaped in. `notice`/`error`
+        # quote raw user input, so they're escaped here too: unescaped, `balances[nope]`
+        # loses its bracket to a style tag, and an unmatched `[/...]` raises MarkupError
+        # and kills the session over a typo.
         for line in result.lines:
             self.console.print(line)
         if result.notice:

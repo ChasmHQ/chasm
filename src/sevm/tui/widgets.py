@@ -4,16 +4,15 @@ Each pane takes a `FrameSnapshot` (and, where it needs more, data the app fetche
 the VM thread) and renders it. Panes never touch the session directly: they are pure
 render functions with a widget wrapped around them.
 
-Colour discipline, because "not intimidating for beginners" is a requirement: one accent
-per data class, never reused, so a colour always means the same thing. Source is green,
-stack cyan, memory blue, storage amber, gas magenta, control flow yellow, errors red.
-Anything the *current* opcode is about to touch is highlighted in every pane at once,
-which is what teaches the machine faster than prose does.
+Colour discipline: one accent per data class, never reused, so a colour always means the
+same thing. Source green, stack cyan, memory blue, storage amber, gas magenta, control
+flow yellow, errors red. Whatever the *current* opcode is about to touch is highlighted
+in every pane at once.
 
-Layout note: every wide cell is truncated by hand rather than with Rich's
-`no_wrap`/`overflow` columns. In a `Table.grid`, an unwrappable ratio column reports a
-minimum width equal to its longest line, and Rich then shrinks the *fixed* columns to
-make room, which silently eats the breakpoint gutter and the program counter.
+Layout note: wide cells are truncated by hand, not with Rich's `no_wrap`/`overflow`
+columns. In a `Table.grid`, an unwrappable ratio column reports a minimum width equal to
+its longest line, and Rich then shrinks the *fixed* columns to make room, silently
+eating the breakpoint gutter and the program counter.
 """
 
 from __future__ import annotations
@@ -31,22 +30,18 @@ from textual.widgets import Static
 from ..decode import StorageDecoder
 from ..frames import FrameSnapshot
 
-# One accent per data class, in ANSI colours so the debugger wears your terminal's own
-# palette: a solarized or gruvbox terminal gets a solarized or gruvbox sevm, and the
-# background is whatever your terminal already draws.
+# One accent per data class, in ANSI colours, so the debugger follows the terminal's own palette.
 C_SOURCE = "ansi_green"
 C_STACK = "ansi_cyan"
 C_MEMORY = "ansi_blue"
-# Plain blue is dark enough to fight the background at hex-digit density, so the bytes
-# themselves get the bright one. Zero words are dimmed instead: a memory dump is mostly
-# zeros, and dimming them makes the bytes that actually hold something stand out.
+# Plain blue is too dark against hex-digit density, so bytes get the bright variant.
+# Zero words are dimmed instead, so the memory dump's non-zero bytes stand out.
 C_MEMORY_TEXT = "ansi_bright_blue"
 C_MEMORY_ZERO = "ansi_bright_black"
 C_STORAGE = "ansi_yellow"
 C_GAS = "ansi_magenta"
-# Textual parses colours as CSS, not with Rich's names: "bright_yellow" and "grey23" are
-# Rich spellings that Textual rejects, and a rejected style is silently dropped rather
-# than raised, so the text just quietly loses its colour.
+# Textual parses colours as CSS, not Rich's names ("bright_yellow", "grey23" are Rich
+# spellings Textual rejects). A rejected style is silently dropped, not raised.
 C_FLOW = "ansi_bright_yellow"
 C_ERROR = "bold ansi_red"
 C_DIM = "dim"
@@ -190,13 +185,10 @@ def _fit_str(value: str, width: int, style: str = "") -> Text:
 # laying out a pane as Content
 # ==================================================================
 #
-# Panes are built from `Content`, not from a Rich `Table.grid`, and that choice is
-# load-bearing rather than stylistic. Textual implements text selection on the visual
-# layer: a `Content` gets character-addressable offsets, a blended selection highlight
-# and ctrl+c copy for free, while a Rich renderable is opaque to all three (its
-# `RichVisual.render_strips` ignores the selection entirely). Columns are therefore laid
-# out by padding here instead of by Rich, which is all `Table.grid` with fixed widths was
-# doing anyway.
+# Panes are built from `Content`, not Rich `Table.grid`: Textual's text selection,
+# highlighting and ctrl+c copy only work on `Content` (a Rich renderable's
+# `render_strips` ignores selection entirely). Columns are laid out by padding here
+# instead, which is all `Table.grid` did anyway.
 
 
 def _cell(
@@ -300,26 +292,22 @@ def storage_rows(
 class PaneBody(Static):
     """The rendered content of a pane.
 
-    Selection is deliberately *not* implemented here. sevm runs Textual with mouse
-    reporting off, so dragging is handled by the terminal (or tmux) exactly as it is in
-    any other program: it reaches the system clipboard, it works with tmux copy-mode, and
-    on macOS Cmd+C does what it always does. An in-app implementation could only copy via
-    OSC 52, which tmux swallows unless `set-clipboard` is on, and could only paste back
-    into the debugger.
+    Selection is deliberately *not* implemented here. Mouse reporting is off, so the
+    terminal/tmux handles dragging like any other program (system clipboard, tmux
+    copy-mode, macOS Cmd+C). An in-app implementation could only copy via OSC 52, which
+    tmux swallows unless `set-clipboard` is on, and could only paste back into sevm.
     """
 
 
 class Pane(VerticalScroll):
     """A titled panel that renders from a snapshot, and scrolls.
 
-    Panes render *more* than fits on purpose: the whole source file, the disassembly
-    around the pc, all of memory. That is what lets you look away from where execution
-    is paused, which is most of what reading a trace involves.
+    Panes render *more* than fits on purpose: the whole source file, disassembly around
+    the pc, all of memory, so you can look away from where execution is paused.
 
-    Each pane knows the line it is anchored to (the current source line, the pc, the top
-    of the stack) and re-centres on it whenever the debugger stops. Scrolling away from
-    that anchor puts a marker in the border, so a pane showing something other than the
-    current state always says so rather than quietly lying about where you are.
+    Each pane knows the line it's anchored to (current source line, pc, top of stack)
+    and re-centres on it on every stop. Scrolling away from that anchor puts a marker in
+    the border, so a pane never silently shows stale state.
     """
 
     TITLE = ""
@@ -405,7 +393,7 @@ class Pane(VerticalScroll):
         self.scroll_to_anchor()
 
     def _update_anchor_marker(self) -> None:
-        # Clickable: the marker is the affordance, so it should also be the control.
+        # Clickable: the marker doubles as the control.
         hint = "" if self.at_anchor else f"[@click=jump_to_anchor] {self.ANCHOR_HINT} [/]"
         if self._marker != hint:
             self._marker = hint
@@ -424,12 +412,12 @@ class Pane(VerticalScroll):
 class SourcePane(Pane):
     """Syntax-highlighted Solidity with a gdb-style gutter.
 
-    Rich's `Syntax` widget cannot render a custom gutter, so the file is highlighted once
-    and then re-laid-out line by line. That buys the breakpoint column, the current-line
-    arrow, and a per-line gas column, none of which a plain Syntax could show.
+    Rich's `Syntax` widget can't render a custom gutter, so the file is highlighted once
+    and re-laid-out line by line, which buys the breakpoint column, current-line arrow,
+    and per-line gas column.
 
     The whole file is laid out, not a window around the current line, so you can scroll
-    to a function that has not run yet and set a breakpoint in it.
+    ahead and set a breakpoint in code that hasn't run yet.
     """
 
     TITLE = "SOURCE"
@@ -767,13 +755,9 @@ class StackPane(Pane):
 class MemoryPane(Pane):
     """Memory in gdb's `x/g` shape: an address, then 8-byte giant words.
 
-    Byte-per-column hex is what a hex editor wants; the EVM works in 32-byte words, so
-    every value you are looking for is aligned to one. Grouping in giants means a word
-    reads as four columns rather than as thirty-two loose bytes, and it matches what
-    `x/4xg 0x80` prints, so the pane and the command agree.
-
-    How many giants fit is decided by the pane width, since four of them need 75 columns
-    and the pane is rarely that wide.
+    The EVM works in 32-byte words, so grouping in 8-byte giants (matching `x/4xg`)
+    reads as four columns instead of thirty-two loose bytes. How many fit per row is
+    decided by pane width, since four giants need 75 columns and the pane rarely is.
     """
 
     TITLE = "MEMORY"
@@ -851,11 +835,10 @@ class MemoryPane(Pane):
 class CommandLog(Pane):
     """The command transcript, and the one pane whose values are never truncated.
 
-    A `RichLog` would be the obvious widget, but it stores its scrollback as rendered
-    Rich strips, which Textual cannot select: dragging over it produced nothing while
-    every other pane worked. Keeping the lines as `Content` makes it selectable like the
-    rest, and it is the pane most worth copying out of, because `p` prints whole
-    addresses here while the panes ellipsise them to fit.
+    `RichLog` stores its scrollback as rendered Rich strips, which Textual can't select
+    (dragging over it did nothing). Keeping lines as `Content` makes it selectable like
+    the rest, which matters here most: `p` prints whole addresses while the other panes
+    ellipsise them.
     """
 
     TITLE = ""

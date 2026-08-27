@@ -81,12 +81,20 @@ class CheatSpec:
     # One line of help. `help cheatcodes` is generated from these, so the documented set
     # is the implemented set by construction and cannot drift as cheats are added.
     doc: str = ""
+    # Overload group, collapsed to one row in `help cheatcodes`: forge-std's assertions
+    # alone are 116 signatures.
+    family: str = ""
 
 
 _REGISTRY: dict[bytes, CheatSpec] = {}
 
 
-def _cheat(signature: str, ret_types: list[str] | None = None, doc: str = ""):
+def _cheat(
+    signature: str,
+    ret_types: list[str] | None = None,
+    doc: str = "",
+    family: str = "",
+):
     """Register a handler under `signature`'s 4-byte selector."""
     arg_types = _arg_types(signature)
 
@@ -99,6 +107,7 @@ def _cheat(signature: str, ret_types: list[str] | None = None, doc: str = ""):
             ret_types=ret_types or [],
             fn=fn,
             doc=doc,
+            family=family,
         )
         return fn
 
@@ -230,6 +239,183 @@ def _label(ctx: CheatContext) -> None:
     ctx.cheats.labels[_addr(ctx.args[0])] = ctx.args[1]
 
 
+# ---- assertions -----------------------------------------------------------
+#
+# forge-std's `assertEq` and friends are thin wrappers: the plain forms call the cheatcode
+# only once the comparison has already failed, but the `*Decimal` and `*ApproxEq*` forms
+# call it unconditionally and expect the VM to do the comparison. So these implement the
+# comparison for real, and revert with forge's message shape when it does not hold.
+
+ASSERT_FAMILY = "assert"
+
+# The types forge-std asserts over, each also in its array form.
+_ASSERT_TYPES = ("bool", "uint256", "int256", "address", "bytes32", "string", "bytes")
+
+_ORDER_OPS: dict[str, tuple[Callable[[Any, Any], bool], str]] = {
+    "assertGt": (lambda a, b: a > b, "<="),
+    "assertGe": (lambda a, b: a >= b, "<"),
+    "assertLt": (lambda a, b: a < b, ">="),
+    "assertLe": (lambda a, b: a <= b, ">"),
+}
+
+
+def _fmt(value: Any, decimals: int | None = None) -> str:
+    """Render one asserted value the way forge prints it in a failure."""
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_fmt(v, decimals) for v in value) + "]"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (bytes, bytearray)):
+        return "0x" + bytes(value).hex()
+    if isinstance(value, int) and decimals:
+        sign = "-" if value < 0 else ""
+        whole, frac = divmod(abs(value), 10**decimals)
+        return f"{sign}{whole}.{frac:0{decimals}d}"
+    return str(value)
+
+
+def _fail(message: str, err: str | None) -> None:
+    """forge prefixes a custom message and drops its own; otherwise it says `assertion failed`."""
+    raise CheatError(f"{err}: {message}" if err else f"assertion failed: {message}")
+
+
+def _tail_err(args: tuple, index: int) -> str | None:
+    return str(args[index]) if len(args) > index else None
+
+
+def _equality(op: str, decimal: bool):
+    def handler(ctx: CheatContext) -> None:
+        left, right = ctx.args[0], ctx.args[1]
+        decimals = int(ctx.args[2]) if decimal else None
+        err = _tail_err(ctx.args, 3 if decimal else 2)
+        equal = left == right
+        if op == "assertEq" and not equal:
+            _fail(f"{_fmt(left, decimals)} != {_fmt(right, decimals)}", err)
+        if op == "assertNotEq" and equal:
+            _fail(f"{_fmt(left, decimals)} == {_fmt(right, decimals)}", err)
+
+    return handler
+
+
+def _ordering(op: str, decimal: bool):
+    compare, violated = _ORDER_OPS[op]
+
+    def handler(ctx: CheatContext) -> None:
+        left, right = int(ctx.args[0]), int(ctx.args[1])
+        decimals = int(ctx.args[2]) if decimal else None
+        err = _tail_err(ctx.args, 3 if decimal else 2)
+        if not compare(left, right):
+            _fail(
+                f"{_fmt(left, decimals)} {violated} {_fmt(right, decimals)}",
+                err,
+            )
+
+    return handler
+
+
+def _approx(relative: bool, decimal: bool):
+    def handler(ctx: CheatContext) -> None:
+        left, right = int(ctx.args[0]), int(ctx.args[1])
+        limit = int(ctx.args[2])
+        decimals = int(ctx.args[3]) if decimal else None
+        err = _tail_err(ctx.args, 4 if decimal else 3)
+        delta = abs(left - right)
+        if relative:
+            # forge measures the relative delta against the right-hand (expected) value,
+            # in 18-decimal fixed point; a zero expectation only passes on an exact match.
+            if right == 0:
+                actual = 0 if delta == 0 else None
+            else:
+                actual = delta * 10**18 // abs(right)
+            if actual is None or actual > limit:
+                shown = "undefined" if actual is None else _fmt(actual, 16) + "%"
+                _fail(
+                    f"{_fmt(left, decimals)} !~= {_fmt(right, decimals)} "
+                    f"(max delta: {_fmt(limit, 16)}%, real delta: {shown})",
+                    err,
+                )
+        elif delta > limit:
+            _fail(
+                f"{_fmt(left, decimals)} !~= {_fmt(right, decimals)} "
+                f"(max delta: {_fmt(limit, decimals)}, real delta: {_fmt(delta, decimals)})",
+                err,
+            )
+
+    return handler
+
+
+def _boolean(expected: bool):
+    def handler(ctx: CheatContext) -> None:
+        err = _tail_err(ctx.args, 1)
+        if bool(ctx.args[0]) is not expected:
+            raise CheatError(err or "assertion failed")
+
+    return handler
+
+
+def _register(signature: str, handler: Callable, doc: str) -> None:
+    _cheat(signature, doc=doc, family=ASSERT_FAMILY)(handler)
+
+
+def _register_assertions() -> None:
+    """Build forge-std's assertion surface (116 overloads) from the op x type matrix."""
+    for expected, name in ((True, "assertTrue"), (False, "assertFalse")):
+        for sig in (f"{name}(bool)", f"{name}(bool,string)"):
+            _register(sig, _boolean(expected), f"revert unless the value is {expected}")
+
+    for op in ("assertEq", "assertNotEq"):
+        relation = "equal" if op == "assertEq" else "different"
+        for base in _ASSERT_TYPES:
+            for kind in (base, f"{base}[]"):
+                for sig in (f"{op}({kind},{kind})", f"{op}({kind},{kind},string)"):
+                    _register(sig, _equality(op, False), f"revert unless {relation}")
+        for kind in ("uint256", "int256"):
+            for sig in (
+                f"{op}Decimal({kind},{kind},uint256)",
+                f"{op}Decimal({kind},{kind},uint256,string)",
+            ):
+                _register(
+                    sig,
+                    _equality(op, True),
+                    f"revert unless {relation}, printing fixed-point values",
+                )
+
+    for op in _ORDER_OPS:
+        for kind in ("uint256", "int256"):
+            for sig in (f"{op}({kind},{kind})", f"{op}({kind},{kind},string)"):
+                _register(sig, _ordering(op, False), "revert unless the order holds")
+            for sig in (
+                f"{op}Decimal({kind},{kind},uint256)",
+                f"{op}Decimal({kind},{kind},uint256,string)",
+            ):
+                _register(
+                    sig,
+                    _ordering(op, True),
+                    "revert unless the order holds, printing fixed-point values",
+                )
+
+    for name, relative in (("assertApproxEqAbs", False), ("assertApproxEqRel", True)):
+        limit = "max delta" if not relative else "max relative delta (1e18 = 100%)"
+        for kind in ("uint256", "int256"):
+            for sig in (
+                f"{name}({kind},{kind},uint256)",
+                f"{name}({kind},{kind},uint256,string)",
+            ):
+                _register(sig, _approx(relative, False), f"revert past the {limit}")
+            for sig in (
+                f"{name}Decimal({kind},{kind},uint256,uint256)",
+                f"{name}Decimal({kind},{kind},uint256,uint256,string)",
+            ):
+                _register(
+                    sig,
+                    _approx(relative, True),
+                    f"revert past the {limit}, printing fixed-point values",
+                )
+
+
+_register_assertions()
+
+
 # ===========================================================================
 # entry points
 # ===========================================================================
@@ -265,17 +451,41 @@ _ETHER_UNITS = {
 }
 
 
+def all_specs() -> list[CheatSpec]:
+    """Every registered cheat spec, alphabetically by signature."""
+    return sorted(_REGISTRY.values(), key=lambda spec: spec.signature.lower())
+
+
 def listing() -> list[CheatSpec]:
-    """Every implemented cheatcode, alphabetically, for `help cheatcodes`."""
-    return sorted(_REGISTRY.values(), key=lambda spec: spec.name.lower())
+    """Cheatcodes for `help cheatcodes`, with each overload family on one row."""
+    rows = [spec for spec in _REGISTRY.values() if not spec.family]
+    for family in sorted({spec.family for spec in _REGISTRY.values() if spec.family}):
+        members = [spec for spec in _REGISTRY.values() if spec.family == family]
+        rows.append(
+            CheatSpec(
+                name=family,
+                signature=f"{family}*(...)",
+                arg_types=[],
+                ret_types=[],
+                fn=members[0].fn,
+                doc=f"forge-std assertions, {len(members)} overloads (listed below)",
+                family=family,
+            )
+        )
+    return sorted(rows, key=lambda spec: spec.name.lower())
 
 
-def spec_by_name(name: str) -> CheatSpec | None:
-    """The (v1-unique) cheat spec for a bare name, e.g. "warp"."""
-    for spec in _REGISTRY.values():
-        if spec.name == name:
-            return spec
-    return None
+def specs_by_name(name: str) -> list[CheatSpec]:
+    """Every overload registered under a bare name, e.g. "assertEq"."""
+    return [spec for spec in all_specs() if spec.name == name]
+
+
+def spec_by_name(name: str, argc: int | None = None) -> CheatSpec | None:
+    """One overload for a bare name, e.g. "warp"; `argc` picks between overloads."""
+    matches = specs_by_name(name)
+    if argc is not None:
+        matches = [spec for spec in matches if len(spec.arg_types) == argc]
+    return matches[0] if matches else None
 
 
 def parse_cheat_arg(text: str) -> Any:
@@ -324,15 +534,61 @@ def _coerce(abi_type: str, value: Any) -> Any:
     return value
 
 
+def _type_rank(abi_type: str, value: Any) -> int:
+    """How well an ABI type suits an untyped prompt literal; lower is better.
+
+    An interactive `vm.assertEq(1, 2)` carries no type, and `1` encodes as `bool` just as
+    happily as `uint256`, so overload choice needs a preference, not just a trial encode.
+    """
+    if isinstance(value, bool):
+        order = ["bool", "uint256", "int256", "bytes32", "string"]
+    elif isinstance(value, int):
+        head = "uint256" if value >= 0 else "int256"
+        order = [head, "int256", "bytes32", "bool", "string"]
+    elif isinstance(value, str) and value.lower().startswith("0x"):
+        order = (
+            ["address", "bytes32", "bytes", "uint256", "string"]
+            if len(value) == 42
+            else ["bytes32", "bytes", "uint256", "address", "string"]
+        )
+    else:
+        order = ["string", "bytes"]
+    return order.index(abi_type) if abi_type in order else len(order)
+
+
+def _select_overload(name: str, values: Sequence[Any]) -> CheatSpec:
+    """Pick the overload that matches the literals typed at the prompt."""
+    candidates = specs_by_name(name)
+    if not candidates:
+        raise CheatError(f"unknown or unimplemented cheatcode: vm.{name}")
+    fitting = [spec for spec in candidates if len(spec.arg_types) == len(values)]
+    if not fitting:
+        arities = sorted({len(spec.arg_types) for spec in candidates})
+        raise CheatError(
+            f"vm.{name} takes {' or '.join(str(a) for a in arities)} argument(s), "
+            f"got {len(values)}"
+        )
+    fitting.sort(
+        key=lambda spec: (
+            sum(_type_rank(t, v) for t, v in zip(spec.arg_types, values, strict=True)),
+            spec.signature,
+        )
+    )
+    for spec in fitting:
+        try:
+            abi_encode(
+                spec.arg_types,
+                [_coerce(t, v) for t, v in zip(spec.arg_types, values, strict=True)],
+            )
+        except Exception:
+            continue
+        return spec
+    raise CheatError(f"vm.{name}: arguments do not fit any overload")
+
+
 def encode_cheat_call(name: str, values: Sequence[Any]) -> bytes:
     """Build the calldata (selector + ABI args) for an interactive `vm.<name>(...)`."""
-    spec = spec_by_name(name)
-    if spec is None:
-        raise CheatError(f"unknown or unimplemented cheatcode: vm.{name}")
-    if len(values) != len(spec.arg_types):
-        raise CheatError(
-            f"vm.{name} takes {len(spec.arg_types)} argument(s), got {len(values)}"
-        )
+    spec = _select_overload(name, values)
     coerced = [_coerce(t, v) for t, v in zip(spec.arg_types, values, strict=True)]
     return function_signature_to_4byte_selector(spec.signature) + (
         abi_encode(spec.arg_types, coerced) if spec.arg_types else b""
@@ -359,26 +615,40 @@ def cheat_name(calldata: bytes) -> str | None:
 
 # ---- console.log ----------------------------------------------------------
 
-# console.log forwards `log(<types>)` calls. We decode the leading selector's declared
-# argument types from the signature embedded by solc; forge-std uses a fixed table, so we
-# resolve the common overloads by selector.
-_CONSOLE_SIGS = [
-    "log(string)",
-    "log(uint256)",
+# forge-std's console.sol declares one overload per combination of these four types, up to
+# four arguments, plus a few single-argument extras. Generated rather than listed: the
+# table is 340 entries and a missing one silently swallows the user's log line.
+_CONSOLE_COMBO_TYPES = ("uint256", "string", "bool", "address")
+_CONSOLE_EXTRA_SIGS = (
+    "log()",
     "log(int256)",
-    "log(bool)",
-    "log(address)",
     "log(bytes)",
-    "log(string,uint256)",
-    "log(string,int256)",
-    "log(string,address)",
-    "log(string,bool)",
-    "log(string,string)",
-    "log(address,uint256)",
-]
-_CONSOLE_TABLE: dict[bytes, list[str]] = {
-    function_signature_to_4byte_selector(sig): _arg_types(sig) for sig in _CONSOLE_SIGS
-}
+    "log(bytes32)",
+    "logs(bytes)",
+    "logInt(int256)",
+    "logUint(uint256)",
+    "logString(string)",
+    "logBool(bool)",
+    "logAddress(address)",
+    "logBytes(bytes)",
+    "logBytes32(bytes32)",
+)
+
+
+def _console_table() -> dict[bytes, list[str]]:
+    table: dict[bytes, list[str]] = {}
+    current: list[tuple[str, ...]] = [(t,) for t in _CONSOLE_COMBO_TYPES]
+    for _ in range(4):
+        for combo in current:
+            sig = f"log({','.join(combo)})"
+            table[function_signature_to_4byte_selector(sig)] = list(combo)
+        current = [(*c, t) for c in current for t in _CONSOLE_COMBO_TYPES]
+    for sig in _CONSOLE_EXTRA_SIGS:
+        table[function_signature_to_4byte_selector(sig)] = _arg_types(sig)
+    return table
+
+
+_CONSOLE_TABLE: dict[bytes, list[str]] = _console_table()
 
 
 def decode_console_log(calldata: bytes) -> str | None:
@@ -392,5 +662,4 @@ def decode_console_log(calldata: bytes) -> str | None:
         values = abi_decode(types, calldata[4:])
     except Exception:
         return None
-    parts = [str(v) for v in values]
-    return " ".join(parts)
+    return " ".join(_fmt(v) for v in values)

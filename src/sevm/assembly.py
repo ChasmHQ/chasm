@@ -1,26 +1,20 @@
 """Yul / inline-assembly execution against the paused frame.
 
-`p balances[alice]` compiles Solidity and runs it on a throwaway state snapshot, which is
-exactly what you want for a question and exactly what you do not want when the question is
-"what happens if I put a 1 in slot 3 right now". This module is the other half: a Yul
-expression typed at the prompt is executed by the *real* opcode implementations against the
-*live* computation, so `sstore(3, 1)` writes the slot the running transaction will read.
+Unlike `p <expr>`, which compiles Solidity and runs it on a throwaway state snapshot, a Yul
+expression here runs via the *real* opcode implementations against the *live* computation, so
+`sstore(3, 1)` writes the slot the running transaction will read.
 
-How an op runs: the arguments are evaluated depth-first, pushed onto the frame's real
-stack in EVM order (first argument on top), Py-EVM's own opcode function is invoked, the
-result is read off the top, and the stack is restored to exactly the height and contents it
-had before. Nothing is reimplemented, so `keccak256`, `mcopy` and `staticcall` behave here
-precisely as they do mid-execution.
+Execution: args are evaluated depth-first, pushed onto the frame's real stack in EVM order
+(first arg on top), Py-EVM's own opcode function runs, the result is read off the top, and the
+stack is restored to its prior height/contents. Nothing is reimplemented, so `keccak256`,
+`mcopy`, `staticcall` behave exactly as they do mid-execution.
 
-Two deliberate departures from a real execution:
+Two departures from real execution: gas is metered then refunded (cost is reported, but
+inspection must not be able to induce an out-of-gas); memory expansion from an op is kept,
+since the op genuinely wrote there.
 
-  * Gas is metered and then handed back. The cost is reported, but poking at the machine
-    must not be able to turn a transaction that succeeds into one that runs out of gas.
-  * Memory expansion caused by an op is kept, because the op genuinely wrote there and
-    hiding that would make the MEMORY pane lie.
-
-The blocked builtins are Yul's own restrictions (`jump`, `jumpi`, `pc`, `push*`, `dup*`,
-`swap*`) plus the frame terminators, which have a debugger verb of their own.
+Blocked builtins: Yul's own restrictions (`jump`, `jumpi`, `pc`, `push*`, `dup*`, `swap*`)
+plus the frame terminators, which have their own debugger verb instead.
 """
 
 from __future__ import annotations
@@ -214,9 +208,9 @@ BUILTINS: dict[str, Builtin] = {
     for name, opcode, inputs, outputs, summary in _TABLE
 }
 
-# Refused, with the reason. The first group is Yul's own exclusion list: these opcodes are
-# how the compiler implements control flow, and a Yul author never writes them either. The
-# second group would end the frame under the debugger's feet, and each has a verb instead.
+# Refused, with reason. First group: Yul's own exclusion list, compiler-only control-flow
+# opcodes a Yul author never writes. Second group would end the frame under the debugger's
+# feet; each has a verb instead.
 BLOCKED: dict[str, str] = {
     "jump": "Yul has no `jump`; use the debugger's `jump 0xPC` or `set $pc = 0xPC`",
     "jumpi": "Yul has no `jumpi`; set a conditional breakpoint instead",
@@ -238,10 +232,10 @@ for _n in range(1, 17):
 def has_builtin_head(line: str) -> bool:
     """True when a bare prompt line opens with a call to a Yul builtin.
 
-    The first half of deciding that a line is assembly rather than Solidity: requiring a
-    known builtin is what leaves a contract's own `foo(1)` on the Solidity path. A blocked
-    name counts as known, so `revert(0, 0)` gets the Yul reason rather than
-    `Undeclared identifier`. The second half is `lexes`, below.
+    First half of the assembly-vs-Solidity decision: requiring a known builtin leaves a
+    contract's own `foo(1)` on the Solidity path. A blocked name counts as known, so
+    `revert(0, 0)` gets the Yul reason instead of `Undeclared identifier`. Second half is
+    `lexes`, below.
     """
     match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\(", line.strip())
     if match is None:
@@ -253,11 +247,10 @@ def has_builtin_head(line: str) -> bool:
 def lexes(source: str) -> bool:
     """True when every character of `source` is one Yul can read.
 
-    This is what keeps `keccak256(abi.encode(owner))` -- a Solidity expression whose head
-    happens to share a builtin's name -- on the Solidity path: Yul has no `.`, so the
-    line cannot be meant as assembly. It runs on the text *after* convenience-variable
-    substitution, or `mstore(0x80, $storage[1])` would be rejected for the `$` that is
-    about to be replaced by a number.
+    Keeps `keccak256(abi.encode(owner))` (a Solidity expression whose head shares a
+    builtin's name) on the Solidity path, since Yul has no `.`. Runs after
+    convenience-variable substitution, or `mstore(0x80, $storage[1])` would be rejected
+    for the `$` about to become a number.
     """
     try:
         _tokenize(source.strip())
@@ -410,8 +403,7 @@ class _Parser:
     def _number(self, token: _Token) -> Literal:
         text = token.text.replace("_", "")
         value = int(text, 16) if text[:2].lower() == "0x" else int(text)
-        # `1 ether` is not Yul, but a debugger prompt is not a compiler and the units are
-        # the reason `set var` is pleasant to use.
+        # `1 ether` is not Yul, but the unit suffix is what makes `set var` pleasant to use.
         unit = self.current
         if unit is not None and unit.kind == "name" and unit.text in _ETHER_UNITS:
             self.index += 1
@@ -549,8 +541,8 @@ def run(session: Any, computation: Any, source: str) -> list[dict]:
             value = _evaluate(session, computation, node)
             spent = before - meter.gas_remaining
         finally:
-            # The cost is real and worth reporting, but an inspection must not be able to
-            # starve the transaction of gas, so the meter is put back where it was.
+            # Cost is real and worth reporting, but inspection must not starve the
+            # transaction of gas, so the meter is restored.
             meter.gas_remaining = before
         rows.append(
             {

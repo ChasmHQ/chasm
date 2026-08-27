@@ -1,10 +1,10 @@
 """The system clipboard, through the platform's own tool.
 
 Deliberately a subprocess (`pbcopy`, `wl-copy`, `xclip`) rather than the OSC 52 escape
-sequence a TUI would normally use. OSC 52 has to survive every layer between the process
-and the window manager: tmux drops it unless `set-clipboard` is on, ssh and screen have
-their own rules, and Terminal.app ignores it outright. Piping to the platform tool either
-works or fails loudly, and it puts the text where Cmd+V will find it.
+sequence a TUI would normally use: OSC 52 has to survive every layer between process and
+window manager (tmux drops it unless `set-clipboard` is on, ssh/screen have their own rules,
+Terminal.app ignores it outright). The platform tool either works or fails loudly, and puts
+the text where Cmd+V finds it.
 """
 
 from __future__ import annotations
@@ -40,8 +40,7 @@ def available_tool() -> str | None:
 def copy(text: str) -> str:
     """Put `text` on the system clipboard. Returns the tool used.
 
-    Raises `ClipboardError` with something actionable rather than failing quietly: a
-    clipboard command that silently does nothing is worse than one that says it cannot.
+    Raises `ClipboardError` with an actionable message rather than failing silently.
     """
     for name, command in _CANDIDATES:
         if not shutil.which(command[0]):

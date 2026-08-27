@@ -1,25 +1,38 @@
 """Solidity compilation and the artifact model.
 
-solcx only, by decision. Everything downstream depends on the `Artifact` dataclass and
-nothing else, so a Foundry `out/*.json` importer can be added later by producing the same
-dataclass without touching the debugger.
+solcx only, by decision: everything downstream depends only on the `Artifact` dataclass, so
+a Foundry `out/*.json` importer could be added later by producing the same dataclass.
 
-Debug builds are compiled with the optimizer OFF and via-IR OFF. That is not a default,
-it is a requirement: optimized codegen fuses and reorders instructions, which degrades the
-source map and destroys the stack-slot heuristic that local-variable support will need.
-`compile_project` refuses to silently produce an artifact that cannot be debugged well.
+Debug builds compile with optimizer OFF and via-IR OFF, as a requirement not a default:
+optimized codegen fuses/reorders instructions, degrading the source map and breaking the
+stack-slot heuristic local-variable support will need. `compile_project` enforces this.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
-from collections.abc import Sequence
+import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import solcx
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
+from .libs import (
+    Dependency,
+    LibError,
+    import_closure,
+    install,
+    missing_prefixes,
+    package_of,
+    write_remappings,
+)
+
+# Used when a source carries no `pragma solidity` at all (rare). When a pragma is present,
+# the version is auto-detected from it (Foundry-style), so this is only the last resort.
 DEFAULT_SOLC_VERSION = "0.8.28"
 
 # Everything the debugger needs, requested in one pass.
@@ -76,9 +89,8 @@ class Artifact:
     storage_layout: dict
     method_identifiers: dict[str, str]
     immutable_references: dict[str, list[dict]] = field(default_factory=dict)
-    # Byte range of the `contract X { ... }` declaration in its source file. The eval
-    # injector needs this: a file can hold several contracts, and splicing into the last
-    # closing brace in the file would target the wrong one.
+    # Byte range of the `contract X { ... }` declaration. The eval injector needs this to
+    # splice into the right contract's closing brace when a file holds several.
     source_range: tuple[int, int] = (-1, -1)
 
     @property
@@ -271,22 +283,161 @@ def ensure_solc(version: str = DEFAULT_SOLC_VERSION) -> None:
         solcx.install_solc(version)
 
 
+# -- version resolution ------------------------------------------------------
+#
+# solc rejects a source whose `pragma solidity` does not match the compiler version, so a
+# file pinned to 0.8.21 cannot be built with 0.8.28. Foundry (via svm) solves this by
+# reading every source's pragma, intersecting the constraints, and picking the highest
+# compatible release, installing it on demand. We do the same, reusing solcx's pragma
+# comparator semantics (correct solidity caret handling: `^0.8.0` means `>=0.8.0 <0.9.0`).
+
+_PRAGMA_RE = re.compile(r"pragma\s+solidity\s+([^;]+);")
+# One comparator token from a pragma, e.g. `^0.8.0`, `>=0.6.2`, `<0.9.0`, `0.8.21`.
+_COMPARATOR_RE = re.compile(r"(([<>]?=?|\^)\d+\.\d+\.\d+)")
+
+
+def _extract_pragmas(sources: dict[str, SourceFile]) -> dict[str, list[str]]:
+    """Each `pragma solidity ...` constraint -> the source keys that declare it.
+
+    Insertion-ordered and deduped, so the keys are the distinct constraints to intersect
+    and the values name the files behind each (used to explain an unsatisfiable set).
+    """
+    by_constraint: dict[str, list[str]] = {}
+    for key in sorted(sources):
+        for match in _PRAGMA_RE.finditer(sources[key].text):
+            files = by_constraint.setdefault(match.group(1).strip(), [])
+            if key not in files:
+                files.append(key)
+    return by_constraint
+
+
+def _comparator_set_spec(comparator_set: str) -> SpecifierSet:
+    """Translate one solidity comparator set (space/comma-joined ANDs) into a SpecifierSet.
+
+    Mirrors solcx's own mapping so caret behaves the solidity way: `^0.8.0` -> `~=0.8.0`
+    (i.e. `>=0.8.0 <0.9.0`), and a bare `0.8.21` -> `==0.8.21`.
+    """
+
+    def as_spec(item: str) -> str:
+        ret = item.replace("^", "~=")
+        if ret and ret[0].isnumeric():
+            return f"=={ret}"
+        if len(ret) >= 2 and ret[0] == "=" and ret[1] != "=":
+            return f"={ret}"
+        return ret
+
+    specs = ",".join(as_spec(tok[0]) for tok in _COMPARATOR_RE.findall(comparator_set))
+    return SpecifierSet(specs)
+
+
+def _pragma_matches(constraint: str, versions: Sequence[Version]) -> set[Version]:
+    """Subset of `versions` satisfying one pragma constraint (handles `||` OR groups)."""
+    matched: set[Version] = set()
+    for comparator_set in constraint.replace(" ", "").split("||"):
+        matched.update(_comparator_set_spec(comparator_set).filter(versions))
+    return matched
+
+
+def _select_from(
+    constraints: Sequence[str], versions: Sequence[Version]
+) -> Version | None:
+    """Highest version satisfying every pragma in `constraints`, or None."""
+    candidates = set(versions)
+    for constraint in constraints:
+        candidates &= _pragma_matches(constraint, versions)
+        if not candidates:
+            return None
+    return max(candidates) if candidates else None
+
+
+def resolve_solc_version(
+    sources: dict[str, SourceFile],
+    *,
+    explicit: str | None = None,
+    config_pinned: str | None = None,
+) -> str:
+    """Pick the solc version to build `sources` with.
+
+    Precedence, matching Foundry: an explicit `--solc` wins, then a foundry.toml `solc`
+    pin, then auto-detection from the sources' `pragma solidity` lines (highest compatible
+    release, installed on demand), then `DEFAULT_SOLC_VERSION` when no pragma is present.
+
+    Raises CompileError when the pragmas cannot all be satisfied by any known release.
+    """
+    if explicit:
+        return explicit
+    if config_pinned:
+        return config_pinned
+
+    pragmas = _extract_pragmas(sources)
+    if not pragmas:
+        return DEFAULT_SOLC_VERSION
+    constraints = list(pragmas)
+
+    # Foundry-exact: consider every installable release and pick the highest match, then
+    # install it if missing. Fall back to the installed set when offline.
+    try:
+        installable = solcx.get_installable_solc_versions()
+    except Exception:
+        installable = []
+    selected = _select_from(constraints, installable)
+    if selected is None:
+        installed = solcx.get_installed_solc_versions()
+        selected = _select_from(constraints, installed)
+    if selected is None:
+        raise CompileError(_conflict_message(pragmas))
+    return str(selected)
+
+
+def _conflict_message(pragmas: dict[str, list[str]]) -> str:
+    """Explain an unsatisfiable pragma set by naming the files behind each constraint.
+
+    Files import each other into one compilation unit, so a single solc must satisfy them
+    all; when none does, the fix is to align the pragmas (or pass --solc).
+    """
+    lines = ["no solc release satisfies every pragma (they conflict):"]
+    for constraint, files in pragmas.items():
+        shown = ", ".join(files[:3]) + (
+            f" (+{len(files) - 3} more)" if len(files) > 3 else ""
+        )
+        lines.append(f"  {constraint:<18} {shown}")
+    lines.append(
+        "Align the pragmas so one version fits (e.g. set the test's pragma to match the "
+        "contracts it imports), or force one with --solc."
+    )
+    return "\n".join(lines)
+
+
 def compile_project(
     paths: Sequence[str],
-    solc_version: str = DEFAULT_SOLC_VERSION,
+    solc_version: str | None = None,
     optimize: bool = False,
     evm_version: str | None = None,
 ) -> Project:
-    """Compile every .sol under `paths` into a debuggable Project."""
-    ensure_solc(solc_version)
+    """Compile every .sol under `paths` into a debuggable Project.
+
+    With no `solc_version`, the version is auto-detected from the sources' pragmas.
+    """
     sources = _read_sources(list(paths))
+    resolved = resolve_solc_version(sources, explicit=solc_version)
+    ensure_solc(resolved)
     out = compile_standard(
         {k: s.text for k, s in sources.items()},
-        solc_version=solc_version,
+        solc_version=resolved,
         optimize=optimize,
         evm_version=evm_version,
     )
-    return _build_project(out, sources, solc_version, optimize)
+    return _build_project(out, sources, resolved, optimize)
+
+
+def _object_bytes(obj: str) -> bytes:
+    """Bytecode as bytes, or empty for an object solc left unlinked.
+
+    A contract using an unlinked library keeps `__$<hash>$__` placeholders where the
+    library address goes; it has no runnable code until linked, so it gets no bytecode
+    rather than crashing the whole project.
+    """
+    return b"" if "_" in obj else bytes.fromhex(obj)
 
 
 def _build_project(
@@ -322,8 +473,8 @@ def _build_project(
                 name=name,
                 source_key=source_key,
                 abi=data.get("abi", []),
-                bytecode=bytes.fromhex(evm.get("bytecode", {}).get("object", "")),
-                deployed_bytecode=bytes.fromhex(
+                bytecode=_object_bytes(evm.get("bytecode", {}).get("object", "")),
+                deployed_bytecode=_object_bytes(
                     evm.get("deployedBytecode", {}).get("object", "")
                 ),
                 source_map=evm.get("bytecode", {}).get("sourceMap", "") or "",
@@ -353,20 +504,27 @@ def _build_project(
 # Foundry project support
 # ======================================================================
 
-# The bundled minimal forge-std shipped inside the package (see vendor/forge-std). Used
-# when a target .sol is not part of a real Foundry project, or the project has no
-# lib/forge-std, so a standalone `Test.sol` still compiles with no `forge install`.
-BUNDLED_FORGE_STD_SRC = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "vendor", "forge-std", "src"
-)
-
 # Directories never walked when collecting a project's sources.
 _SKIP_DIRS = frozenset({".git", "node_modules", "out", "cache", "broadcast", ".venv"})
+
+# The import every Foundry test needs; installed for a `.sol` target even when the test
+# happens not to import it yet, so the directory is a working Foundry project afterwards.
+FORGE_STD = "forge-std"
+FORGE_STD_SAMPLE_IMPORT = "forge-std/Test.sol"
 
 DEFAULT_FOUNDRY_TOML = """\
 [profile.default]
 src = "src"
 test = "test"
+libs = ["lib"]
+# sevm forces the optimizer OFF for debuggable builds regardless of this file.
+optimizer = false
+"""
+
+# For a lone .sol outside any project: no src/test layout to declare, just somewhere to
+# install libraries.
+STANDALONE_FOUNDRY_TOML = """\
+[profile.default]
 libs = ["lib"]
 # sevm forces the optimizer OFF for debuggable builds regardless of this file.
 optimizer = false
@@ -479,17 +637,27 @@ def _autodetect_lib_remappings(root: str, libs: Sequence[str]) -> list[str]:
 
 
 def _collect_project_sources(
-    root: str, extra_files: Sequence[str] = ()
+    root: str,
+    extra_files: Sequence[str] = (),
+    source_dirs: Sequence[str] | None = None,
+    libs: Sequence[str] = ("lib",),
 ) -> dict[str, SourceFile]:
-    """Every .sol under `root` (minus build/junk dirs), keyed by path relative to root."""
+    """The project's own .sol files, keyed by path relative to root.
+
+    Library sources are deliberately excluded here and enter through the import closure
+    instead: a library's `test/`/`script/` trees import the same paths its sources do, and
+    forge-std's tests carry unlinked library placeholders that have no debuggable artifact.
+    """
+    skip = set(_SKIP_DIRS) | {os.path.basename(lib.rstrip("/")) for lib in libs}
     found: dict[str, SourceFile] = {}
-    for cur, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-        for fname in sorted(files):
-            if fname.endswith(".sol"):
-                full = os.path.join(cur, fname)
-                key = os.path.relpath(full, root).replace(os.sep, "/")
-                found[key] = _read_sol(full, key)
+    for base in source_dirs or [root]:
+        for cur, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if d not in skip]
+            for fname in sorted(files):
+                if fname.endswith(".sol"):
+                    full = os.path.join(cur, fname)
+                    key = os.path.relpath(full, root).replace(os.sep, "/")
+                    found[key] = _read_sol(full, key)
     for extra in extra_files:
         full = os.path.abspath(extra)
         key = os.path.relpath(full, root).replace(os.sep, "/")
@@ -498,50 +666,153 @@ def _collect_project_sources(
     return found
 
 
-def _bundled_forge_std_sources() -> dict[str, SourceFile]:
-    """The packaged forge-std, keyed as if it lived at lib/forge-std/src/*."""
-    out: dict[str, SourceFile] = {}
-    for fname in sorted(os.listdir(BUNDLED_FORGE_STD_SRC)):
-        if fname.endswith(".sol"):
-            full = os.path.join(BUNDLED_FORGE_STD_SRC, fname)
-            key = f"lib/forge-std/src/{fname}"
-            out[key] = _read_sol(full, key)
-    return out
+def _install_hint(import_path: str, importer: str) -> str:
+    """Said when installs are off, whether by --no-install or by a declined prompt."""
+    return (
+        f"unresolved import {import_path!r} in {importer}, and sevm was told not to "
+        f"install it. Run again with -y to let it, or install it yourself:\n"
+        f"  forge install <org>/<repo>\n"
+        f"  echo '{package_of(import_path)}/=lib/<repo>/src/' >> remappings.txt"
+    )
+
+
+def resolve_dependencies(
+    root: str,
+    sources: dict[str, SourceFile],
+    cfg: FoundryConfig,
+    *,
+    install_missing: bool = True,
+    ensure: Sequence[tuple[str, str]] = (),
+    on_notice: Callable[[str], None] | None = None,
+) -> tuple[dict[str, SourceFile], list[str], list[Dependency]]:
+    """Walk the imports, install what is missing, and return (extra sources, remappings, installed).
+
+    `ensure` names (prefix, sample import) pairs to install even when nothing imports them
+    yet, which is how a `.sol` target always ends up with a real forge-std.
+    """
+    remappings = _autodetect_lib_remappings(root, cfg.libs) + list(cfg.remappings)
+    libs_dir = cfg.libs[0] if cfg.libs else "lib"
+    installed: list[Dependency] = []
+
+    def add(prefix: str, sample: str) -> None:
+        dep = install(prefix, sample, root, libs_dir, on_notice=on_notice)
+        # A derived remapping replaces the autodetected `<name>/=lib/<name>/src/` guess:
+        # it is built from where the imported file actually is.
+        remappings[:] = [r for r in remappings if r.split("=")[0] != f"{prefix}/"]
+        remappings.append(dep.remapping)
+        installed.append(dep)
+
+    try:
+        for prefix, sample in ensure:
+            if install_missing and not _already_resolved(prefix, root, remappings):
+                add(prefix, sample)
+
+        texts = {k: s.text for k, s in sources.items()}
+        # Each install can pull in imports of its own, so re-walk until it settles.
+        for _ in range(9):
+            closure = import_closure(texts, root, remappings)
+            if not closure.unresolved:
+                break
+            for path, importer in closure.unresolved.items():
+                if path.startswith("."):
+                    raise CompileError(f"no such import {path!r} from {importer}")
+            if not install_missing:
+                path, importer = next(iter(closure.unresolved.items()))
+                raise CompileError(_install_hint(path, importer))
+            for prefix in missing_prefixes(closure.unresolved):
+                sample = next(p for p in closure.unresolved if package_of(p) == prefix)
+                add(prefix, sample)
+        else:
+            path, importer = next(iter(closure.unresolved.items()))
+            raise CompileError(
+                f"{path!r} in {importer} is still unresolved after installing "
+                f"{len(installed)} libraries; add a remapping for it by hand"
+            )
+    except LibError as exc:
+        raise CompileError(str(exc)) from exc
+
+    extra = {
+        key: SourceFile(key=key, abs_path=os.path.join(root, key), text=text)
+        for key, text in closure.extra.items()
+    }
+    return extra, remappings, installed
+
+
+def _already_resolved(prefix: str, root: str, remappings: Sequence[str]) -> bool:
+    """True when `prefix` already maps to something on disk."""
+    for entry in remappings:
+        left, _, target = entry.partition("=")
+        if left.rstrip("/") == prefix and os.path.isdir(os.path.join(root, target)):
+            return True
+    return False
+
+
+def unresolved_prefixes(
+    root: str,
+    source_dirs: Sequence[str] | None = None,
+    cfg: FoundryConfig | None = None,
+) -> list[str]:
+    """Library prefixes the sources import but cannot reach on disk.
+
+    Reads files only, so `sevm run` can say what it would install before compiling.
+    """
+    cfg = cfg or read_foundry_config(root)
+    sources = _collect_project_sources(root, (), source_dirs, cfg.libs)
+    remappings = _autodetect_lib_remappings(root, cfg.libs) + list(cfg.remappings)
+    closure = import_closure({k: s.text for k, s in sources.items()}, root, remappings)
+    return missing_prefixes(p for p in closure.unresolved if not p.startswith("."))
 
 
 def compile_foundry_project(
     root: str,
     *,
     target_file: str | None = None,
+    source_dirs: Sequence[str] | None = None,
     solc_version: str | None = None,
     evm_version: str | None = None,
+    optimize: bool = False,
+    install_missing: bool = True,
+    ensure_forge_std: bool = False,
+    on_notice: Callable[[str], None] | None = None,
 ) -> Project:
-    """Compile a Foundry project (or a standalone test dir) into a debuggable Project.
+    """Compile a Foundry project (or a standalone directory) into a debuggable Project.
 
-    Resolves remappings (foundry.toml + remappings.txt + implicit lib remappings) and
-    injects the bundled forge-std when the project has no lib/forge-std, so a lone
-    `Test.sol` compiles. The optimizer is forced OFF, as for every sevm build.
+    Remappings come from foundry.toml + remappings.txt + the implicit `lib/` ones; anything
+    still unresolved is installed from its real repository and remapped. New remappings are
+    written to `<root>/remappings.txt` so `forge` resolves the project the same way.
     """
     cfg = read_foundry_config(root)
-    solc = solc_version or cfg.solc_version or DEFAULT_SOLC_VERSION
-    ensure_solc(solc)
+    extra_files = [target_file] if target_file else []
+    sources = _collect_project_sources(root, extra_files, source_dirs, cfg.libs)
 
-    extra = [target_file] if target_file else []
-    sources = _collect_project_sources(root, extra)
-
-    remappings = _autodetect_lib_remappings(root, cfg.libs) + list(cfg.remappings)
-    has_forge_std = any("forge-std/=" in r for r in remappings) or os.path.isdir(
-        os.path.join(root, "lib", "forge-std")
+    ensure = [(FORGE_STD, FORGE_STD_SAMPLE_IMPORT)] if ensure_forge_std else []
+    lib_sources, remappings, installed = resolve_dependencies(
+        root,
+        sources,
+        cfg,
+        install_missing=install_missing,
+        ensure=ensure,
+        on_notice=on_notice,
     )
-    if not has_forge_std:
-        sources.update(_bundled_forge_std_sources())
-        remappings.append("forge-std/=lib/forge-std/src/")
+    sources.update(lib_sources)
+
+    if installed:
+        added = write_remappings(root, [d.remapping for d in installed])
+        if added and on_notice:
+            on_notice(f"wrote {len(added)} remapping(s) to remappings.txt")
+
+    # `--solc` wins, then a foundry.toml pin, else auto-detect from the pragmas. Every
+    # source, libraries included, is collected by now, so the intersection is complete.
+    solc = resolve_solc_version(
+        sources, explicit=solc_version, config_pinned=cfg.solc_version
+    )
+    ensure_solc(solc)
 
     out = compile_standard(
         {k: s.text for k, s in sources.items()},
         solc_version=solc,
-        optimize=False,
+        optimize=optimize,
         evm_version=evm_version or cfg.evm_version,
         remappings=remappings,
     )
-    return _build_project(out, sources, solc, False, remappings=remappings)
+    return _build_project(out, sources, solc, optimize, remappings=remappings)

@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import io
 import os
+import re
 
 import pytest
 from harness import bank_fixture, project
@@ -1087,10 +1088,13 @@ def test_debugs_inline_assembly_in_the_original_vault():
     from eth_account import Account
     from web3 import EthereumTesterProvider, Web3
 
+    from sevm.compile import DEFAULT_SOLC_VERSION
     from sevm.compile import compile_project as _compile
 
     here = _os.path.dirname(_os.path.abspath(__file__))
-    vault_project = _compile([_os.path.join(here, "contracts", "Vault.sol")])
+    vault_project = _compile(
+        [_os.path.join(here, "contracts", "Vault.sol")], solc_version=DEFAULT_SOLC_VERSION
+    )
     art = vault_project.artifact("Vault")
     assert art is not None
 
@@ -1341,12 +1345,21 @@ def test_tui_pane_helpers():
 # ==================================================================
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
 def test_cli_compile_subcommand(capsys):
     from sevm.cli import main
 
     contracts = os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts")
     assert main(["compile", contracts]) == 0
-    out = capsys.readouterr().out
+    # Rich styles its output when the environment forces colour, which splits words with
+    # escape sequences; assert on what the user reads, not on how it is painted.
+    out = strip_ansi(capsys.readouterr().out)
     assert "Bank.sol:Bank" in out
     assert "source-map=yes" in out
 
@@ -2708,8 +2721,10 @@ def test_help_summary_mentions_assembly_and_cheatcodes(deposit_debugger):
     summary = " ".join(deposit_debugger.run("help").lines)
     assert "Assembly" in summary and "mstore" in summary
     assert "cheatcodes" in summary and "vm.warp" in summary
-    for topic in ("assembly", "cheatcodes", "asm", "yul", "vm"):
+    for topic in ("assembly", "cheatcodes", "asm", "yul", "vm", "foundry"):
         assert deposit_debugger.run(f"help {topic}").ok, topic
+    body = " ".join(deposit_debugger.run("help foundry").lines)
+    assert "--no-install" in body and "forge-std" in body
 
 
 # ==================================================================

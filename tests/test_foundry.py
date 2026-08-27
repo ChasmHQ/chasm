@@ -1,8 +1,8 @@
 """Foundry-test entry point and cheatcode engine.
 
-Compiles the two fixture layouts under tests/ (a standalone test that leans on the bundled
-forge-std, and a real project with its own lib/forge-std + remappings) and drives them
-through the debug session to prove the cheatcodes actually take effect.
+Compiles the two fixture layouts under tests/ (a standalone test whose forge-std is
+installed from a local repo, and a project with its own lib/forge-std + remappings) and
+drives them through the debug session to prove the cheatcodes actually take effect.
 """
 
 from __future__ import annotations
@@ -14,43 +14,27 @@ import pytest
 from sevm.cheatcodes import (
     CheatError,
     CheatState,
+    all_specs,
     apply_cheat,
     decode_console_log,
     encode_cheat_call,
+    listing,
     parse_cheat_arg,
     spec_by_name,
 )
-from sevm.compile import BUNDLED_FORGE_STD_SRC, compile_foundry_project
 from sevm.evaluate import Evaluator, make_eval_hook
 from sevm.foundry import (
-    compile_test,
     discover_tests,
     make_test_driver,
-    resolve_project,
+    prepare_project,
     select_test,
 )
 from sevm.session import DebugSession, Finished, Paused, StepMode
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOLO = os.path.join(HERE, "foundry_solo", "AllCheats.t.sol")
 PROJECT = os.path.join(HERE, "foundry_project")
 PROJECT_TEST = os.path.join(PROJECT, "test", "Token.t.sol")
 TIMEOUT = 30.0
-
-_cache: dict[str, object] = {}
-
-
-def solo_project():
-    if "solo" not in _cache:
-        root, _ = resolve_project(SOLO, assume_yes=False)
-        _cache["solo"] = compile_test(SOLO, root)
-    return _cache["solo"]
-
-
-def token_project():
-    if "token" not in _cache:
-        _cache["token"] = compile_foundry_project(PROJECT, target_file=PROJECT_TEST)
-    return _cache["token"]
 
 
 def run_to_finish(project, contract: str, function: str):
@@ -80,36 +64,32 @@ def run_to_finish(project, contract: str, function: str):
 # ==================================================================
 
 
-def test_standalone_uses_bundled_forge_std():
-    project = solo_project()
-    names = {a.name for a in project.artifacts.values()}
+def test_standalone_installs_forge_std(solo_project, solo_root):
+    names = {a.name for a in solo_project.artifacts.values()}
     assert {"AllCheatsTest", "Recorder", "Test", "Vm"} <= names
-    assert any("forge-std/=" in r for r in project.remappings)
-    # forge-std resolved to the packaged copy, not any on-disk lib.
-    test_src = project.sources["lib/forge-std/src/Test.sol"]
-    assert os.path.abspath(BUNDLED_FORGE_STD_SRC) in os.path.abspath(test_src.abs_path)
+    assert any("forge-std/=" in r for r in solo_project.remappings)
+    # forge-std was cloned into the target's own lib/, the way forge install leaves it.
+    test_src = solo_project.sources["lib/forge-std/src/Test.sol"]
+    assert os.path.abspath(solo_root) in os.path.abspath(test_src.abs_path)
+    assert os.path.isdir(os.path.join(solo_root, "lib", "forge-std", ".git"))
 
 
-def test_existing_project_lib_wins_over_bundled():
-    project = token_project()
-    names = {a.name for a in project.artifacts.values()}
+def test_existing_project_lib_is_used_as_is(token_project, token_root):
+    names = {a.name for a in token_project.artifacts.values()}
     assert {"TokenTest", "Token", "Test", "Vm"} <= names
-    # forge-std came from the project's own lib/, not the packaged copy.
-    test_src = project.sources["lib/forge-std/src/Test.sol"]
-    assert os.path.abspath(PROJECT) in os.path.abspath(test_src.abs_path)
-    assert os.path.abspath(BUNDLED_FORGE_STD_SRC) not in os.path.abspath(
-        test_src.abs_path
-    )
+    # forge-std came from the project's own lib/; nothing was fetched.
+    test_src = token_project.sources["lib/forge-std/src/Test.sol"]
+    assert os.path.abspath(token_root) in os.path.abspath(test_src.abs_path)
 
 
-def test_resolve_project_finds_foundry_root():
-    root, existing = resolve_project(PROJECT_TEST, assume_yes=False)
-    assert existing is True
-    assert os.path.abspath(root) == os.path.abspath(PROJECT)
+def test_prepare_project_finds_foundry_root():
+    prepared = prepare_project(PROJECT_TEST, assume_yes=False)
+    assert prepared.existing is True
+    assert os.path.abspath(prepared.root) == os.path.abspath(PROJECT)
 
 
-def test_discover_and_select_tests():
-    targets = discover_tests(solo_project())
+def test_discover_and_select_tests(solo_project):
+    targets = discover_tests(solo_project)
     fns = {(t.contract, t.function) for t in targets}
     assert ("AllCheatsTest", "testEnv") in fns
     assert all(t.has_setup for t in targets)
@@ -126,30 +106,39 @@ def test_discover_and_select_tests():
 @pytest.mark.parametrize(
     "fn", ["testEnv", "testPrank", "testStorageAndKeys", "testPrankValue"]
 )
-def test_cheats_take_effect(fn):
-    session, event = run_to_finish(solo_project(), "AllCheatsTest", fn)
+def test_cheats_take_effect(fn, solo_project):
+    session, event = run_to_finish(solo_project, "AllCheatsTest", fn)
     assert isinstance(event, Finished)
     assert event.ok, f"{fn} reverted: {session.exit_error}"
 
 
-def test_console_log_captured():
-    session, event = run_to_finish(solo_project(), "AllCheatsTest", "testEnv")
+def test_failed_assertion_reverts_with_its_message(failing_project):
+    # forge-std routes a failed assertEq through vm.assertEq, so the revert reason has to
+    # come out of sevm's cheat engine, not out of a plain Solidity require.
+    session, event = run_to_finish(failing_project, "DemoTest", "testFails")
+    assert isinstance(event, Finished) and not event.ok
+    assert "DemoTest.testFails reverted" in str(session.exit_error)
+    assert "1 != 2" in str(session.last_revert)
+
+
+def test_console_log_captured(solo_project):
+    session, event = run_to_finish(solo_project, "AllCheatsTest", "testEnv")
     assert isinstance(event, Finished) and event.ok
     assert any("env ok at 4242" in line for line in session.cheats.console_lines)
 
 
-def test_project_prank_reverts_non_owner():
+def test_project_prank_reverts_non_owner(token_project):
     # A pranked non-owner mint must revert (caught inside the test); the test passes.
     session, event = run_to_finish(
-        token_project(), "TokenTest", "testMintPrankRevertsForNonOwner"
+        token_project, "TokenTest", "testMintPrankRevertsForNonOwner"
     )
     assert isinstance(event, Finished) and event.ok
 
 
-def test_multi_test_stops_at_each_test():
+def test_multi_test_stops_at_each_test(solo_project):
     from sevm.foundry import make_tests_driver
 
-    project = solo_project()
+    project = solo_project
     targets = discover_tests(project)
     names = {f"{t.contract}.{t.function}" for t in targets}
     session = DebugSession(project)
@@ -177,8 +166,8 @@ def test_multi_test_stops_at_each_test():
     assert seen == names
 
 
-def test_session_opens_at_test_function():
-    project = solo_project()
+def test_session_opens_at_test_function(solo_project):
+    project = solo_project
     session = DebugSession(project)
     session.foundry_mode = True
     evaluator = Evaluator(project)
@@ -203,6 +192,83 @@ def test_session_opens_at_test_function():
 # ==================================================================
 # cheatcode engine units
 # ==================================================================
+
+
+def _assert_cheat(name, values):
+    """Run one `vm.assert*` the way a test contract would, via the registry."""
+    apply_cheat(CheatState(), None, encode_cheat_call(name, values), caller=None)
+
+
+@pytest.mark.parametrize(
+    "name,values",
+    [
+        ("assertEq", [7, 7]),
+        ("assertEq", ["0x" + "11" * 20, "0x" + "11" * 20]),
+        ("assertEq", ["same", "same"]),
+        ("assertNotEq", [1, 2]),
+        ("assertTrue", [True]),
+        ("assertFalse", [False]),
+        ("assertGt", [2, 1]),
+        ("assertGe", [1, 1]),
+        ("assertLt", [1, 2]),
+        ("assertLe", [1, 1]),
+        ("assertEqDecimal", [10**18, 10**18, 18]),
+        ("assertApproxEqAbs", [100, 95, 5]),
+        ("assertApproxEqRel", [101, 100, 10**16]),  # 1% allowed, 1% off
+    ],
+)
+def test_assert_cheats_pass_quietly(name, values):
+    _assert_cheat(name, values)
+
+
+@pytest.mark.parametrize(
+    "name,values,message",
+    [
+        ("assertEq", [1, 2], "assertion failed: 1 != 2"),
+        ("assertNotEq", [2, 2], "assertion failed: 2 == 2"),
+        ("assertTrue", [False], "assertion failed"),
+        ("assertFalse", [True], "assertion failed"),
+        ("assertGt", [1, 2], "assertion failed: 1 <= 2"),
+        ("assertLt", [2, 1], "assertion failed: 2 >= 1"),
+        (
+            "assertEqDecimal",
+            [10**18, 2 * 10**18, 18],
+            "assertion failed: 1.000000000000000000 != 2.000000000000000000",
+        ),
+        ("assertApproxEqAbs", [100, 90, 5], "real delta: 10"),
+        ("assertApproxEqRel", [110, 100, 10**16], "real delta: 10.0000000000000000%"),
+    ],
+)
+def test_assert_cheats_revert_with_the_comparison(name, values, message):
+    with pytest.raises(CheatError) as exc:
+        _assert_cheat(name, values)
+    assert message in str(exc.value)
+
+
+def test_assert_cheat_keeps_a_custom_message():
+    with pytest.raises(CheatError, match="balances drifted: 1 != 2"):
+        _assert_cheat("assertEq", [1, 2, "balances drifted"])
+
+
+def test_assert_overload_follows_the_literal_types():
+    # `1` encodes as bool just as happily as uint256; the numeric overload must win, or a
+    # failing assertEq(1, 2) would silently pass as assertEq(true, true).
+    with pytest.raises(CheatError, match="1 != 2"):
+        _assert_cheat("assertEq", [1, 2])
+    _assert_cheat("assertEq", [True, True])
+
+
+def test_every_cheat_is_documented():
+    undocumented = [spec.signature for spec in all_specs() if not spec.doc]
+    assert not undocumented
+
+
+def test_help_listing_collapses_the_assert_family():
+    rows = listing()
+    families = [row for row in rows if row.family == "assert"]
+    assert len(families) == 1
+    assert "116 overloads" in families[0].doc
+    assert all(not row.name.startswith("assert") or row.family for row in rows)
 
 
 def test_apply_cheat_unimplemented_raises():
