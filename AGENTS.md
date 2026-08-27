@@ -99,6 +99,12 @@ without that step a write to memory, the stack or a local is invisible to the pa
 the next stop. `_live_view` is the single source of the mutable fields, shared by
 `_build_snapshot` and the `resnapshot` inspect op so the two cannot drift.
 
+Panes re-centre on their anchor at every stop, but only until you scroll one by hand:
+`Pane.watch_scroll_y` sets `_user_scrolled` for any move the pane did not make itself
+(`_scroll_ourselves` guards ours), and `anchor_at` then leaves that pane alone. Landing
+back on `anchor_target()` clears the flag, which is also how the clickable border marker
+works. `FOLLOWS_PC` exempts SOURCE and DISASSEMBLY, whose job is to follow execution.
+
 `CommandProcessor.execute()` must never raise: the console frontend calls it from its read
 loop, and the TUI calls it from the worker thread that owns `busy`, where an escaping
 exception wedges the prompt for the rest of the run. Everything after the initial strip
@@ -110,6 +116,14 @@ MarkupError out of the render itself.
 The package uses relative imports internally (`from .compile import ...`). Keep it that
 way; do not add `sys.path` hacks.
 
+## Git workflow
+
+Commit after every change, no matter how small. Do not batch multiple unrelated edits
+into one commit and do not wait for the user to ask. Each commit should be a single
+coherent change with a message describing why. This overrides the general default of
+only committing when explicitly asked; in this repo, committing after each change *is*
+the standing instruction.
+
 ## Environment and commands
 
 Everything runs through uv. Do not call bare `pip`/`python` against a system interpreter.
@@ -120,7 +134,7 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (307 tests; ~2 min, solc compile is the slow part)
+uv run pytest -q        # test suite (310 tests; ~2 min, solc compile is the slow part)
 SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
@@ -212,7 +226,7 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 307 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 310 tests pass as of
 2026-08-27 (4 more with `SEVM_NETWORK_TESTS=1`), covering Foundry multi-test + cheatcode
 coverage, library install and remapping derivation, the assertion engine, the Yul assembly
 surface, and the snapshot refresh after a mutation.
