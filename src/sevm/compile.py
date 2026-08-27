@@ -517,8 +517,8 @@ DEFAULT_FOUNDRY_TOML = """\
 src = "src"
 test = "test"
 libs = ["lib"]
+
 # sevm forces the optimizer OFF for debuggable builds regardless of this file.
-optimizer = false
 """
 
 # For a lone .sol outside any project: no src/test layout to declare, just somewhere to
@@ -526,8 +526,8 @@ optimizer = false
 STANDALONE_FOUNDRY_TOML = """\
 [profile.default]
 libs = ["lib"]
+
 # sevm forces the optimizer OFF for debuggable builds regardless of this file.
-optimizer = false
 """
 
 

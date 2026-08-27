@@ -186,37 +186,6 @@ project resolution and installs.
 **Not yet supported:** `expectRevert`/`expectEmit`/`expectCall`/`mockCall`, `ffi`, forking,
 and fuzz/invariant argument generation.
 
-## The screen
-
-```
-  Bank._credit(address, uint256)  Bank.sol:46   gas 276,050/278,936   depth 0   pc 0x9c1   DUP1
-+- SOURCE -------------------------------------------+- CALL STACK -----------------------+
-|   44     1     function _credit(address who, ...   | -> #0 Bank._credit(...) Bank.sol:46 |
-|   45    25         uint256 fee = _fee(amount);     |    #1 Bank.deposit()    Bank.sol:52 |
-| *>46               balances[who] += amount - fee;  |    #2 Bank  pc 0x380  [tx depth=0]  |
-|   47               totalDeposits += amount - fee;  +- VARIABLES ------------------------+
-|   48               history.push(amount);           | args  who           0xdb7f98f5...   |
-|   49           }                                   |       amount        2000000000...   |
-|                                                    | local fee           2000000000...   |
-+-----------------------------------------------------+ state owner         0x7e5f4552...  |
-+- DISASSEMBLY ------+- STACK ---------+- MEMORY -----+- STORAGE --------------------------+
-|    09bf SWAP1      | 0 0x11c37937..  | 0000 00 00.. |   0+0   owner        0x7e5f4552... |
-| => 09c1 DUP1     3 | 1 0x1bc16d67..  | 0040 00 00.. |   0+20  feeBps       25            |
-+--------------------+-----------------+--------------+   1+0   totalDeposits 1000000000.. |
-```
-
-The gutter is gdb's: `=>` current line, `*` breakpoint, `*>` both; the number beside it is
-gas spent on that line so far. The current opcode's operands light up in every pane at
-once. Colours are ANSI, so the debugger wears your terminal's own palette.
-
-Function keys: **F5** continue, **F7** step in, **F8** next, **F6** finish, **F10** stepi,
-**F11** nexti, **F9** toggle breakpoint, **F2** low-level panes, **F4** back to current
-state, **F1** help. On macOS **Cmd+C/P/L/Q** work too; Ctrl does the same everywhere.
-
-STACK labels the slots that hold the current frame's locals. Parameters are bold; a
-multi-word local labels both words `name.ptr`/`name.len`. When the current opcode is about
-to consume a labelled slot, the row turns red.
-
 ## Commands
 
 Every gdb verb and abbreviation below behaves as it does in gdb.
