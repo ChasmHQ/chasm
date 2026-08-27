@@ -522,6 +522,7 @@ class SourcePane(Pane):
 
 class CallStackPane(Pane):
     TITLE = "CALL STACK"
+    ANCHOR_HINT = "back to top"
 
     def render_stack(self, snap: FrameSnapshot | None, selected: int = 0) -> None:
         if snap is None or not snap.backtrace:
@@ -554,6 +555,7 @@ class CallStackPane(Pane):
 
 class VariablesPane(Pane):
     TITLE = "VARIABLES"
+    ANCHOR_HINT = "back to top"
 
     def render_variables(
         self,
@@ -605,6 +607,7 @@ class VariablesPane(Pane):
 
 class StoragePane(Pane):
     TITLE = "STORAGE"
+    ANCHOR_HINT = "back to top"
 
     def render_storage(
         self,
