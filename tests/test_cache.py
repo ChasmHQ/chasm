@@ -114,12 +114,14 @@ def test_no_cache_neither_reads_nor_writes(root, monkeypatch):
     build(root, use_cache=False)
     assert len(calls) == 2
     assert not os.path.exists(os.path.join(root, "cache"))
+    assert not os.path.exists(os.path.join(root, "out"))
 
 
 def test_env_switch_disables_the_cache(root, monkeypatch):
     monkeypatch.setenv("SEVM_NO_CACHE", "1")
     build(root)
     assert not os.path.exists(os.path.join(root, "cache"))
+    assert not os.path.exists(os.path.join(root, "out"))
 
 
 def test_force_recompiles_and_rewrites(root, monkeypatch):
@@ -137,6 +139,92 @@ def test_different_settings_are_a_different_unit(root, monkeypatch, changed):
     calls = spy(monkeypatch)
     build(root, **changed)
     assert len(calls) == 1
+
+
+# ==================================================================
+# out/sevm artifacts
+# ==================================================================
+
+
+def read_artifact(root: str, source: str, name: str) -> dict:
+    path = os.path.join(root, "out", "sevm", source, f"{name}.json")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_artifacts_are_written_in_forge_shape(root):
+    project = build(root)
+    token = read_artifact(root, "Token.sol", "Token")
+    art = project.artifact("Token")
+
+    assert token["sourceName"] == "src/Token.sol"
+    assert token["bytecode"]["object"] == "0x" + art.bytecode.hex()
+    assert token["deployedBytecode"]["object"] == "0x" + art.deployed_bytecode.hex()
+    assert token["deployedBytecode"]["sourceMap"] == art.deployed_source_map
+    assert token["methodIdentifiers"] == art.method_identifiers
+    assert token["storageLayout"] == art.storage_layout
+    assert token["id"] == project.sources["src/Token.sol"].file_id
+    assert [e["name"] for e in token["abi"] if e["type"] == "function"] == [
+        "balanceOf",
+        "mint",
+        "owner",
+    ]
+    # The nesting is what keeps forge's own artifacts out of reach.
+    assert not os.path.exists(os.path.join(root, "out", "Token.sol"))
+
+
+def test_two_sources_with_one_basename_both_land(root):
+    vendor = os.path.join(root, "vendor")
+    os.makedirs(vendor)
+    with open(os.path.join(vendor, "Token.sol"), "w", encoding="utf-8") as fh:
+        fh.write("pragma solidity ^0.8.20;\ncontract Token { uint256 public x; }\n")
+
+    build(root)
+    assert read_artifact(root, "Token.sol", "Token")["sourceName"] == "src/Token.sol"
+    assert read_artifact(root, "Token.sol", "Token.1")["sourceName"] == (
+        "vendor/Token.sol"
+    )
+
+
+def test_a_forge_artifact_is_never_overwritten(root):
+    forge_own = os.path.join(root, "out", "Token.sol", "Token.json")
+    os.makedirs(os.path.dirname(forge_own))
+    with open(forge_own, "w", encoding="utf-8") as fh:
+        json.dump({"builtBy": "forge"}, fh)
+
+    build(root)
+    with open(forge_own, encoding="utf-8") as fh:
+        assert json.load(fh) == {"builtBy": "forge"}
+
+
+def test_artifacts_follow_the_out_key_in_foundry_toml(root):
+    toml = os.path.join(root, "foundry.toml")
+    with open(toml, encoding="utf-8") as fh:
+        text = fh.read()
+    with open(toml, "w", encoding="utf-8") as fh:
+        fh.write(text.replace('src = "src"', 'src = "src"\nout = "artifacts"'))
+
+    build(root)
+    assert os.path.isfile(
+        os.path.join(root, "artifacts", "sevm", "Token.sol", "Token.json")
+    )
+
+
+def test_artifacts_are_rewritten_when_the_out_tree_is_deleted(root):
+    build(root)
+    shutil.rmtree(os.path.join(root, "out"))
+    build(root)  # a cache hit still restores what was removed
+    assert os.path.isfile(os.path.join(root, "out", "sevm", "Token.sol", "Token.json"))
+
+
+def test_an_edit_reaches_the_written_artifact(root):
+    build(root)
+    before = read_artifact(root, "Token.sol", "Token")["deployedBytecode"]["object"]
+    edit_token(root)
+    project = build(root)
+    after = read_artifact(root, "Token.sol", "Token")["deployedBytecode"]["object"]
+    assert after != before
+    assert after == "0x" + project.artifact("Token").deployed_bytecode.hex()
 
 
 # ==================================================================

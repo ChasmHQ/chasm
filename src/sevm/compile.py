@@ -21,7 +21,7 @@ import solcx
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-from . import cache
+from . import artifacts, cache
 from .libs import (
     Dependency,
     LibError,
@@ -590,6 +590,7 @@ class FoundryConfig:
     root: str
     src: str = "src"
     test: str = "test"
+    out: str = "out"
     libs: tuple[str, ...] = ("lib",)
     solc_version: str | None = None
     evm_version: str | None = None
@@ -606,6 +607,7 @@ def read_foundry_config(root: str) -> FoundryConfig:
         profile = (parsed.get("profile", {}) or {}).get("default", {}) or {}
         cfg.src = profile.get("src", cfg.src)
         cfg.test = profile.get("test", cfg.test)
+        cfg.out = profile.get("out", cfg.out)
         libs = profile.get("libs", list(cfg.libs))
         cfg.libs = tuple(libs) if isinstance(libs, list) else (libs,)
         cfg.solc_version = profile.get("solc") or profile.get("solc_version")
@@ -788,8 +790,9 @@ def compile_foundry_project(
     still unresolved is installed from its real repository and remapped. New remappings are
     written to `<root>/remappings.txt` so `forge` resolves the project the same way.
 
-    Results are cached per compilation unit (see `cache.py`); `force` recompiles and
-    rewrites the entry, `use_cache=False` neither reads nor writes.
+    Results are cached per compilation unit (see `cache.py`) and written out as forge-shaped
+    artifacts (see `artifacts.py`); `force` recompiles and rewrites the entry,
+    `use_cache=False` does neither.
     """
     cfg = read_foundry_config(root)
     extra_files = [target_file] if target_file else []
@@ -826,8 +829,9 @@ def compile_foundry_project(
     hashes = cache.hash_sources(texts)
     unit = cache.unit_hash(settings, hashes)
 
-    out = None if store is None or force else store.load(unit)
-    if out is not None:
+    hit = None if store is None or force else store.load(unit)
+    if hit is not None:
+        out = hit
         if on_notice:
             on_notice(f"cache hit ({len(texts)} sources)")
     else:
@@ -845,7 +849,26 @@ def compile_foundry_project(
         if store is not None:
             store.store(unit, out, settings, hashes)
 
-    return _build_project(out, sources, solc, optimize, remappings=remappings)
+    project = _build_project(out, sources, solc, optimize, remappings=remappings)
+    # A hit means the artifacts are already there from the build that filled the cache,
+    # unless they have since been removed.
+    if store is not None and (
+        hit is None or not os.path.isdir(artifacts.out_dir(root, cfg.out))
+    ):
+        _write_artifacts(project, root, cfg.out, on_notice)
+    return project
+
+
+def _write_artifacts(
+    project: Project, root: str, out: str, on_notice: Callable[[str], None] | None
+) -> None:
+    """Leave forge-shaped artifacts behind. Never worth failing a debug session over."""
+    try:
+        count = artifacts.write_out(project, root, out)
+    except OSError:
+        return
+    if count and on_notice:
+        on_notice(f"wrote {count} artifact(s) to {out}/{artifacts.SUBDIR}")
 
 
 def _cacheable(out: dict) -> dict:

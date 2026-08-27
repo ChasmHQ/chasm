@@ -123,7 +123,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="never fetch a library; fail if an import is not already on disk",
     )
     run.add_argument(
-        "--no-cache", action="store_true", help="neither read nor write the build cache"
+        "--no-cache",
+        action="store_true",
+        help="write nothing: no build cache, no out/ artifacts",
     )
     run.add_argument(
         "--force", action="store_true", help="recompile even if the cache has this build"
@@ -146,7 +148,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="never fetch a library; fail if an import is not already on disk",
     )
     compile_cmd.add_argument(
-        "--no-cache", action="store_true", help="neither read nor write the build cache"
+        "--no-cache",
+        action="store_true",
+        help="write nothing: no build cache, no out/ artifacts",
     )
     compile_cmd.add_argument(
         "--force", action="store_true", help="recompile even if the cache has this build"
