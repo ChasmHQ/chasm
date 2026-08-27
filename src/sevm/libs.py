@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from packaging.version import InvalidVersion, Version
 
@@ -129,6 +129,9 @@ class Closure:
 
     extra: dict[str, str]  # source key -> file text, for files outside the roots
     unresolved: dict[str, str]  # import path -> the source key that imports it
+    # source key -> the keys it imports. The build cache reverses this to find every file
+    # affected by an edit.
+    edges: dict[str, list[str]] = field(default_factory=dict)
 
 
 def import_closure(
@@ -142,21 +145,24 @@ def import_closure(
     """
     extra: dict[str, str] = {}
     unresolved: dict[str, str] = {}
+    edges: dict[str, list[str]] = {}
     queue: list[tuple[str, str]] = list(sources.items())
     while queue:
         key, text = queue.pop()
+        imports = edges.setdefault(key, [])
         for path in iter_imports(text):
             target = resolve_import(path, key, root, remappings)
             if target is None:
                 unresolved.setdefault(path, key)
                 continue
+            imports.append(target)
             if target in sources or target in extra:
                 continue
             with open(os.path.join(root, target), encoding="utf-8") as fh:
                 target_text = fh.read()
             extra[target] = target_text
             queue.append((target, target_text))
-    return Closure(extra=extra, unresolved=unresolved)
+    return Closure(extra=extra, unresolved=unresolved, edges=edges)
 
 
 def package_of(import_path: str) -> str:
