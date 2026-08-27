@@ -122,6 +122,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="never fetch a library; fail if an import is not already on disk",
     )
+    run.add_argument(
+        "--no-cache", action="store_true", help="neither read nor write the build cache"
+    )
+    run.add_argument(
+        "--force", action="store_true", help="recompile even if the cache has this build"
+    )
 
     compile_cmd = sub.add_parser(
         "compile", help="compile contracts and report what sevm sees"
@@ -138,6 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-install",
         action="store_true",
         help="never fetch a library; fail if an import is not already on disk",
+    )
+    compile_cmd.add_argument(
+        "--no-cache", action="store_true", help="neither read nor write the build cache"
+    )
+    compile_cmd.add_argument(
+        "--force", action="store_true", help="recompile even if the cache has this build"
     )
 
     return parser
@@ -171,6 +183,8 @@ def cmd_compile(args: argparse.Namespace) -> int:
             solc_version=args.solc,
             install_missing=prepared.may_install,
             on_notice=lambda msg: console.print(f"[dim]{msg}[/dim]", highlight=False),
+            use_cache=not args.no_cache,
+            force=args.force,
         )
     except CompileError as exc:
         console.print(f"[bold red]compile failed:[/bold red] {exc}", highlight=False)
@@ -217,6 +231,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             "match-contract",
             "yes",
             "no-install",
+            "no-cache",
+            "force",
         }
     ]
     if stray:
@@ -280,6 +296,8 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
             optimize=args.optimize,
             install_missing=prepared.may_install,
             on_notice=lambda msg: console.print(f"[dim]{msg}[/dim]", highlight=False),
+            use_cache=not args.no_cache,
+            force=args.force,
         )
     except CompileError as exc:
         console.print(f"[bold red]compile failed:[/bold red] {exc}", highlight=False)
@@ -321,6 +339,8 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
             solc_version=args.solc,
             install_missing=prepared.may_install,
             on_notice=lambda msg: console.print(f"[dim]{msg}[/dim]", highlight=False),
+            use_cache=not args.no_cache,
+            force=args.force,
         )
     except CompileError as exc:
         console.print(f"[bold red]compile failed:[/bold red] {exc}", highlight=False)
