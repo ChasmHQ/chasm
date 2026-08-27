@@ -26,6 +26,7 @@ sevm/
 │   ├── cli.py            # arg parsing + `main()`; `.py` vs `.sol` dispatch in `sevm run`
 │   ├── compile.py        # solc via py-solc-x → artifacts; `compile_foundry_project`
 │   ├── cache.py          # on-disk build cache: unit hashing, partial rebuilds
+│   ├── artifacts.py      # forge-shaped `out/sevm/<File.sol>/<Contract>.json`
 │   ├── session.py        # the debug session / VM control (largest module)
 │   ├── cheatcodes.py     # Foundry cheatcode engine (VM/console intercept, registry)
 │   ├── libs.py           # dependency resolution: imports -> repo -> clone -> remapping
@@ -36,7 +37,7 @@ sevm/
 │   ├── frames.py, srcmap.py, locals.py, decode.py, disasm.py, breakpoints.py
 │   ├── console.py        # plain-text frontend (`--console`)
 │   └── tui/              # Textual fullscreen frontend (app.py, widgets.py, sevm.tcss)
-├── tests/                # test_sevm.py + test_foundry.py + test_libs.py + conftest.py
+├── tests/                # test_sevm/foundry/libs/cache/compile_version.py + conftest.py
 └── examples/debug_bank.py
 ```
 
@@ -135,6 +136,15 @@ sees is unchanged, file ids, analysis and source maps come out identical to a fu
 `merge_output` still re-checks every reused id and refuses the merge if one moved, and
 `base_for` requires an identical key set because adding or removing a file shifts them.
 
+A build also leaves forge-shaped artifacts (`artifacts.write_out`): one JSON per contract
+under `<out>/sevm/<File.sol>/<Contract>.json`, `out` taken from foundry.toml. The `sevm/`
+nesting is load-bearing, not tidiness: sevm compiles optimizer-off, and overwriting
+`out/<File.sol>/<Contract>.json` would leave forge's own cache calling it fresh, so the
+next `forge test` would run sevm's build. Contract names that collide across sources with
+the same basename get a `.1` suffix, and `sourceName` says which source each came from.
+Artifacts are written when a build happens, or when a hit finds the `out` tree gone; they
+carry no `metadata`, which is the one forge field sevm does not request from solc.
+
 Every cache failure is a miss, never an error. Tests must never touch `~/.cache`:
 `conftest.isolated_cache` points `XDG_CACHE_HOME` at tmp per test, which is also what lets
 the version-resolution tests' mocked release list beat the real one cached on disk.
@@ -157,7 +167,7 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (339 tests; ~2 min, solc compile is the slow part)
+uv run pytest -q        # test suite (345 tests; ~2 min, solc compile is the slow part)
 SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
@@ -254,7 +264,7 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 339 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 345 tests pass as of
 2026-08-28 (4 more with `SEVM_NETWORK_TESTS=1`), covering Foundry multi-test + cheatcode
 coverage, library install and remapping derivation, the assertion engine, the Yul assembly
-surface, the build cache, and the snapshot refresh after a mutation.
+surface, the build cache and its artifacts, and the snapshot refresh after a mutation.

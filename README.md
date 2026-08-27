@@ -160,25 +160,40 @@ The first run compiles. The next one does not.
 
 ```console
 $ time sevm compile .
+wrote 48 artifact(s) to out/sevm
 solc 0.8.36, optimizer off
-real  1.84
+real  1.88
 $ time sevm compile .
 cache hit (40 sources)
-real  0.52
+real  0.61
 $ $EDITOR src/Setup.sol
 $ time sevm compile .
 recompiled 3 of 40 sources
+wrote 48 artifact(s) to out/sevm
 real  1.04
 ```
 
-Builds are cached under `cache/sevm/`, in the same `cache/` directory forge uses, keyed by
-the solc version, the build settings and every source's content. An edit invalidates the
-file you changed and everything that imports it; the rest is reused, so solc only has to
-emit the parts that moved. `forge clean` clears it along with forge's own artifacts.
+A build leaves the same two directories forge does:
+
+```
+cache/sevm/     the compilation unit, keyed by solc version, settings and source content
+out/sevm/       one JSON per contract, in forge's layout: out/sevm/Token.sol/Token.json
+```
+
+An edit invalidates the file you changed and everything that imports it; the rest is
+reused, so solc only has to emit the parts that moved. `forge clean` clears both along with
+forge's own.
+
+Artifacts are nested under `out/sevm/` rather than written straight into `out/`, because
+sevm compiles with the optimizer off: overwriting `out/Token.sol/Token.json` would leave
+forge's cache calling it fresh and the next `forge test` running sevm's build. They carry
+`abi`, `bytecode`, `deployedBytecode`, `methodIdentifiers`, `storageLayout` and the source
+id, with forge's field names; `metadata` is the one thing missing, as sevm never asks solc
+for it.
 
 A directory with no `foundry.toml` gets nothing written into it: its cache lives under
-`~/.cache/sevm/` instead. `--force` recompiles and rewrites the entry, `--no-cache` (or
-`SEVM_NO_CACHE=1`) skips the cache in both directions.
+`~/.cache/sevm/` and no artifacts are written at all. `--force` recompiles and rewrites the
+entry, `--no-cache` (or `SEVM_NO_CACHE=1`) writes nothing anywhere.
 
 ### Cheatcodes
 
