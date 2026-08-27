@@ -25,6 +25,7 @@ sevm/
 ├── src/sevm/             # the package (import as `sevm`)
 │   ├── cli.py            # arg parsing + `main()`; `.py` vs `.sol` dispatch in `sevm run`
 │   ├── compile.py        # solc via py-solc-x → artifacts; `compile_foundry_project`
+│   ├── cache.py          # on-disk build cache: unit hashing, partial rebuilds
 │   ├── session.py        # the debug session / VM control (largest module)
 │   ├── cheatcodes.py     # Foundry cheatcode engine (VM/console intercept, registry)
 │   ├── libs.py           # dependency resolution: imports -> repo -> clone -> remapping
@@ -116,6 +117,28 @@ MarkupError out of the render itself.
 The package uses relative imports internally (`from .compile import ...`). Keep it that
 way; do not add `sys.path` hacks.
 
+## Build cache (cache.py)
+
+`compile_foundry_project` caches per compilation unit: sha256 over the schema constant, the
+resolved solc version, `optimize`, `evm_version`, the remappings, the output selection and
+every source's content hash. A hit loads `<cache>/<unit>.json.gz` (solc's standard-JSON
+output, `errors` stripped) and goes straight to `_build_project` without invoking solc. The
+cache is `cache/sevm/` inside a Foundry root, else `~/.cache/sevm/projects/<hash>`, so a
+plain directory is never written into.
+
+A miss with a usable base (same settings, same source *key set*) builds partially: solc
+still receives every source, only `outputSelection` narrows to the dirty files, which are
+the edited ones closed over their importers (`libs.Closure.edges`, reversed by
+`cache.dependents`). Emitting the ASTs of all sources is ~0.9s of a 1.0s compile on a
+40-source project, so the narrowed request is where the win is. Because the source set solc
+sees is unchanged, file ids, analysis and source maps come out identical to a full build;
+`merge_output` still re-checks every reused id and refuses the merge if one moved, and
+`base_for` requires an identical key set because adding or removing a file shifts them.
+
+Every cache failure is a miss, never an error. Tests must never touch `~/.cache`:
+`conftest.isolated_cache` points `XDG_CACHE_HOME` at tmp per test, which is also what lets
+the version-resolution tests' mocked release list beat the real one cached on disk.
+
 ## Git workflow
 
 Commit after every change, no matter how small. Do not batch multiple unrelated edits
@@ -134,7 +157,7 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (319 tests; ~2 min, solc compile is the slow part)
+uv run pytest -q        # test suite (339 tests; ~2 min, solc compile is the slow part)
 SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
@@ -189,7 +212,9 @@ from the editable install. Fixtures are self-contained under `tests/contracts/`
 (`Bank.sol`, `Locals.sol`, `Vault.sol`) — do not reach outside the project for a contract.
 
 `test_foundry.py` covers the Foundry path and the cheatcode engine; `test_libs.py` covers
-dependency resolution and install. The suite never touches the network: `conftest.py`
+dependency resolution and install; `test_cache.py` covers the build cache, and proves a
+partial build is field-for-field the same Project as a full one. The suite never touches
+the network: `conftest.py`
 builds a git repo from `tests/fixtures/forge_std_fake/` (forge-std-shaped, assertions
 delegating to `vm.assert*` like the real thing, plus a `test/` tree with an unlinked
 library that must never reach solc) and points `libs.ALIASES["forge-std"]` at it over
@@ -229,7 +254,7 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 319 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 339 tests pass as of
 2026-08-28 (4 more with `SEVM_NETWORK_TESTS=1`), covering Foundry multi-test + cheatcode
 coverage, library install and remapping derivation, the assertion engine, the Yul assembly
-surface, and the snapshot refresh after a mutation.
+surface, the build cache, and the snapshot refresh after a mutation.

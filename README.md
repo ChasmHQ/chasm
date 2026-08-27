@@ -154,6 +154,32 @@ A clone is a pin. sevm never updates it; to move a version, delete `lib/<name>` 
 `forge install <org>/<repo>@<tag>` yourself. git is required, the `forge` binary is not,
 and only the first run for a given library needs the network.
 
+### Build cache
+
+The first run compiles. The next one does not.
+
+```console
+$ time sevm compile .
+solc 0.8.36, optimizer off
+real  1.84
+$ time sevm compile .
+cache hit (40 sources)
+real  0.52
+$ $EDITOR src/Setup.sol
+$ time sevm compile .
+recompiled 3 of 40 sources
+real  1.04
+```
+
+Builds are cached under `cache/sevm/`, in the same `cache/` directory forge uses, keyed by
+the solc version, the build settings and every source's content. An edit invalidates the
+file you changed and everything that imports it; the rest is reused, so solc only has to
+emit the parts that moved. `forge clean` clears it along with forge's own artifacts.
+
+A directory with no `foundry.toml` gets nothing written into it: its cache lives under
+`~/.cache/sevm/` instead. `--force` recompiles and rewrites the entry, `--no-cache` (or
+`SEVM_NO_CACHE=1`) skips the cache in both directions.
+
 ### Cheatcodes
 
 Cheatcodes run against live Py-EVM state and `console.log` prints as you step. Implemented:
