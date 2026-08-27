@@ -21,7 +21,8 @@ own here.
 sevm/
 ├── pyproject.toml        # metadata, deps, `sevm` entry point, pytest + hatch config
 ├── uv.lock               # pinned resolution
-├── README.md, PLAN.md    # user docs, design
+├── README.md, PLAN.md    # landing page, design
+├── docs/                 # commands, expressions, assembly, Foundry reference
 ├── src/sevm/             # the package (import as `sevm`)
 │   ├── cli.py            # arg parsing + `main()`; `.py` vs `.sol` dispatch in `sevm run`
 │   ├── compile.py        # solc via py-solc-x → artifacts; `compile_foundry_project`
