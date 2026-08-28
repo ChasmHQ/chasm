@@ -6,7 +6,7 @@ deploy + `setUp()` + call to `testXxx()` as a transaction so sevm stops inside i
 breakpoint on every test body, the debugger opens at the first and `continue` steps to each
 in turn. The transactions run on the same in-process Py-EVM chain the example scripts use,
 so the existing session machinery attaches unchanged. Cheatcode calls originate from the
-deployed test contract and are intercepted in the patched opcode loop (see cheatcodes.py).
+deployed test contract and are intercepted in the patched opcode loop (see `cheatcodes/`).
 """
 
 from __future__ import annotations

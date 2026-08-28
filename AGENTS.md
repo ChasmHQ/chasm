@@ -17,6 +17,9 @@ own here.
 
 ## Layout (src layout)
 
+Every package `__init__.py` carries a map of its own modules, and `src/sevm/__init__.py`
+maps the whole tree. Read those first; `tests/test_layout.py` fails if one goes stale.
+
 ```
 sevm/
 ├── pyproject.toml        # metadata, deps, `sevm` entry point, pytest + hatch config
@@ -25,21 +28,23 @@ sevm/
 ├── docs/                 # commands, expressions, assembly, Foundry reference
 ├── src/sevm/             # the package (import as `sevm`)
 │   ├── cli.py            # arg parsing + `main()`; `.py` vs `.sol` dispatch in `sevm run`
-│   ├── compile.py        # solc via py-solc-x → artifacts; `compile_foundry_project`
+│   ├── session/          # the stepping engine: core, patch, stepping, snapshots,
+│   │                     #   framelocals, inspect_ops, code, events
+│   ├── commands/         # the gdb command layer: processor + one module per verb group
+│   ├── compile/          # model, solc, versions, foundry_config, build
+│   ├── evaluate/         # bindings, injection, evaluator
+│   ├── assembly/         # builtins, parser, execute
+│   ├── cheatcodes/       # registry, cheats, assertions, args, console
+│   ├── locals/           # layout, index, values
+│   ├── tui/              # app, pane, panes, layout, opcodes, theme, sevm.tcss
 │   ├── cache.py          # on-disk build cache: unit hashing, partial rebuilds
 │   ├── artifacts.py      # forge-shaped `out/sevm/<File.sol>/<Contract>.json`
-│   ├── session.py        # the debug session / VM control (largest module)
-│   ├── cheatcodes.py     # Foundry cheatcode engine (VM/console intercept, registry)
 │   ├── libs.py           # dependency resolution: imports -> repo -> clone -> remapping
-│   ├── assembly.py       # Yul/inline-assembly parser + executor over the live frame
 │   ├── foundry.py        # Foundry test runner: resolve project, discover, driver
-│   ├── commands.py       # gdb-style command dispatch (+ `vm.*` cheats, Yul at the prompt)
-│   ├── evaluate.py       # Solidity expression evaluation
-│   ├── frames.py, srcmap.py, locals.py, decode.py, disasm.py, breakpoints.py
-│   ├── console.py        # plain-text frontend (`--console`)
-│   └── tui/              # Textual fullscreen frontend (app.py, widgets.py, sevm.tcss)
-├── tests/                # test_sevm/foundry/libs/cache/compile_version.py + conftest.py
-└── examples/debug_bank.py
+│   ├── frames.py, srcmap.py, decode.py, disasm.py, breakpoints.py, clipboard.py
+│   └── console.py        # plain-text frontend (`--console`)
+├── tests/                # one file per layer + conftest/harness/tui_harness
+└── examples/             # runnable, self-contained projects
 ```
 
 `sevm run` dispatches by extension: `.py` attaches to a web3 driver (below); `.sol`
@@ -79,12 +84,12 @@ does not get `test/lib/forge-std`.
 Only the project's own sources are collected by directory walk; library sources enter
 solely through the import closure. Real forge-std's `assertEq` and friends delegate to
 `vm.assertEq`/`assertGt`/`assertApproxEqAbs` (116 overloads in its `Vm.sol`), all
-registered programmatically in `cheatcodes.py` from an op x type matrix and sharing a
+registered programmatically in `cheatcodes/assertions.py` from an op x type matrix, sharing a
 `family` so `help cheatcodes` prints one row instead of 116. They implement the comparison
 for real: the `*Decimal` and `*ApproxEq*` forms are called even when the assertion holds.
 
 A Yul builtin typed at the prompt (`mstore(0x80, 1)`, or the explicit `asm ...`) is parsed
-by `assembly.py` and executed by Py-EVM's own opcode functions against the paused
+by `assembly/parser.py` and executed by Py-EVM's own opcode functions against the paused
 computation: arguments pushed in EVM order, `opcode_fn(computation=...)` called, result
 read off the top, then the stack restored by slice-assignment (never rebinding
 `Stack.values`, whose `append`/`pop` are cached bound to that list object). Gas is metered,
@@ -168,7 +173,7 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (345 tests; ~2 min, solc compile is the slow part)
+uv run pytest -q        # test suite (411 tests; ~2.5 min, solc compile is the slow part)
 SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
@@ -194,8 +199,17 @@ masked), so an unmodified web3 script works as a `run` target.
 
 Use the `code-comment-style` skill before writing or reviewing code comments,
 docstrings, argparse `help=` strings, or the in-app `help`/`help <topic>` text in
-`commands.py`. It covers writing new code (default to no comment) as well as cleanup
+`commands/help.py`. It covers writing new code (default to no comment) as well as cleanup
 passes (compress, don't delete load-bearing facts).
+
+## Splitting a module
+
+Use the `module-splitting` skill before breaking up a large file or reorganizing the
+package tree. It carries the failure modes this repo has already paid for: deferred
+relative imports that only fail at run time, decorators dropped by a naive slice, locals
+that shadow a newly imported module, and monkeypatch targets that stop taking effect. It
+also prefers explicit collaborators over mixins, which is why `session/` passes the session
+in rather than inheriting.
 
 ## README and docs style
 
@@ -225,16 +239,23 @@ use solc 0.8.28.
 
 ## Tests
 
-`tests/` is a parallel test dir. `harness.py` compiles `tests/contracts/` once per process
-and deploys over an in-process Py-EVM chain; `test_sevm.py` imports fixtures with
-`from harness import ...`. This works because `pyproject.toml` sets
+`tests/` is a parallel test dir, one file per layer of `src/` (`test_stepping`,
+`test_breakpoints`, `test_commands`, `test_locals`, `test_tui`, ...). `harness.py` compiles
+`tests/contracts/` once per process, deploys over an in-process Py-EVM chain, and owns the
+`Debugger` helper; `conftest.py` holds the fixtures every file shares and `tui_harness.py`
+the Textual pilot helpers. Test files import them with `from harness import ...`, which
+works because `pyproject.toml` sets
 `[tool.pytest.ini_options] pythonpath = ["tests"]`; the `sevm` package itself is imported
 from the editable install. Fixtures are self-contained under `tests/contracts/`
 (`Bank.sol`, `Locals.sol`, `Vault.sol`) — do not reach outside the project for a contract.
 
-`test_foundry.py` covers the Foundry path and the cheatcode engine; `test_libs.py` covers
-dependency resolution and install; `test_cache.py` covers the build cache, and proves a
-partial build is field-for-field the same Project as a full one. The suite never touches
+`test_foundry.py` covers the Foundry path and the cheatcode engine; `test_libs*.py` cover
+dependency resolution, the compile pipeline around it, and the network-only equivalents;
+`test_cache.py` covers the build cache, and proves a partial build is field-for-field the
+same Project as a full one. `test_layout.py` guards the package tree itself: every module
+imports, every relative import names a real sibling (a deferred `from .x import y` inside a
+function body survives its module moving a level deeper and fails only at run time), and
+every package `__init__` still maps its own modules. The suite never touches
 the network: `conftest.py`
 builds a git repo from `tests/fixtures/forge_std_fake/` (forge-std-shaped, assertions
 delegating to `vm.assert*` like the real thing, plus a `test/` tree with an unlinked
@@ -275,7 +296,8 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 345 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 411 tests pass as of
 2026-08-28 (4 more with `SEVM_NETWORK_TESTS=1`), covering Foundry multi-test + cheatcode
 coverage, library install and remapping derivation, the assertion engine, the Yul assembly
-surface, the build cache and its artifacts, and the snapshot refresh after a mutation.
+surface, the build cache and its artifacts, the snapshot refresh after a mutation, and the
+package layout itself.

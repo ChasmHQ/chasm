@@ -291,7 +291,8 @@ class LocalsIndex:
 def declaration_pcs(pc_map: Any, index: LocalsIndex) -> dict[int, LocalVar]:
     """pc -> the declaration that instruction allocates.
 
-    Built once per code object so `session.py` can do a cheap dict lookup per opcode,
+    Built once per code object (see `session/code.py`) so the hook can do a cheap dict lookup
+    per opcode,
     running on every instruction.
 
     Parameters are excluded: they're pushed by the caller, so their slots come from the
