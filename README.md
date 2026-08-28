@@ -8,13 +8,6 @@ variables. Because the frame is still alive you can also write to it. Set a stor
 variable through Solidity, rewrite a stack operand before the opcode consumes it, or force
 an out-of-gas at one exact instruction and watch what the contract does next.
 
-If you know gdb, you know sevm. `b`, `n`, `s`, `si`, `finish`, `bt`, `p`, `x/32xb`,
-`info registers` and `set var` all mean what you expect. The difference is that expressions
-are Solidity and the machine underneath is the EVM.
-
-sevm debugs Foundry `.t.sol` tests and unmodified web3.py scripts. It is early software, so
-expect rough edges. If you hit one, please open an issue.
-
 ![screenshot](./assets/screenshot.png)
 
 **Table of Contents**
@@ -544,8 +537,8 @@ uv build
 The tests are written using pytest and can be found in the `tests` directory.
 
 ```
-uv run pytest -q                                   # 345 tests, no network
-SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, real forge-std and npm
+uv run pytest -q                                   
+SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   
 ```
 
 The default run builds a forge-std fixture in `tmp_path`, so it needs no network. The
