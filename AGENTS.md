@@ -197,6 +197,16 @@ docstrings, argparse `help=` strings, or the in-app `help`/`help <topic>` text i
 `commands.py`. It covers writing new code (default to no comment) as well as cleanup
 passes (compress, don't delete load-bearing facts).
 
+## README and docs style
+
+Use the `readme-writing` skill before creating or editing `README.md`, anything under
+`docs/`, or `examples/README.md`. The rule that matters most here: every command must name
+a path that ships in `examples/`, and every transcript must be pasted from a real run
+(`COLUMNS=110` keeps blocks from wrapping), never hand-edited. Regenerating the transcripts
+is also how doc drift gets caught, so treat a mismatch between a run and the prose as a
+finding, not something to write around. Terminal blocks are fenced ```bash; bare fences are
+for directory trees only.
+
 ## Dependencies
 
 Declared in `pyproject.toml`. Rule: every third-party package imported under `src/sevm`
