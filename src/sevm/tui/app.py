@@ -76,10 +76,9 @@ class SevmApp(App):
         Binding("f9", "toggle_breakpoint", "breakpoint", show=True),
         Binding("f2", "toggle_lowlevel", "low level", show=True),
         Binding("f1", "cmd('help')", "help", show=True),
-        # Ctrl+C is two conventions at once: copy in a terminal, interrupt in a
-        # debugger. A live selection decides, the way every editor resolves it.
-        # `super+c` is Cmd+C, so the platform's own copy chord works where the terminal
-        # forwards it rather than eating it first.
+        # Ctrl+C means copy in a terminal and interrupt in a debugger; a live selection
+        # decides which. `super+c` is Cmd+C, for terminals that forward it rather than
+        # eating it first.
         Binding("ctrl+c", "copy_or_quit", "copy/quit", show=True, priority=True),
         Binding("super+c", "copy_selection", "copy", show=False, priority=True),
         Binding("ctrl+q", "quit", "quit", show=False, priority=True),
@@ -213,10 +212,8 @@ class SevmApp(App):
         if message.result.quit:
             self.exit()
             return
-        # Mid-sequence startup commands are dispatched without an intervening pane
-        # refresh: `_gather` inspects the VM over the same queue a resuming command
-        # (`continue`/`next`) uses, and overlapping the two crosses their replies. Let
-        # the sequence drain first, then refresh once.
+        # No pane refresh mid-sequence, for the queue-crossing reason in `on_mount`:
+        # let the startup commands drain, then refresh once.
         if self._pending_startup:
             self._dispatch_next_startup()
             return
@@ -315,7 +312,7 @@ class SevmApp(App):
         except Exception:
             payload["disassembly"] = []
         try:
-            decoder = self.commands._decoder(snap.contract_name)
+            decoder = self.commands.decoder(snap.contract_name)
             reader = lambda slot: self.session.inspect("read_storage", slot)  # noqa: E731
             payload["storage"] = storage_rows(decoder, reader)
         except Exception:
@@ -365,7 +362,7 @@ class SevmApp(App):
         out: list[tuple[str, str]] = []
         for _num, expr in self.commands.displays:
             try:
-                out.append((expr, self.commands._eval(expr).display))
+                out.append((expr, self.commands.evaluate(expr).display))
             except Exception as exc:
                 out.append((expr, f"<{exc}>"))
         return out

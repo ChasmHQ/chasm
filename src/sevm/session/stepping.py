@@ -82,11 +82,10 @@ def should_stop(
         if depth > session._mode_depth:
             return [], None
         if depth == session._mode_depth and internal > session._mode_internal:  # noqa: SIM102 - the nested `if` keeps the solc self-jump exemption below readable
-            # Deeper in the internal (JUMP-based) call stack, so ordinarily this is a
-            # call we are stepping over. The exception is the compiler's own jump from
-            # a function's declaration into its body, which solc also marks 'i'. If we
-            # treated that as a nested call, `next` at a function's opening line would
-            # skip the entire function.
+            # Deeper in the internal (JUMP-based) call stack, so ordinarily a call to step
+            # over. The exception is solc's own jump from a function's declaration into its
+            # body, also marked 'i'; treating that as a nested call would make `next` at a
+            # function's opening line skip the whole function.
             if not _entering_own_body(session, loc, internal):
                 return [], None
 

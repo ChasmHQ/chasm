@@ -286,11 +286,9 @@ def ensure_solc(version: str = DEFAULT_SOLC_VERSION) -> None:
 
 # -- version resolution ------------------------------------------------------
 #
-# solc rejects a source whose `pragma solidity` does not match the compiler version, so a
-# file pinned to 0.8.21 cannot be built with 0.8.28. Foundry (via svm) solves this by
-# reading every source's pragma, intersecting the constraints, and picking the highest
-# compatible release, installing it on demand. We do the same, reusing solcx's pragma
-# comparator semantics (correct solidity caret handling: `^0.8.0` means `>=0.8.0 <0.9.0`).
+# solc rejects a source whose `pragma solidity` does not match the compiler version, so like
+# Foundry we intersect every source's pragma and install the highest compatible release.
+# solcx's comparator gets solidity's caret right (`^0.8.0` means `>=0.8.0 <0.9.0`).
 
 _PRAGMA_RE = re.compile(r"pragma\s+solidity\s+([^;]+);")
 # One comparator token from a pragma, e.g. `^0.8.0`, `>=0.6.2`, `<0.9.0`, `0.8.21`.

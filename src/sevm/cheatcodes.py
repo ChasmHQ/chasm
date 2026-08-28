@@ -241,10 +241,9 @@ def _label(ctx: CheatContext) -> None:
 
 # ---- assertions -----------------------------------------------------------
 #
-# forge-std's `assertEq` and friends are thin wrappers: the plain forms call the cheatcode
-# only once the comparison has already failed, but the `*Decimal` and `*ApproxEq*` forms
-# call it unconditionally and expect the VM to do the comparison. So these implement the
-# comparison for real, and revert with forge's message shape when it does not hold.
+# forge-std's `*Decimal` and `*ApproxEq*` wrappers call the cheatcode unconditionally and
+# expect the VM to do the comparison, so these implement it for real and revert with forge's
+# message shape. A blanket revert would fail assertions that actually hold.
 
 ASSERT_FAMILY = "assert"
 

@@ -23,7 +23,8 @@ from eth_utils import function_signature_to_4byte_selector
 from harness import bank_fixture, project
 
 from sevm.breakpoints import BreakpointSet
-from sevm.commands import CommandProcessor, CommandResult, _calldata
+from sevm.commands import CommandProcessor, CommandResult
+from sevm.commands.render import _calldata
 from sevm.compile import _strip_metadata
 from sevm.decode import (
     StorageDecoder,
@@ -1490,7 +1491,7 @@ def stop_at(dbg, line, contract="Locals.sol"):
 def locals_map(dbg):
     """`info locals` as {name: value text}, with markup stripped."""
     out = {}
-    for row in dbg.commands._locals():
+    for row in dbg.commands.read_locals():
         out[row["name"]] = row["value"] if row["available"] else "<unavailable>"
     return out
 
@@ -1656,7 +1657,7 @@ def test_storage_pointer_reports_its_slot_not_a_value(locals_contract):
     dbg = locals_debugger(*locals_contract, "storagePointer", 42)
     try:
         stop_at(dbg, 89)
-        rows = {r["name"]: r for r in dbg.commands._locals()}
+        rows = {r["name"]: r for r in dbg.commands.read_locals()}
         assert "storage pointer" in rows["p"]["value"]
         assert "index the state variable" in rows["p"]["reason"]
         assert rows["read"]["value"] == "42"
@@ -1668,7 +1669,7 @@ def test_calldata_reference_is_two_slots_and_says_so(locals_contract):
     dbg = locals_debugger(*locals_contract, "calldataTypes", b"\xaa\xbb\xcc")
     try:
         stop_at(dbg, 95)
-        rows = {r["name"]: r for r in dbg.commands._locals()}
+        rows = {r["name"]: r for r in dbg.commands.read_locals()}
         assert "calldata reference" in rows["payload"]["value"]
         assert rows["size"]["value"] == "3"
     finally:
@@ -1694,7 +1695,7 @@ def test_a_local_is_unavailable_before_it_is_allocated(locals_contract):
     dbg = locals_debugger(*locals_contract, "values", 7)
     try:
         stop_at(dbg, 17)
-        rows = {r["name"]: r for r in dbg.commands._locals()}
+        rows = {r["name"]: r for r in dbg.commands.read_locals()}
         assert not rows["doubled"]["available"]
         assert rows["doubled"]["value"] == "<unavailable>"
         assert "step once" in rows["doubled"]["reason"]

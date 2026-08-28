@@ -312,11 +312,9 @@ class Pane(VerticalScroll):
 
     TITLE = ""
     ANCHOR_HINT = "back to pc"
-    # SOURCE and DISASSEMBLY exist to follow the pc, so they re-centre at every stop no
-    # matter where you left them. Every other pane holds the position you scrolled it
-    # to: a pane you scrolled is a pane you are reading, and yanking it back to the top
-    # on the next `next`/`step` throws that reading away. Scroll it back onto the anchor
-    # (or click the border marker) and it follows again.
+    # SOURCE and DISASSEMBLY exist to follow the pc, so they re-centre at every stop.
+    # Every other pane holds the position you scrolled it to, until you scroll back onto
+    # the anchor (or click the border marker), which re-arms following.
     FOLLOWS_PC = False
     # Panes are scrolled with the wheel, so they never take focus: a click that stole it
     # from the prompt would send your next keystrokes nowhere.
