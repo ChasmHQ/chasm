@@ -629,7 +629,7 @@ def test_real_forge_std_installs_and_runs(tmp_path):
 def test_real_forge_std_declares_every_assert_we_implement(tmp_path):
     from eth_utils import function_signature_to_4byte_selector
 
-    from sevm.cheatcodes import _REGISTRY
+    from sevm.cheatcodes.registry import _REGISTRY
 
     root = str(tmp_path / "std")
     libs.clone(

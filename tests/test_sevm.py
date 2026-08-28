@@ -2704,7 +2704,8 @@ def test_pane_colours_are_ansi_so_they_match_the_terminal():
 
 
 def test_assembly_parses_literals_and_nesting():
-    from sevm.assembly import Call, Literal, parse
+    from sevm.assembly import parse
+    from sevm.assembly.parser import Call, Literal
 
     (node,) = parse("sstore(3, add(sload(3), 1))")
     assert isinstance(node, Call) and node.name == "sstore"
