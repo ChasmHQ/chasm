@@ -1,26 +1,13 @@
-"""Example target script for `sevm run`.
-
-Nothing in here knows about the debugger. It is ordinary web3.py against an in-process
-Py-EVM chain, which is the point: `sevm run examples/debug_bank.py` attaches to it
-unmodified.
-"""
+# Deploy Bank on an in-process chain and deposit into it.
 
 import os
-import sys
-
-# Run against a source checkout without installing: put src/ on the path. When sevm
-# is installed (e.g. `uv tool install sevm`), this is a harmless no-op.
-sys.path.insert(
-    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
-)
 
 from eth_account import Account
 from web3 import EthereumTesterProvider, Web3
 
 from sevm.compile import compile_project
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CONTRACTS = os.path.join(os.path.dirname(HERE), "tests", "contracts")
+CONTRACTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bank", "src")
 
 
 def main():

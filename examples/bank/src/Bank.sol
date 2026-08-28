@@ -1,40 +1,23 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.28;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
 
-import {Test, console} from "forge-std/Test.sol";
-
-
-contract DebugTest is Test {
-    Bank bank;
-    address player = address(0xdead);
-
-    function setUp() public {
-        bank = new Bank("bank");
-        vm.deal(player, 1 ether);
-    }
-
-    function testDeposit() public {
-        vm.startPrank(player);
-        bank.deposit{ value: 1 ether }();
-        vm.stopPrank();
-    }
-}
-
-
+/// Exercises the debugger against every feature that is hard to get right:
+/// packed slots, mappings, dynamic arrays, strings, structs, internal calls,
+/// modifiers, loops, external calls into another contract, and reverts.
 contract Bank {
     struct Account {
-        uint128 balance;
+        uint128 balance;   // packed with `frozen` in one slot
         bool frozen;
         string nickname;
     }
 
-    address public owner;
-    uint96 public feeBps;
-    uint256 public totalDeposits;
-    mapping(address => uint256) public balances;
-    mapping(address => Account) public accounts;
-    uint256[] public history;
-    string public name;
+    address public owner;              // slot 0
+    uint96 public feeBps;              // slot 0, packed after owner
+    uint256 public totalDeposits;      // slot 1
+    mapping(address => uint256) public balances;   // slot 2
+    mapping(address => Account) public accounts;   // slot 3
+    uint256[] public history;          // slot 4
+    string public name;                // slot 5
 
     event Deposited(address indexed who, uint256 amount);
 
@@ -53,6 +36,7 @@ contract Bank {
         totalDeposits = msg.value;
     }
 
+    /// Internal call, so it compiles to a JUMP and the EVM depth never changes.
     function _fee(uint256 amount) internal view returns (uint256) {
         return (amount * feeBps) / 10000;
     }
@@ -78,6 +62,7 @@ contract Bank {
         accounts[who].frozen = true;
     }
 
+    /// A loop, so `next` has something to iterate over.
     function sumHistory() public view returns (uint256 total) {
         for (uint256 i = 0; i < history.length; i++) {
             total += history[i];
@@ -90,6 +75,7 @@ contract Bank {
         totalDeposits -= amount;
     }
 
+    /// Real external CALL, so a new EVM frame appears and `bt` has two levels.
     function forward(address target, uint256 value) public returns (uint256) {
         return Callee(target).receiveValue(value);
     }
@@ -99,7 +85,7 @@ contract Bank {
     }
 
     function overflow(uint256 a, uint256 b) public pure returns (uint256) {
-        return a - b;
+        return a - b;   // panics 0x11 when b > a
     }
 }
 
