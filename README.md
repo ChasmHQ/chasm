@@ -1,12 +1,10 @@
 # sevm
 
-sevm is a gdb-style interactive debugger for Solidity and the EVM, running on Py-EVM.
+`sevm` is an interactive debugger for Solidity built for dynamic analysis, running on Py-EVM.
 
-It pauses *inside* a running transaction, before the call frame unwinds, and hands you the
-live machine: uncommitted state, memory, the stack, the call stack, and decoded local
-variables. Because the frame is still alive you can also write to it. Set a storage
-variable through Solidity, rewrite a stack operand before the opcode consumes it, or force
-an out-of-gas at one exact instruction and watch what the contract does next.
+- Full control: it is not just for inspecting low-level EVM internals, in here you are `root` of the EVM. You can modify state, stack, memory, storage, gas, and the rest of the machine.
+- Foundry compatible: if you already know Foundry, you already know sevm. Use the same tests and the same cheatcodes.
+- See everything: no source? No problem. sevm draws a visual map of every public function and its flow, wired to the decompiled result, so you can see what storage and memory change along the way.
 
 ![screenshot](./assets/screenshot.png)
 
@@ -45,10 +43,6 @@ pipx install uv
 
 uv tool install .
 ```
-
-Note: Only supports Python >= 3.10. `git` must be on PATH, because sevm clones missing
-libraries itself and never shells out to `forge`. solc is downloaded on demand into
-`~/.solcx`.
 
 ## Usage
 
