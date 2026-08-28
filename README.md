@@ -9,25 +9,7 @@ sevm extends the Foundry test workflow with a live, gdb-style debugger for Solid
 the EVM. It runs `.t.sol` files on Py-EVM and pauses inside a transaction before the call
 frame unwinds, with uncommitted state, memory, the stack and locals all still readable.
 
-<!-- demo: record the TUI (vhs/asciinema) and embed here -->
-
-```text
-  Bank._credit(address,uint256)  Bank.sol:46  gas 271,443/300,000  depth 1  pc 0x3f2  SSTORE
- +-SOURCE--------------------------------------+-CALL STACK-----------------------+
- |  44     function _credit(address who, ...   | -> #0 Bank._credit   Bank.sol:46 |
- |  45         uint256 fee = _fee(amount);     |    #1 Bank.deposit   Bank.sol:52 |
- |> 46         balances[who] += amount - fee;  |    #2 Bank at pc 0x380           |
- |  47         totalDeposits += amount - fee;  +-VARIABLES------------------------+
- |  48         history.push(amount);           | who     address = 0x0278bdd7...  |
- |  49     }                                   | amount  uint256 = 2 ether        |
- +-DISASSEMBLY-----+-STACK----------+-MEMORY---+ fee     uint256 = 0.005 ether    |
- |  0x3f0 PUSH1 00 | 0  0x1bc16d67e | 0x40 0080+-STORAGE--------------------------+
- |> 0x3f2 SSTORE   | 1  0x0278bdd78 | 0x60 0000| 0+0  owner         = 0xf2e246bb..|
- |  0x3f3 PUSH2 01 | 2  0x000000003 | 0x80 0001| 1+0  totalDeposits = 0           |
- +-----------------+----------------+----------+----------------------------------+
- (sevm) p amount - fee
- $1 = 1995000000000000000 (1.995000 ether)  (uint256)
-```
+![screenshot](./assets/screenshot.png)
 
 ## Table of Contents
 
@@ -85,24 +67,14 @@ Run a Foundry test in the fullscreen debugger, narrow the run to one test in the
 plain-text frontend, or inspect the compiled project:
 
 ```bash
-sevm run test/Counter.t.sol
-sevm run --console -m testDeposit test/Vault.t.sol
-sevm compile .
-```
-
-Options go **before** the target. `sevm run` also accepts an unchanged web3.py driver, and
-everything after a `.py` target is forwarded to that script:
-
-```bash
-sevm run --contracts tests/contracts examples/debug_bank.py
+sevm run examples/Test.t.sol
 ```
 
 Run `sevm run --help` and `sevm compile --help` for the complete option list.
 
 ## Example: Debugging a Foundry Test
 
-Point `sevm run` at a `.sol` test. A lone test can import forge-std and other libraries
-without an existing Foundry project:
+Point `sevm run` at a `.sol` test. A lone test can import forge-std and other libraries without an existing Foundry project:
 
 ```solidity
 // /tmp/scratch/Vault.t.sol
@@ -163,15 +135,11 @@ Stopped on error: reverted: "assertion failed: 100 != 120"
 #1  FailTest.testBalance() at Fail.t.sol:9
 ```
 
-Each test gets a fresh deploy, `setUp()`, and test call. With no `-m/--match` filter,
-`continue` runs to the next test body. Read [Foundry compatibility](#foundry-compatibility)
-for supported workflows and cheatcodes.
+Each test gets a fresh deploy, `setUp()`, and test call. Read [Foundry compatibility](#foundry-compatibility) for supported workflows and cheatcodes.
 
 ## Example: Debugging a web3 Script
 
-Your script needs no changes. It drives web3.py against an in-process Py-EVM chain while
-sevm compiles the contracts, patches Py-EVM, and stops when execution enters recognized
-bytecode:
+It drives web3.py against an in-process Py-EVM chain while sevm compiles the contracts, patches Py-EVM, and stops when execution enters recognized bytecode:
 
 ```console
 $ sevm run --console --contracts tests/contracts examples/debug_bank.py
