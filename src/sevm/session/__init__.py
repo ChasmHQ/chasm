@@ -15,6 +15,7 @@ Where things live:
 
   events.py       the messages the two threads exchange
   core.py         `DebugSession`: the threads, the frame stack, the per-opcode hook
+  code.py         resolving running bytecode back to the source it came from
   patch.py        the `apply_computation` monkeypatch and its opcode loop
   stepping.py     when a step stops; when a watchpoint fires
   snapshots.py    building the `FrameSnapshot` the UI renders

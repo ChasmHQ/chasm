@@ -34,12 +34,12 @@ from ..cheatcodes import (
     apply_cheat,
     decode_console_log,
 )
-from ..compile import Artifact, Project
-from ..disasm import Disassembly
+from ..compile import Project
 from ..frames import EvmFrame, FrameSnapshot, FunctionIndex, InternalFrame
-from ..locals import LocalsIndex, LocalValue, declaration_pcs
-from ..srcmap import Location, PcMap, build_line_indexes
+from ..locals import LocalsIndex, LocalValue
+from ..srcmap import Location, build_line_indexes
 from . import framelocals, patch, snapshots, stepping
+from .code import CodeIndex
 from .events import Failure, Finished, Inspect, Paused, Resume, SessionError, StepMode
 from .inspect_ops import InspectOps
 
@@ -116,11 +116,7 @@ class DebugSession:
         self._pending_count = 1
         self._pending_annotation = ""  # detail for the stop `stepping` just decided
 
-        # Per-code caches, keyed by code identity.
-        self._pcmap_cache: dict[bytes, PcMap | None] = {}
-        self._declpc_cache: dict[bytes, dict[int, int]] = {}
-        self._disasm_cache: dict[bytes, Disassembly] = {}
-        self._artifact_cache: dict[bytes, Artifact | None] = {}
+        self.code = CodeIndex(project, self.line_indexes, self.locals, self.breakpoints)
 
         self._eval_hook: Callable[..., Any] | None = None
         self._inspect_ops = InspectOps(self)
@@ -247,132 +243,14 @@ class DebugSession:
         return self.last_snapshot
 
     # ==================================================================
-    # code resolution
-    # ==================================================================
-
-    def _artifact_for(self, code: bytes, is_create: bool) -> Artifact | None:
-        key = (
-            bytes(code[:64])
-            + len(code).to_bytes(4, "big")
-            + (b"C" if is_create else b"R")
-        )
-        if key in self._artifact_cache:
-            return self._artifact_cache[key]
-        art: Artifact | None = None
-        if is_create:
-            # Creation code is `constructor bytecode + abi-encoded args`, so match on prefix.
-            for candidate in self.project.artifacts.values():
-                if candidate.bytecode and code.startswith(candidate.bytecode):
-                    art = candidate
-                    break
-        else:
-            art = self.project.artifact_for_code(code)
-        self._artifact_cache[key] = art
-        return art
-
-    def _pcmap_for(
-        self, code: bytes, artifact: Artifact | None, is_create: bool
-    ) -> PcMap | None:
-        if artifact is None:
-            return None
-        key = (
-            bytes(code[:64])
-            + len(code).to_bytes(4, "big")
-            + (b"C" if is_create else b"R")
-        )
-        if key in self._pcmap_cache:
-            return self._pcmap_cache[key]
-        source_map = artifact.source_map if is_create else artifact.deployed_source_map
-        pcmap = PcMap(code, source_map, self.line_indexes) if source_map else None
-        self._pcmap_cache[key] = pcmap
-        if pcmap is not None:
-            self._resolve_pending_breakpoints(pcmap)
-        return pcmap
-
-    def _declpcs_for(
-        self, code: bytes, pcmap: PcMap | None, is_create: bool
-    ) -> dict[int, int]:
-        """pc -> declaration AST id for this code object, built once and shared.
-
-        This is the table that makes local-variable observation affordable: the hook
-        does one dict lookup per opcode instead of resolving a source location.
-        """
-        if pcmap is None:
-            return {}
-        key = (
-            bytes(code[:64])
-            + len(code).to_bytes(4, "big")
-            + (b"C" if is_create else b"R")
-        )
-        cached = self._declpc_cache.get(key)
-        if cached is None:
-            cached = declaration_pcs(pcmap, self.locals)
-            self._declpc_cache[key] = cached
-        return cached
-
-    def _disasm_for(self, code: bytes) -> Disassembly:
-        key = bytes(code[:64]) + len(code).to_bytes(4, "big")
-        cached = self._disasm_cache.get(key)
-        if cached is None:
-            cached = Disassembly(code)
-            self._disasm_cache[key] = cached
-        return cached
-
-    def _resolve_pending_breakpoints(self, pcmap: PcMap) -> None:
-        for bp in list(self.breakpoints.breakpoints.values()):
-            if bp.pending and bp.file_id >= 0 and bp.line > 0:
-                pcs = pcmap.pcs_for_line(bp.file_id, bp.line)
-                if pcs:
-                    self.breakpoints.resolve_pending(bp.file_id, bp.line, [min(pcs)])
-
-    def resolve_line(self, file_id: int, line: int) -> tuple[int, list[int]]:
-        """Snap a source line to the nearest line with code and return its pcs.
-
-        Searches every artifact, because a `break Foo.sol:12` should work before the
-        contract in question has been deployed.
-        """
-        maps = []
-        for art in self.project.artifacts.values():
-            if not art.deployed_bytecode or not art.deployed_source_map:
-                continue
-            maps.append(
-                PcMap(art.deployed_bytecode, art.deployed_source_map, self.line_indexes)
-            )
-
-        # Pick the snapped line FIRST, across every artifact, then collect pcs only for
-        # that line. Doing it per-artifact would mix pcs from different lines: a file's
-        # second contract snaps line 48 forward to its own first executable line, and
-        # those pcs would silently join the breakpoint.
-        candidates = [
-            snapped
-            for snapped in (
-                pcmap.nearest_executable_line(file_id, line) for pcmap in maps
-            )
-            if snapped is not None
-        ]
-        if not candidates:
-            return line, []
-        best_line = min(candidates)
-        pcs: list[int] = []
-        for pcmap in maps:
-            found = pcmap.pcs_for_line(file_id, best_line)
-            if found:
-                pcs.append(min(found))
-        return best_line, sorted(set(pcs))
-
-    # ==================================================================
     # breakpoint helpers (controller thread)
     # ==================================================================
 
     def file_id_for(self, source_key: str) -> int | None:
-        """Accepts 'Bank.sol' or a suffix of the path, as gdb accepts a basename."""
-        src = self.project.sources.get(source_key)
-        if src is not None:
-            return src.file_id
-        for key, candidate in self.project.sources.items():
-            if key.endswith(source_key) or candidate.abs_path.endswith(source_key):
-                return candidate.file_id
-        return None
+        return self.code.file_id_for(source_key)
+
+    def resolve_line(self, file_id: int, line: int) -> tuple[int, list[int]]:
+        return self.code.resolve_line(file_id, line)
 
     def break_at_line(
         self,
@@ -500,8 +378,8 @@ class DebugSession:
 
     def _enter_frame(self, computation: Any, message: Any) -> EvmFrame:
         code = bytes(message.code)
-        artifact = self._artifact_for(code, message.is_create)
-        pc_map = self._pcmap_for(code, artifact, message.is_create)
+        artifact = self.code.artifact_for(code, message.is_create)
+        pc_map = self.code.pcmap_for(code, artifact, message.is_create)
         frame = EvmFrame(
             depth=message.depth,
             address=bytes(message.storage_address),
@@ -515,8 +393,8 @@ class DebugSession:
             artifact_name=artifact.name if artifact else None,
             computation=computation,
             pc_map=pc_map,
-            disassembly=self._disasm_for(code),
-            decl_pcs=self._declpcs_for(code, pc_map, message.is_create),
+            disassembly=self.code.disassembly_for(code),
+            decl_pcs=self.code.declpcs_for(code, pc_map, message.is_create),
         )
         frame.artifact = artifact  # type: ignore[attr-defined]
         self._frames.append(frame)
