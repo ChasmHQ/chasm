@@ -13,18 +13,18 @@ frame unwinds, with uncommitted state, memory, the stack and locals all still re
 
 ```text
   Bank._credit(address,uint256)  Bank.sol:46  gas 271,443/300,000  depth 1  pc 0x3f2  SSTORE
- +-SOURCE--------------------------------------+-CALL STACK----------------------+
+ +-SOURCE--------------------------------------+-CALL STACK-----------------------+
  |  44     function _credit(address who, ...   | -> #0 Bank._credit   Bank.sol:46 |
  |  45         uint256 fee = _fee(amount);     |    #1 Bank.deposit   Bank.sol:52 |
  |> 46         balances[who] += amount - fee;  |    #2 Bank at pc 0x380           |
- |  47         totalDeposits += amount - fee;  +-VARIABLES-----------------------+
+ |  47         totalDeposits += amount - fee;  +-VARIABLES------------------------+
  |  48         history.push(amount);           | who     address = 0x0278bdd7...  |
  |  49     }                                   | amount  uint256 = 2 ether        |
  +-DISASSEMBLY-----+-STACK----------+-MEMORY---+ fee     uint256 = 0.005 ether    |
- |  0x3f0 PUSH1 00 | 0  0x1bc16d67e | 0x40 0080+-STORAGE-------------------------+
+ |  0x3f0 PUSH1 00 | 0  0x1bc16d67e | 0x40 0080+-STORAGE--------------------------+
  |> 0x3f2 SSTORE   | 1  0x0278bdd78 | 0x60 0000| 0+0  owner         = 0xf2e246bb..|
  |  0x3f3 PUSH2 01 | 2  0x000000003 | 0x80 0001| 1+0  totalDeposits = 0           |
- +-----------------+----------------+----------+---------------------------------+
+ +-----------------+----------------+----------+----------------------------------+
  (sevm) p amount - fee
  $1 = 1995000000000000000 (1.995000 ether)  (uint256)
 ```
