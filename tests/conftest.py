@@ -1,8 +1,15 @@
-"""Shared fixtures for the dependency-install path.
+"""Fixtures every test file shares.
 
-sevm fetches forge-std from its real repository, so the suite stands up a local git repo
-from `fixtures/forge_std_fake/` and points the resolver at it over `file://`. The real
-clone, tag-selection and remapping-derivation code runs; nothing touches the network.
+The debugger fixtures each get a *fresh* chain, because stepping mutates state and a shared
+one would make failures order-dependent. Compilation is cached process-wide (see
+`harness.project`) since solc is the slow part.
+
+The rest stands up the dependency-install path: sevm fetches forge-std from its real
+repository, so the suite builds a local git repo from `fixtures/forge_std_fake/` and points
+the resolver at it over `file://`.
+
+The real clone, tag-selection and remapping-derivation code runs; nothing touches the
+network.
 """
 
 from __future__ import annotations
@@ -12,6 +19,9 @@ import shutil
 import subprocess
 
 import pytest
+from eth_abi import encode as abi_encode
+from eth_utils import function_signature_to_4byte_selector
+from harness import Debugger, bank_fixture, deploy, make_web3, project
 
 from sevm import libs
 
@@ -148,3 +158,78 @@ def failing_project(tmp_path_factory, local_forge_std):
         )
     prepare_project(sol, assume_yes=True)
     return compile_test(sol, root)
+
+
+# ==================================================================
+# a live debug session
+# ==================================================================
+
+
+@pytest.fixture(scope="module")
+def proj():
+    return project()
+
+
+@pytest.fixture
+def bank():
+    """Fresh chain with Bank + Callee deployed and a funded second account."""
+    w3, proj_, contract, callee, alice = bank_fixture()
+    yield w3, proj_, contract, callee, alice
+
+
+@pytest.fixture
+def deposit_debugger(bank):
+    w3, proj_, contract, _callee, alice = bank
+
+    def txfn():
+        tx = contract.functions.deposit().transact(
+            {"from": alice.address, "value": w3.to_wei(2, "ether"), "gas": 300_000}
+        )
+        w3.eth.wait_for_transaction_receipt(tx)
+
+    dbg = Debugger(proj_, txfn)
+    yield dbg
+    dbg.close()
+
+
+@pytest.fixture
+def forward_debugger(bank):
+    """Stopped in `forward(address,uint256)`, a frame whose calldata carries arguments.
+
+    Yields the debugger and the calldata the transaction was sent with, computed here
+    rather than read back off the frame so the assertions have something to compare to.
+    """
+    w3, proj_, contract, callee, _alice = bank
+    calldata = function_signature_to_4byte_selector(
+        "forward(address,uint256)"
+    ) + abi_encode(["address", "uint256"], [callee.address, 21])
+
+    def txfn():
+        tx = contract.functions.forward(callee.address, 21).transact({"gas": 300_000})
+        w3.eth.wait_for_transaction_receipt(tx)
+
+    dbg = Debugger(proj_, txfn)
+    yield dbg, calldata
+    dbg.close()
+
+
+@pytest.fixture
+def locals_contract(proj):
+    """A fresh chain with `Locals` deployed, for the hard shapes."""
+    w3 = make_web3()
+    return w3, proj, deploy(w3, proj, "Locals")
+
+
+@pytest.fixture
+def fake_clipboard(monkeypatch):
+    """Capture what would reach the system clipboard, without touching it."""
+    from sevm import clipboard
+
+    captured: list = []
+
+    def fake_copy(text: str) -> str:
+        captured.append(text)
+        return "pbcopy"
+
+    monkeypatch.setattr(clipboard, "copy", fake_copy)
+    return captured
