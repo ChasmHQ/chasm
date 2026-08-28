@@ -1,18 +1,8 @@
-"""The panes.
+"""The panes themselves.
 
-Each pane takes a `FrameSnapshot` (and, where it needs more, data the app fetched from
-the VM thread) and renders it. Panes never touch the session directly: they are pure
-render functions with a widget wrapped around them.
-
-Colour discipline: one accent per data class, never reused, so a colour always means the
-same thing. Source green, stack cyan, memory blue, storage amber, gas magenta, control
-flow yellow, errors red. Whatever the *current* opcode is about to touch is highlighted
-in every pane at once.
-
-Layout note: wide cells are truncated by hand, not with Rich's `no_wrap`/`overflow`
-columns. In a `Table.grid`, an unwrappable ratio column reports a minimum width equal to
-its longest line, and Rich then shrinks the *fixed* columns to make room, silently
-eating the breakpoint gutter and the program counter.
+Each takes a `FrameSnapshot` (plus, where it needs more, data the app fetched from the VM
+thread) and renders it. Panes never touch the session: they are pure render functions with
+a widget wrapped around them.
 """
 
 from __future__ import annotations
@@ -22,417 +12,33 @@ from typing import Any
 
 from rich.syntax import Syntax
 from rich.text import Text
-from textual.app import ComposeResult
-from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.widgets import Static
 
-from ..decode import StorageDecoder
 from ..frames import FrameSnapshot
-
-# One accent per data class, in ANSI colours, so the debugger follows the terminal's own palette.
-C_SOURCE = "ansi_green"
-C_STACK = "ansi_cyan"
-C_MEMORY = "ansi_blue"
-# Plain blue is too dark against hex-digit density, so bytes get the bright variant.
-# Zero words are dimmed instead, so the memory dump's non-zero bytes stand out.
-C_MEMORY_TEXT = "ansi_bright_blue"
-C_MEMORY_ZERO = "ansi_bright_black"
-C_STORAGE = "ansi_yellow"
-C_GAS = "ansi_magenta"
-# Textual parses colours as CSS, not Rich's names ("bright_yellow", "grey23" are Rich
-# spellings Textual rejects). A rejected style is silently dropped, not raised.
-C_FLOW = "ansi_bright_yellow"
-C_ERROR = "bold ansi_red"
-C_DIM = "dim"
-
-SYNTAX_THEME = "monokai"
-
-# Opcodes worth explaining inline the moment they are about to run. A beginner should not
-# have to look up what DELEGATECALL does while staring at one.
-OPCODE_HINTS = {
-    "SSTORE": "write storage: slot <- value",
-    "SLOAD": "read storage at slot",
-    "TSTORE": "write transient storage",
-    "TLOAD": "read transient storage",
-    "MSTORE": "write 32 bytes to memory",
-    "MSTORE8": "write 1 byte to memory",
-    "MLOAD": "read 32 bytes from memory",
-    "CALL": "call another contract (new frame)",
-    "STATICCALL": "call another contract, read-only",
-    "DELEGATECALL": "run their code against OUR storage",
-    "CALLCODE": "run their code against OUR storage (legacy)",
-    "CREATE": "deploy a new contract",
-    "CREATE2": "deploy at a deterministic address",
-    "REVERT": "abort and undo this frame",
-    "RETURN": "return from this frame",
-    "SELFDESTRUCT": "destroy this contract",
-    "JUMP": "unconditional jump",
-    "JUMPI": "jump if the condition is non-zero",
-    "JUMPDEST": "a legal jump target",
-    "KECCAK256": "hash a memory range",
-    "CALLDATALOAD": "read 32 bytes of calldata",
-    "CALLDATACOPY": "copy calldata into memory",
-    "LOG0": "emit an anonymous event",
-    "LOG1": "emit an event",
-    "LOG2": "emit an event",
-    "LOG3": "emit an event",
-    "LOG4": "emit an event",
-}
-
-# How many stack items the next opcode consumes, so they can be highlighted as operands.
-_OPERANDS = {
-    "SSTORE": 2,
-    "SLOAD": 1,
-    "TSTORE": 2,
-    "TLOAD": 1,
-    "MSTORE": 2,
-    "MSTORE8": 2,
-    "MLOAD": 1,
-    "JUMP": 1,
-    "JUMPI": 2,
-    "RETURN": 2,
-    "REVERT": 2,
-    "KECCAK256": 2,
-    "CALL": 7,
-    "CALLCODE": 7,
-    "DELEGATECALL": 6,
-    "STATICCALL": 6,
-    "CREATE": 3,
-    "CREATE2": 4,
-    "ADD": 2,
-    "SUB": 2,
-    "MUL": 2,
-    "DIV": 2,
-    "SDIV": 2,
-    "MOD": 2,
-    "SMOD": 2,
-    "EXP": 2,
-    "LT": 2,
-    "GT": 2,
-    "SLT": 2,
-    "SGT": 2,
-    "EQ": 2,
-    "AND": 2,
-    "OR": 2,
-    "XOR": 2,
-    "SHL": 2,
-    "SHR": 2,
-    "SAR": 2,
-    "BYTE": 2,
-    "ISZERO": 1,
-    "NOT": 1,
-    "BALANCE": 1,
-    "EXTCODESIZE": 1,
-    "EXTCODEHASH": 1,
-    "BLOCKHASH": 1,
-    "LOG0": 2,
-    "LOG1": 3,
-    "LOG2": 4,
-    "LOG3": 5,
-    "LOG4": 6,
-    "CALLDATALOAD": 1,
-    "CALLDATACOPY": 3,
-    "CODECOPY": 3,
-    "RETURNDATACOPY": 3,
-}
-
-# Names for those operands, so the stack reads as arguments rather than as numbers.
-_OPERAND_NAMES = {
-    "SSTORE": ("slot", "value"),
-    "SLOAD": ("slot",),
-    "TSTORE": ("slot", "value"),
-    "TLOAD": ("slot",),
-    "MSTORE": ("offset", "value"),
-    "MSTORE8": ("offset", "byte"),
-    "MLOAD": ("offset",),
-    "JUMP": ("dest",),
-    "JUMPI": ("dest", "cond"),
-    "RETURN": ("offset", "length"),
-    "REVERT": ("offset", "length"),
-    "KECCAK256": ("offset", "length"),
-    "CALL": ("gas", "to", "value", "in", "insize", "out", "outsize"),
-    "STATICCALL": ("gas", "to", "in", "insize", "out", "outsize"),
-    "DELEGATECALL": ("gas", "to", "in", "insize", "out", "outsize"),
-    "CALLCODE": ("gas", "to", "value", "in", "insize", "out", "outsize"),
-    "CREATE": ("value", "offset", "length"),
-    "CREATE2": ("value", "offset", "length", "salt"),
-    "BALANCE": ("address",),
-    "CALLDATALOAD": ("offset",),
-    "LOG1": ("offset", "length", "topic0"),
-    "LOG2": ("offset", "length", "topic0", "topic1"),
-    "LOG3": ("offset", "length", "topic0", "topic1", "topic2"),
-}
-
-
-# ==================================================================
-# formatting helpers
-# ==================================================================
-
-
-def _fit(text: Text, width: int) -> Text:
-    """Truncate in place to `width`, with an ellipsis. See the module note on no_wrap."""
-    out = text.copy()
-    out.truncate(max(1, width), overflow="ellipsis")
-    return out
-
-
-def _fit_str(value: str, width: int, style: str = "") -> Text:
-    return _fit(Text(value, style=style), width)
-
-
-# ==================================================================
-# laying out a pane as Content
-# ==================================================================
-#
-# Panes are built from `Content`, not Rich `Table.grid`: Textual's text selection,
-# highlighting and ctrl+c copy only work on `Content` (a Rich renderable's
-# `render_strips` ignores selection entirely). Columns are laid out by padding here
-# instead, which is all `Table.grid` did anyway.
-
-
-def _cell(
-    value: Any,
-    width: int | None = None,
-    style: str = "",
-    align: str = "left",
-) -> Content:
-    """One column of a row, padded or ellipsised to `width`."""
-    if isinstance(value, Content):
-        content = value
-    elif isinstance(value, Text):
-        content = Content.from_rich_text(value)
-        if style:
-            content = content.stylize_before(style)
-    else:
-        content = Content.styled(str(value), style)
-    if width is None:
-        return content
-    width = max(1, width)
-    if content.cell_length > width:
-        content = content.truncate(width, ellipsis=True)
-    padding = width - content.cell_length
-    if padding > 0:
-        content = (
-            content.pad_left(padding) if align == "right" else content.pad_right(padding)
-        )
-    return content
-
-
-def _row(*cells: Content) -> Content:
-    """Join columns with a single space, as `Table.grid(padding=(0, 1))` did."""
-    return Content(" ").join(cells)
-
-
-def _page(lines: Sequence[Content]) -> Content:
-    return Content("\n").join(lines)
-
-
-def _hex_compact(value: int, budget: int = 20) -> str:
-    """Full hex when it fits, otherwise head..tail so magnitude stays readable."""
-    text = f"0x{value:x}"
-    if len(text) <= budget:
-        return text
-    keep = max(4, (budget - 4) // 2)
-    return f"{text[: 2 + keep]}..{text[-keep:]}"
-
-
-def _is_zero(word: str) -> bool:
-    return not word.strip("0 ")
-
-
-def memory_region(offset: int) -> str:
-    """Solidity's fixed memory layout, so a beginner can orient themselves."""
-    if offset < 0x40:
-        return "scratch"
-    if offset < 0x60:
-        return "free mem ptr"
-    if offset < 0x80:
-        return "zero slot"
-    return ""
-
-
-def operand_count(mnemonic: str) -> int:
-    return _OPERANDS.get(mnemonic, 0)
-
-
-def operand_name(mnemonic: str, index: int) -> str:
-    labels = _OPERAND_NAMES.get(mnemonic)
-    if labels and index < len(labels):
-        return labels[index]
-    return ""
-
-
-def pending_storage_slot(snap: FrameSnapshot | None) -> int | None:
-    """If the next opcode is SSTORE/SLOAD, which slot it is about to touch."""
-    if snap is None or not snap.stack:
-        return None
-    if snap.mnemonic in ("SSTORE", "SLOAD"):
-        return snap.stack[0].value
-    return None
-
-
-def storage_rows(
-    decoder: StorageDecoder | None, reader
-) -> list[tuple[int, int, str, str, str]]:
-    """(slot, offset, name, type, display) for the storage pane."""
-    if not decoder:
-        return []
-    return [
-        (var.slot, var.offset, var.name, var.type_label, value.display)
-        for var, value in decoder.read_all(reader)
-    ]
-
-
-# ==================================================================
-# base
-# ==================================================================
-
-
-class PaneBody(Static):
-    """The rendered content of a pane.
-
-    Selection is deliberately *not* implemented here. Mouse reporting is off, so the
-    terminal/tmux handles dragging like any other program (system clipboard, tmux
-    copy-mode, macOS Cmd+C). An in-app implementation could only copy via OSC 52, which
-    tmux swallows unless `set-clipboard` is on, and could only paste back into sevm.
-    """
-
-
-class Pane(VerticalScroll):
-    """A titled panel that renders from a snapshot, and scrolls.
-
-    Panes render *more* than fits on purpose: the whole source file, disassembly around
-    the pc, all of memory, so you can look away from where execution is paused.
-
-    Each pane knows the line it's anchored to (current source line, pc, top of stack)
-    and re-centres on it on every stop. Scrolling away from that anchor puts a marker in
-    the border, so a pane never silently shows stale state.
-    """
-
-    TITLE = ""
-    ANCHOR_HINT = "back to pc"
-    # SOURCE and DISASSEMBLY exist to follow the pc, so they re-centre at every stop.
-    # Every other pane holds the position you scrolled it to, until you scroll back onto
-    # the anchor (or click the border marker), which re-arms following.
-    FOLLOWS_PC = False
-    # Panes are scrolled with the wheel, so they never take focus: a click that stole it
-    # from the prompt would send your next keystrokes nowhere.
-    can_focus = False
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.border_title = self.TITLE
-        self._body = PaneBody("")
-        self._rendered: Any = ""
-        self._anchor_line: int | None = None  # content row to keep in view
-        self._marker = ""
-        self._user_scrolled = False
-        self._anchoring = False  # true while *we* are the ones scrolling
-
-    def compose(self) -> ComposeResult:
-        yield self._body
-
-    @property
-    def inner_width(self) -> int:
-        """Usable width inside the border and padding."""
-        return max(12, self.size.width - 4)
-
-    @property
-    def visible_rows(self) -> int:
-        """How many content lines the pane can show at once."""
-        return max(1, self.content_size.height or (self.size.height - 2))
-
-    def show(self, renderable: Any) -> None:
-        self._rendered = renderable
-        self._body.update(renderable)
-
-    def clear(self, message: str = "") -> None:
-        self._anchor_line = None
-        self._user_scrolled = False
-        self._rendered = Content.styled(message or "", "dim")
-        self._body.update(self._rendered)
-        self._update_anchor_marker()
-
-    @property
-    def text(self) -> str:
-        """What the pane is currently showing, as plain text.
-
-        Textual keeps a Static's content behind a name-mangled private attribute, so the
-        pane remembers what it was handed rather than leaving tests to reach in after it.
-        """
-        rendered = self._rendered
-        if isinstance(rendered, Content):
-            return rendered.plain
-        if isinstance(rendered, Text):
-            return rendered.plain
-        return str(rendered)
-
-    # -- anchoring ----------------------------------------------------------
-
-    def anchor_at(self, line: int | None, centre: bool = True) -> None:
-        """Record the row that represents the current debug state, and scroll to it."""
-        self._anchor_line = line
-        if line is None or (self._user_scrolled and not self.FOLLOWS_PC):
-            self._update_anchor_marker()
-            return
-        self.scroll_to_anchor()
-
-    def anchor_target(self) -> int:
-        """The scroll position that puts the anchor row where the pane wants it."""
-        return max(0, (self._anchor_line or 0) - self.visible_rows // 2)
-
-    def scroll_to_anchor(self) -> None:
-        if self._anchor_line is None:
-            self._update_anchor_marker()
-            return
-        self._scroll_ourselves(self.anchor_target())
-        self.call_after_refresh(self._update_anchor_marker)
-
-    def _scroll_ourselves(self, y: int) -> None:
-        """Scroll without it counting as the user having scrolled."""
-        self._user_scrolled = False
-        self._anchoring = True
-        try:
-            # `animate=False` matters twice over: an animated scroll lands a frame
-            # later, so the marker would flicker on for that frame every time the
-            # debugger steps, and the move would land outside this guard and read as
-            # the user's.
-            self.scroll_to(y=y, animate=False)
-        finally:
-            self._anchoring = False
-
-    @property
-    def at_anchor(self) -> bool:
-        """True when the row representing the current state is on screen."""
-        if self._anchor_line is None:
-            return True
-        top = int(self.scroll_offset.y)
-        return top <= self._anchor_line < top + self.visible_rows
-
-    def action_jump_to_anchor(self) -> None:
-        self.scroll_to_anchor()
-
-    def _update_anchor_marker(self) -> None:
-        # Clickable: the marker doubles as the control.
-        hint = "" if self.at_anchor else f"[@click=jump_to_anchor] {self.ANCHOR_HINT} [/]"
-        if self._marker != hint:
-            self._marker = hint
-            self.border_subtitle = hint
-
-    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
-        super().watch_scroll_y(old_value, new_value)
-        if not self._anchoring and int(old_value) != int(new_value):
-            # Watching the scroll position rather than the wheel catches every way a
-            # pane moves by hand: wheel, scrollbar drag, scrollbar page click. Landing
-            # back on the anchor is how you say "follow along again".
-            self._user_scrolled = int(new_value) != self.anchor_target()
-        self._update_anchor_marker()
-
-
-# ==================================================================
-# source
-# ==================================================================
+from .layout import (
+    _cell,
+    _hex_compact,
+    _is_zero,
+    _page,
+    _row,
+    local_stack_labels,
+    memory_region,
+)
+from .opcodes import OPCODE_HINTS, operand_count, operand_name
+from .pane import Pane
+from .theme import (
+    C_DIM,
+    C_ERROR,
+    C_FLOW,
+    C_GAS,
+    C_MEMORY_TEXT,
+    C_MEMORY_ZERO,
+    C_SOURCE,
+    C_STACK,
+    C_STORAGE,
+    SYNTAX_THEME,
+)
 
 
 class SourcePane(Pane):
@@ -676,31 +282,6 @@ class DisassemblyPane(Pane):
         self.show(_page(out))
         current_row = next((i for i, entry in enumerate(rows) if entry["current"]), None)
         self.anchor_at(current_row)
-
-
-def local_stack_labels(snap: FrameSnapshot | None) -> dict[int, tuple[str, str]]:
-    """Stack index (0 = top) -> (label, kind) for slots holding a named local.
-
-    `LocalValue.position` is an absolute position counted from the bottom of the stack,
-    because that is how the frame base is measured; the STACK pane counts from the top.
-    A local wider than one word (a calldata reference is offset plus length) labels each
-    of its words so neither looks like an anonymous temporary.
-    """
-    labels: dict[int, tuple[str, str]] = {}
-    if snap is None or not snap.locals:
-        return labels
-    depth = len(snap.stack)
-    for local in snap.locals:
-        position = getattr(local, "position", None)
-        if position is None or not local.name or not local.available:
-            continue
-        words = max(1, len(getattr(local, "words", ()) or ()))
-        for offset in range(words):
-            index = depth - 1 - (position + offset)
-            if 0 <= index < depth:
-                suffix = "" if words == 1 else (".ptr" if offset == 0 else ".len")
-                labels[index] = (f"{local.name}{suffix}", local.kind)
-    return labels
 
 
 class StackPane(Pane):

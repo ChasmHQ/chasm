@@ -1,3 +1,3 @@
-"""sevm: a gdb-style interactive Solidity/EVM debugger on Py-EVM."""
+"""sevm: an interactive EVM playground on Py-EVM, built for red-team dynamic analysis."""
 
 __version__ = "0.1.0"

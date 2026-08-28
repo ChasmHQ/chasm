@@ -26,7 +26,8 @@ from ..decode import decode_calldata
 from ..evaluate import Evaluator
 from ..frames import FrameSnapshot
 from ..session import DebugSession, Finished, Paused
-from .widgets import (
+from .layout import pending_storage_slot, storage_rows
+from .panes import (
     CallStackPane,
     CommandLog,
     DisassemblyPane,
@@ -36,8 +37,6 @@ from .widgets import (
     StatusBar,
     StoragePane,
     VariablesPane,
-    pending_storage_slot,
-    storage_rows,
 )
 
 CSS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sevm.tcss")

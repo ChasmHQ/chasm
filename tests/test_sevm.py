@@ -25,7 +25,7 @@ from harness import bank_fixture, project
 from sevm.breakpoints import BreakpointSet
 from sevm.commands import CommandProcessor, CommandResult
 from sevm.commands.render import _calldata
-from sevm.compile import _strip_metadata
+from sevm.compile.model import _strip_metadata
 from sevm.decode import (
     StorageDecoder,
     decode_calldata,
@@ -1415,7 +1415,8 @@ def _screen_text(app) -> str:
 
 
 def test_tui_pane_helpers():
-    from sevm.tui.widgets import _hex_compact, memory_region, operand_count, operand_name
+    from sevm.tui.layout import _hex_compact, memory_region
+    from sevm.tui.opcodes import operand_count, operand_name
 
     assert _hex_compact(0xFF) == "0xff"
     assert ".." in _hex_compact(2**255, budget=12)
@@ -1873,7 +1874,7 @@ def test_snapshot_carries_locals_for_the_tui(deposit_debugger):
 
 
 def test_stack_labels_name_the_frames_locals(deposit_debugger):
-    from sevm.tui.widgets import local_stack_labels
+    from sevm.tui.layout import local_stack_labels
 
     dbg = deposit_debugger
     stop_at(dbg, 46, "Bank.sol")
@@ -1887,7 +1888,7 @@ def test_stack_labels_name_the_frames_locals(deposit_debugger):
 
 
 def test_stack_labels_carry_the_declaration_kind(locals_contract):
-    from sevm.tui.widgets import local_stack_labels
+    from sevm.tui.layout import local_stack_labels
 
     dbg = locals_debugger(*locals_contract, "loop", 3)
     try:
@@ -1902,7 +1903,7 @@ def test_stack_labels_carry_the_declaration_kind(locals_contract):
 
 def test_stack_labels_span_a_multi_word_local(locals_contract):
     """A calldata reference is offset plus length; neither word is anonymous."""
-    from sevm.tui.widgets import local_stack_labels
+    from sevm.tui.layout import local_stack_labels
 
     dbg = locals_debugger(*locals_contract, "calldataTypes", b"\xaa\xbb\xcc")
     try:
@@ -1914,7 +1915,7 @@ def test_stack_labels_span_a_multi_word_local(locals_contract):
 
 
 def test_stack_labels_are_empty_without_locals(deposit_debugger):
-    from sevm.tui.widgets import local_stack_labels
+    from sevm.tui.layout import local_stack_labels
 
     assert local_stack_labels(None) == {}
 
@@ -1979,7 +1980,7 @@ def test_panes_do_not_overflow_their_border(bank):
 
     async def body(pilot):
         await stop_at_credit(app, pilot, proj_)
-        from sevm.tui.widgets import Pane
+        from sevm.tui.pane import Pane
 
         return {
             pane.id: (
@@ -2318,7 +2319,7 @@ def test_every_pane_renders_content_so_textual_can_select_it(bank):
 
     async def body(pilot):
         await stop_at_credit(app, pilot, proj_)
-        from sevm.tui.widgets import Pane
+        from sevm.tui.pane import Pane
 
         out = {}
         for pane in app.query(Pane):
@@ -2445,13 +2446,13 @@ def test_every_colour_constant_parses_as_a_textual_style():
     """
     from textual.style import Style
 
-    import sevm.tui.widgets as widgets
+    from sevm.tui import theme
 
     bad = []
-    for name in dir(widgets):
+    for name in dir(theme):
         if not name.startswith("C_"):
             continue
-        value = getattr(widgets, name)
+        value = getattr(theme, name)
         try:
             Style.parse(value)
         except Exception as exc:
@@ -2496,7 +2497,7 @@ def test_memory_dims_zero_words_and_brightens_real_data(bank):
     seen = run_tui(session, app, size, body)
     from textual.style import Style
 
-    from sevm.tui.widgets import C_MEMORY_TEXT, C_MEMORY_ZERO
+    from sevm.tui.theme import C_MEMORY_TEXT, C_MEMORY_ZERO
 
     def rendered(style: str) -> str:
         # ANSI names resolve to palette indices by render time, so compare like for like.
@@ -2685,11 +2686,11 @@ def test_theme_follows_the_terminal(bank):
 
 
 def test_pane_colours_are_ansi_so_they_match_the_terminal():
-    import sevm.tui.widgets as widgets
+    from sevm.tui import theme
 
     accents = {
-        name: getattr(widgets, name)
-        for name in dir(widgets)
+        name: getattr(theme, name)
+        for name in dir(theme)
         if name.startswith("C_") and name != "C_DIM"
     }
     assert accents

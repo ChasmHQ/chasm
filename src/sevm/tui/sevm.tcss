@@ -1,5 +1,5 @@
 /* sevm layout.
-   One accent per data class, defined in widgets.py and mirrored here in the borders,
+   One accent per data class, defined in theme.py and mirrored here in the borders,
    so a pane's colour always means the same thing no matter which pane you look at. */
 
 Screen {

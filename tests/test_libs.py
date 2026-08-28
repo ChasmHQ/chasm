@@ -15,12 +15,8 @@ import pytest
 from conftest import FAKE_NEWEST, FIXTURES, make_repo
 
 from sevm import libs
-from sevm.compile import (
-    CompileError,
-    _build_project,
-    compile_foundry_project,
-    read_foundry_config,
-)
+from sevm.compile import CompileError, compile_foundry_project, read_foundry_config
+from sevm.compile.build import _build_project
 from sevm.foundry import discover_tests, prepare_project
 
 

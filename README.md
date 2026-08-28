@@ -1,6 +1,6 @@
 # sevm
 
-`sevm` is an interactive EVM playground, built for red-team dynamic analysis. It runs on Py-EVM.
+`sevm` is an interactive EVM playground on Py-EVM, built for red-team dynamic analysis.
 
 - **Full control**: Stepping through Solidity is only half of what this debugger does. Here you are `root` on the EVM, free to rewrite state, the stack, memory, storage, and gas while the transaction is still live.
 - **Go low or high level**: Whether you are checking invariants with the source in hand, or dropping into raw EVM to build a jump-oriented programming (JOP) chain from a contract's bytecode, sevm handles both.
@@ -47,11 +47,10 @@ uv tool install .
 ## Usage
 
 sevm has the following subcommands:
-- `run`: debug a Foundry `.t.sol` test, or a web3.py driver script.
+- `run`: debug a Foundry test, or a web3.py driver script.
 - `compile`: compile the contracts and report what sevm sees.
 
-Options go **before** the target. Everything after a `.py` target is forwarded to that
-script. For detailed information on each command and its options, run:
+For detailed information on each command and its options, run:
 
 ```bash
 sevm -h

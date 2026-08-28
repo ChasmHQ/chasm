@@ -16,8 +16,7 @@ import pytest
 from conftest import HERE
 
 from sevm import cache
-from sevm import compile as C
-from sevm.compile import compile_foundry_project
+from sevm.compile import compile_foundry_project, solc
 
 
 @pytest.fixture
@@ -36,13 +35,13 @@ def build(root: str, **kwargs):
 def spy(monkeypatch) -> list:
     """Record every solc call, returning the `output_selection` each one asked for."""
     calls: list = []
-    real = C.compile_standard
+    real = solc.compile_standard
 
     def watched(*args, **kwargs):
         calls.append(kwargs.get("output_selection"))
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(C, "compile_standard", watched)
+    monkeypatch.setattr(solc, "compile_standard", watched)
     return calls
 
 
@@ -85,7 +84,7 @@ def edit_token(root: str) -> None:
 def test_second_build_never_reaches_solc(root, monkeypatch):
     first = build(root)
     monkeypatch.setattr(
-        C, "compile_standard", lambda *a, **k: pytest.fail("solc was invoked")
+        solc, "compile_standard", lambda *a, **k: pytest.fail("solc was invoked")
     )
     notices: list[str] = []
     assert shape(build(root, on_notice=notices.append)) == shape(first)
@@ -103,7 +102,7 @@ def test_a_plain_directory_is_left_alone(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "A.sol").write_text("pragma solidity ^0.8.20;\ncontract A {}\n")
-    build(str(plain), solc_version=C.DEFAULT_SOLC_VERSION)
+    build(str(plain), solc_version=solc.DEFAULT_SOLC_VERSION)
     assert os.listdir(plain) == ["A.sol"]
     assert os.path.isdir(cache.cache_dir(str(plain)))
 

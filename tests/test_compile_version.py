@@ -10,14 +10,9 @@ from __future__ import annotations
 import pytest
 from packaging.version import Version
 
-from sevm import compile as C
-from sevm.compile import (
-    CompileError,
-    SourceFile,
-    _extract_pragmas,
-    _pragma_matches,
-    resolve_solc_version,
-)
+from sevm.compile import CompileError, SourceFile, resolve_solc_version
+from sevm.compile import solc as C
+from sevm.compile.versions import _extract_pragmas, _pragma_matches
 
 # A stand-in for what solcx would report as installable, spanning the versions the tests
 # care about (a pinned 0.8.21, a caret range, and a couple of neighbours to pick between).
