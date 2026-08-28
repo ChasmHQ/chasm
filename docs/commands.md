@@ -58,7 +58,7 @@ as `reverted: "..."`, `panic 0x11`, or a custom error with its arguments.
 
 `info storage` decodes the whole layout, packed slots included:
 
-```
+```bash
 (sevm) info storage
 Bank at 0x4f9da333dcf4e5a53772791b95c161b2fc041859
   slot   0+0  owner            address                = 0xf2e246bb...5b (cold)
@@ -95,6 +95,6 @@ the value history `$1` `$2` and so on.
 They bypass solc, so they work on contracts with no source and still mix into a Solidity
 expression:
 
-```
+```bash
 (sevm) p $storage[1] + 1 ether
 ```

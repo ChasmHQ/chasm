@@ -8,7 +8,7 @@ same thing and keeps the effects.
 
 ## Evaluating Solidity
 
-```
+```bash
 (sevm) p balances[who] + 100 ether
 $1 = 100000000000000000000 (100 ether)  (uint256)
 (sevm) p keccak256(abi.encode(who, amount))
@@ -26,7 +26,7 @@ expression, so a `display` costs one compile.
 
 `msg.*` reads the frame you are stopped in, calldata included:
 
-```
+```bash
 (sevm) p msg.sig
 $5 = 0xd0e30db0  (bytes4)
 (sevm) p msg.data.length
@@ -36,13 +36,13 @@ $6 = 4  (uint256)
 Calldata slices decode as they would in Solidity, so an argument can be pulled out of a
 frame whose signature sevm has no source for:
 
-```
+```bash
 (sevm) p abi.decode(msg.data[36:], (uint256))
 ```
 
 A mapping or a struct has to be indexed rather than printed whole:
 
-```
+```bash
 (sevm) ptype balances
 error: EvalError: cannot display a whole mapping; index it with a key
 ```
@@ -52,7 +52,7 @@ error: EvalError: cannot display a whole mapping; index it with a key
 `info locals` names, types and decodes the locals of the frame you are stopped in, and `p`
 takes expressions over them:
 
-```
+```bash
 (sevm) info locals
   who            address            = 0x0278bdd7808aa64dc93c361ae55fc52cf1a918cf (param)
   amount         uint256            = 2000000000000000000 (2 ether) (param)
@@ -67,7 +67,7 @@ heights, the way Truffle and Remix do. A value shows only when the frame was obs
 entry, when the slot is still below the top of the stack, and when the current instruction
 is inside the declaration's scope. Otherwise you get `<unavailable>` with the reason:
 
-```
+```bash
 (sevm) info locals
   fee            uint256            = <unavailable>  this instruction allocates it;
                                       step once to see it

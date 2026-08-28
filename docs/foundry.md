@@ -10,7 +10,7 @@ argument is a Foundry test.
 
 ```bash
 sevm run test/Counter.t.sol                     # fullscreen TUI, opens in the first test
-sevm run --console -m testDeposit Vault.t.sol   # plain text, one test by name
+sevm run --console -m testDeposit examples/bank/test/Bank.t.sol   # one test by name
 ```
 
 Each test gets a fresh deploy, a `setUp()` and the test call, as forge isolates them, and
@@ -21,7 +21,7 @@ contract.
 ## A lone .t.sol with nothing installed
 
 ```solidity
-// /tmp/scratch/Vault.t.sol
+// examples/standalone/Vault.t.sol
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -35,9 +35,9 @@ contract VaultTest is Test {
 }
 ```
 
-```console
-$ sevm run --console -y /tmp/scratch/Vault.t.sol
-standalone test at /tmp/scratch; compiling ...
+```bash
+$ sevm run --console -y examples/standalone/Vault.t.sol
+standalone test at examples/standalone; compiling ...
 installing forge-std from https://github.com/foundry-rs/forge-std @ v1.16.2
 installing @openzeppelin/contracts from https://github.com/OpenZeppelin/openzeppelin-contracts @ v5.7.0
 wrote 2 remapping(s) to remappings.txt
@@ -50,7 +50,7 @@ Breakpoint 1, VaultTest.testDeal() at Vault.t.sol:11
 That run leaves a directory `forge` also understands:
 
 ```
-/tmp/scratch
+examples/standalone
 ├── Vault.t.sol
 ├── foundry.toml        [profile.default] with libs = ["lib"], no src/test
 ├── remappings.txt      forge-std/=lib/forge-std/src/
@@ -64,11 +64,11 @@ That run leaves a directory `forge` also understands:
 
 Drop `-y` and sevm asks once before writing anything:
 
-```console
-$ sevm run --console /tmp/scratch/Vault.t.sol
+```bash
+$ sevm run --console examples/standalone/Vault.t.sol
 sevm will:
-  - create /tmp/scratch/foundry.toml
-  - install forge-std, @openzeppelin/contracts into /tmp/scratch/lib
+  - create examples/standalone/foundry.toml
+  - install forge-std, @openzeppelin/contracts into examples/standalone/lib
 [y/N]
 ```
 
@@ -76,8 +76,8 @@ Answer `n` and sevm writes nothing, compiling against what is already there. A
 non-interactive run declines by itself. `--no-install` skips the prompt and refuses the
 same way, with the manual recipe:
 
-```console
-$ sevm run --console --no-install /tmp/scratch/Vault.t.sol
+```bash
+$ sevm run --console --no-install examples/standalone/Vault.t.sol
 compile failed: unresolved import 'forge-std/Test.sol' in Vault.t.sol, and sevm was told
 not to install it. Run again with -y to let it, or install it yourself:
   forge install <org>/<repo>
@@ -86,12 +86,13 @@ not to install it. Run again with -y to let it, or install it yourself:
 
 ## Inside a Foundry project
 
-```console
-$ sevm run --console test/Token.t.sol
-foundry project at /work/mytoken; compiling ...
-debugging 2 test(s): TokenTest.testMintAsOwner, TokenTest.testMintPrankRevertsForNonOwner
-Breakpoint 1, TokenTest.testMintAsOwner() at test/Token.t.sol:18
-  18          token.mint(bob, 100);
+```bash
+$ sevm run --console examples/bank/test/Bank.t.sol
+foundry project at examples/bank; compiling ...
+debugging 3 test(s): BankTest.testDeposit, BankTest.testFeeIsTakenOnDeposit,
+FailingAssertionTest.testBalanceIgnoresFee
+Breakpoint 1, BankTest.testDeposit() at test/Bank.t.sol:17
+  17          vm.prank(alice);
 ```
 
 Nothing is fetched. The project's `foundry.toml`, `remappings.txt` and `lib/` are used as
@@ -114,21 +115,21 @@ only the first run for a given library needs the network.
 
 The first run compiles. The next one does not.
 
-```console
+```bash
 $ time sevm compile .
-wrote 26 artifact(s) to out/sevm
+wrote 27 artifact(s) to out/sevm
 solc 0.8.36, optimizer off
-real  1.44
+real  1.95
 
 $ time sevm compile .
-cache hit (20 sources)
-real  0.51
+cache hit (22 sources)
+real  0.53
 
-$ $EDITOR Test.t.sol
+$ $EDITOR test/Bank.t.sol
 $ time sevm compile .
-recompiled 1 of 20 sources
-wrote 26 artifact(s) to out/sevm
-real  0.98
+recompiled 1 of 22 sources
+wrote 27 artifact(s) to out/sevm
+real  1.02
 ```
 
 A build leaves the same two directories forge does:
@@ -163,18 +164,18 @@ stopPrank addr sign assume label`, plus the full `vm.assert*` family (`assertEq`
 
 A failed assertion stops the debugger where it broke, with the comparison:
 
-```console
+```bash
 (sevm) c
-Stopped on error: reverted: "assertion failed: 100 != 120"
+Stopped on error: reverted: "assertion failed: 997500000000000000 != 1000000000000000000"
   StdAssertions.assertEq(uint256, uint256) at lib/forge-std/src/StdAssertions.sol:121
  121              vm.assertEq(left, right);
 (sevm) up
-#1  FailTest.testBalance() at Fail.t.sol:9
+#1  FailingAssertionTest.testBalanceIgnoresFee() at test/FailingAssertion.t.sol:20
 ```
 
 Fire one at the prompt against the frame you are stopped in:
 
-```
+```bash
 (sevm) vm.warp(12345)
 vm.warp -> ok
 (sevm) p block.timestamp

@@ -7,7 +7,7 @@ that is actually running.
 
 [back to README](../README.md)
 
-```
+```bash
 (sevm) mload(0x40)
 mload(0x40) -> $1 = 0x80 (128)  (gas 3)
 (sevm) mstore(0x80, 0xdeadbeef)
@@ -40,7 +40,7 @@ literal (`"hi"`, right-padded as Yul pads it), a nested call, or any convenience
 
 Refused, with the reason:
 
-```
+```bash
 (sevm) jump(0x10)
 error: `jump`: Yul has no `jump`; use the debugger's `jump 0xPC` or `set $pc = 0xPC`
 ```
