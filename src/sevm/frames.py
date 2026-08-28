@@ -250,6 +250,13 @@ class EvmFrame:
         return self.pc_map.at(pc) if self.pc_map is not None else None
 
 
+def stack_int(value: Any) -> int:
+    """Py-EVM stack items are int OR bytes depending on how they were pushed."""
+    if isinstance(value, int):
+        return value
+    return int.from_bytes(value, "big")
+
+
 @dataclass(frozen=True)
 class StackEntry:
     index: int  # 0 is top of stack
