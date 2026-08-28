@@ -1,12 +1,11 @@
 # Command reference
 
-Use these gdb-style commands to control and inspect a paused sevm session.
+Every gdb verb and abbreviation below behaves as it does in gdb. The differences are that
+expressions are Solidity and the machine underneath is the EVM.
 
-[Back to README](../README.md)
+[back to README](../README.md)
 
 ## Execution
-
-Every gdb verb and abbreviation below behaves as it does in gdb.
 
 | Command | Meaning here |
 |---|---|
@@ -17,8 +16,9 @@ Every gdb verb and abbreviation below behaves as it does in gdb.
 | `finish` | run to the end of the current frame |
 | `u` / `until LOC` | run to a line or `*PC` |
 
-`step`/`next` understand *internal* Solidity calls (compiled to `JUMP`, so EVM depth never
-changes) by tracking the source map's `i`/`o` jump markers.
+`step` and `next` understand *internal* Solidity calls. Those compile to `JUMP`, so EVM
+depth never changes, and sevm tracks them through the source map's `i` and `o` jump
+markers.
 
 ## Breakpoints
 
@@ -28,15 +28,17 @@ changes) by tracking the source map's `i`/`o` jump markers.
 | `b deposit` | a function, by name or `Contract.name` |
 | `b SSTORE` | every occurrence of an opcode, in any contract |
 | `b *0x108` | a raw program counter |
-| `b LOC if EXPR` | conditional; `EXPR` is real Solidity |
+| `b LOC if EXPR` | conditional, where `EXPR` is real Solidity |
 | `tbreak` | fires once, then deletes itself |
 | `delete N` / `disable` / `enable` / `info breakpoints` | management |
 | `watch EXPR` | break when a storage value changes, reporting old to new |
 | `rwatch EXPR` / `awatch EXPR` | break on read / either |
 
-Watchpoints work on state variables, mapping elements (`watch balances[msg.sender]`), and
-memory (`watch *0x80`). sevm also stops on reverts by default, at the failing instruction,
-and decodes the reason (`reverted: "..."`, `panic 0x11`, or a custom error with args).
+Watchpoints work on state variables, on mapping elements (`watch balances[msg.sender]`),
+and on memory (`watch *0x80`).
+
+sevm also stops on reverts by default, at the failing instruction, and decodes the reason
+as `reverted: "..."`, `panic 0x11`, or a custom error with its arguments.
 
 ## Inspection
 
@@ -54,6 +56,19 @@ and decodes the reason (`reverted: "..."`, `panic 0x11`, or a custom error with 
 | `info gas` | limit, used, refund, and a profile by source line and by opcode |
 | `info frame` / `info logs` / `info sources` / `info functions` | the rest |
 
+`info storage` decodes the whole layout, packed slots included:
+
+```
+(sevm) info storage
+Bank at 0x4f9da333dcf4e5a53772791b95c161b2fc041859
+  slot   0+0  owner            address                = 0xf2e246bb...5b (cold)
+  slot   0+20 feeBps           uint96                 = 25 (cold)
+  slot   1+0  totalDeposits    uint256                = 0 (cold)
+  slot   2+0  balances         mapping(address => uint256) = <mapping: query a key> (cold)
+  slot   4+0  history          uint256[]              = [0 items] [] (cold)
+  slot   5+0  name             string                 = "bank" (cold)
+```
+
 ## Mutation
 
 | Command | Meaning |
@@ -65,15 +80,21 @@ and decodes the reason (`reverted: "..."`, `panic 0x11`, or a custom error with 
 | `set $gas = 100` | force an out-of-gas at an exact instruction |
 | `set var fee = 1 ether` | write a local's stack slot |
 | `set $mem[0x80] = 1` / `set $storage[0] = 0xdead` | raw writes |
-| `jump 0x108` | move the program counter (JUMPDESTs only) |
-| `mstore(0x80, 1)` / `asm YUL` | run inline assembly; see the [assembly guide](assembly.md) |
+| `jump 0x108` | move the program counter, JUMPDESTs only |
+| `mstore(0x80, 1)` / `asm YUL` | run inline assembly, see [assembly.md](assembly.md) |
 | `vm.deal(alice, 10 ether)` | fire a Foundry cheatcode at the current frame |
 
-Every one of these re-reads the machine as soon as it lands, so the STACK, MEMORY,
-STORAGE and VARIABLES panes show the change without stepping first.
+Every one of these re-reads the machine as soon as it lands, so the STACK, MEMORY, STORAGE
+and VARIABLES panes show the change without stepping first.
 
 ## Convenience variables
 
-`$pc` `$gas` `$gasused` `$depth` `$sp` `$step` `$stack[N]` `$mem[0x40]` `$storage[1]`, and
-the value history `$1` `$2` ... They bypass solc, so they work on contracts with no source
-and mix into a Solidity expression: `p $storage[1] + 1 ether`.
+`$pc` `$gas` `$gasused` `$depth` `$sp` `$step` `$stack[N]` `$mem[0x40]` `$storage[1]`, plus
+the value history `$1` `$2` and so on.
+
+They bypass solc, so they work on contracts with no source and still mix into a Solidity
+expression:
+
+```
+(sevm) p $storage[1] + 1 ether
+```

@@ -1,10 +1,11 @@
-# Foundry tests and cheatcodes
+# Foundry projects, libraries and the build cache
 
-Use sevm with standalone Foundry tests, existing projects, dependencies, and cheatcodes.
+sevm reads a Foundry project the way `forge` does, and writes back into it in a way that
+cannot disturb `forge`. This page covers the parts the README summarises.
 
-[Back to README](../README.md)
+[back to README](../README.md)
 
-`sevm run` dispatches on the extension: a `.py` argument is the web3 driver, a `.sol`
+`sevm run` dispatches on the extension. A `.py` argument is a web3 driver, a `.sol`
 argument is a Foundry test.
 
 ```bash
@@ -12,9 +13,9 @@ sevm run test/Counter.t.sol                     # fullscreen TUI, opens in the f
 sevm run --console -m testDeposit Vault.t.sol   # plain text, one test by name
 ```
 
-Each test gets a fresh deploy + `setUp()` + the test call, as forge isolates them, and the
-debugger opens on the first line of the first test. `continue` runs to the next test body.
-`-m/--match` narrows to test functions matching a substring, `--match-contract` to a
+Each test gets a fresh deploy, a `setUp()` and the test call, as forge isolates them, and
+the debugger opens on the first line of the first test. `continue` runs to the next test
+body. `-m/--match` narrows to test functions matching a substring, `--match-contract` to a
 contract.
 
 ## A lone .t.sol with nothing installed
@@ -40,10 +41,10 @@ standalone test at /tmp/scratch; compiling ...
 installing forge-std from https://github.com/foundry-rs/forge-std @ v1.16.2
 installing @openzeppelin/contracts from https://github.com/OpenZeppelin/openzeppelin-contracts @ v5.7.0
 wrote 2 remapping(s) to remappings.txt
+wrote 25 artifact(s) to out/sevm
 debugging 1 test(s): VaultTest.testDeal
 Breakpoint 1, VaultTest.testDeal() at Vault.t.sol:11
   11          vm.deal(alice, 3 ether);
-(sevm)
 ```
 
 That run leaves a directory `forge` also understands:
@@ -54,6 +55,8 @@ That run leaves a directory `forge` also understands:
 ├── foundry.toml        [profile.default] with libs = ["lib"], no src/test
 ├── remappings.txt      forge-std/=lib/forge-std/src/
 │                       @openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+├── cache/sevm          the compilation unit, keyed by solc version, settings, sources
+├── out/sevm            one JSON per contract, in forge's layout
 └── lib
     ├── forge-std                 v1.16.2
     └── openzeppelin-contracts    v5.7.0
@@ -69,12 +72,12 @@ sevm will:
 [y/N]
 ```
 
-Answer `n` and sevm writes nothing, compiling against what is already there. `--no-install`
-skips the prompt and refuses the same way:
+Answer `n` and sevm writes nothing, compiling against what is already there. A
+non-interactive run declines by itself. `--no-install` skips the prompt and refuses the
+same way, with the manual recipe:
 
 ```console
 $ sevm run --console --no-install /tmp/scratch/Vault.t.sol
-standalone test at /tmp/scratch; compiling ...
 compile failed: unresolved import 'forge-std/Test.sol' in Vault.t.sol, and sevm was told
 not to install it. Run again with -y to let it, or install it yourself:
   forge install <org>/<repo>
@@ -91,7 +94,7 @@ Breakpoint 1, TokenTest.testMintAsOwner() at test/Token.t.sol:18
   18          token.mint(bob, 100);
 ```
 
-Nothing is fetched: the project's `foundry.toml`, `remappings.txt` and `lib/` are used as
+Nothing is fetched. The project's `foundry.toml`, `remappings.txt` and `lib/` are used as
 they are, including its `solc` pin and `evm_version`. forge-std is cloned only when `lib/`
 has none.
 
@@ -103,9 +106,9 @@ it finds at the newest release tag. Prereleases are skipped. The remapping comes
 the imported file actually landed in the clone, so `src/`, `contracts/` and flat layouts
 all work.
 
-A clone is a pin. sevm never updates it; to move a version, delete `lib/<name>` or run
-`forge install <org>/<repo>@<tag>` yourself. git is required, the `forge` binary is not,
-and only the first run for a given library needs the network.
+A clone is a pin. sevm never updates it. To move a version, delete `lib/<name>` or run
+`forge install <org>/<repo>@<tag>` yourself. git is required, the `forge` binary is not, and
+only the first run for a given library needs the network.
 
 ## Build cache
 
@@ -113,17 +116,19 @@ The first run compiles. The next one does not.
 
 ```console
 $ time sevm compile .
-wrote 48 artifact(s) to out/sevm
+wrote 26 artifact(s) to out/sevm
 solc 0.8.36, optimizer off
-real  1.88
+real  1.44
+
 $ time sevm compile .
-cache hit (40 sources)
-real  0.61
-$ $EDITOR src/Setup.sol
+cache hit (20 sources)
+real  0.51
+
+$ $EDITOR Test.t.sol
 $ time sevm compile .
-recompiled 3 of 40 sources
-wrote 48 artifact(s) to out/sevm
-real  1.04
+recompiled 1 of 20 sources
+wrote 26 artifact(s) to out/sevm
+real  0.98
 ```
 
 A build leaves the same two directories forge does:
@@ -133,28 +138,30 @@ cache/sevm/     the compilation unit, keyed by solc version, settings and source
 out/sevm/       one JSON per contract, in forge's layout: out/sevm/Token.sol/Token.json
 ```
 
-An edit invalidates the file you changed and everything that imports it; the rest is
-reused, so solc only has to emit the parts that moved. `forge clean` clears both along with
-forge's own.
+An edit invalidates the file you changed and everything that imports it. The rest is
+reused, so solc only has to emit the parts that moved. `forge clean` clears both of those
+along with forge's own.
 
 Artifacts are nested under `out/sevm/` rather than written straight into `out/`, because
-sevm compiles with the optimizer off: overwriting `out/Token.sol/Token.json` would leave
-forge's cache calling it fresh and the next `forge test` running sevm's build. They carry
-`abi`, `bytecode`, `deployedBytecode`, `methodIdentifiers`, `storageLayout` and the source
-id, with forge's field names; `metadata` is the one thing missing, as sevm never asks solc
-for it.
+sevm compiles with the optimizer off. Overwriting `out/Token.sol/Token.json` would leave
+forge's cache calling it fresh, and the next `forge test` would run sevm's build. They
+carry `abi`, `bytecode`, `deployedBytecode`, `methodIdentifiers`, `storageLayout` and the
+source id, with forge's field names. `metadata` is the one thing missing, as sevm never
+asks solc for it.
 
-A directory with no `foundry.toml` gets nothing written into it: its cache lives under
+A directory with no `foundry.toml` gets nothing written into it. Its cache lives under
 `~/.cache/sevm/` and no artifacts are written at all. `--force` recompiles and rewrites the
 entry, `--no-cache` (or `SEVM_NO_CACHE=1`) writes nothing anywhere.
 
 ## Cheatcodes
 
-Cheatcodes run against live Py-EVM state and `console.log` prints as you step. Implemented:
-`warp roll fee chainId coinbase deal etch store load prank startPrank stopPrank addr sign
-assume label`, plus the full `vm.assert*` family (`assertEq`, `assertGt`,
-`assertApproxEqRel`, the `*Decimal` forms, 116 overloads) that forge-std's own `assertEq`
-calls into. A failed assertion stops the debugger where it broke, with the comparison:
+Cheatcodes run against live Py-EVM state and `console.log` prints as you step.
+Implemented: `warp roll fee chainId coinbase deal etch store load prank startPrank
+stopPrank addr sign assume label`, plus the full `vm.assert*` family (`assertEq`,
+`assertGt`, `assertApproxEqRel`, the `*Decimal` forms, 116 overloads) that forge-std's own
+`assertEq` calls into.
+
+A failed assertion stops the debugger where it broke, with the comparison:
 
 ```console
 (sevm) c
@@ -169,13 +176,14 @@ Fire one at the prompt against the frame you are stopped in:
 
 ```
 (sevm) vm.warp(12345)
+vm.warp -> ok
 (sevm) p block.timestamp
-$1 = 12345  (uint256)
+$2 = 12345  (uint256)
 ```
 
 Interactive arguments are plain literals, not Solidity expressions. `help cheatcodes` lists
-the implemented set, generated from the registry so it cannot drift; `help foundry` covers
+the implemented set, generated from the registry so it cannot drift. `help foundry` covers
 project resolution and installs.
 
-**Not yet supported:** `expectRevert`/`expectEmit`/`expectCall`/`mockCall`, `ffi`, forking,
-and fuzz/invariant argument generation.
+**Not yet supported:** `expectRevert`, `expectEmit`, `expectCall`, `mockCall`, `ffi`,
+forking, and fuzz or invariant argument generation.
