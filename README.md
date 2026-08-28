@@ -1,6 +1,6 @@
 # sevm
 
-`sevm` is an interactive debugger for Solidity, built for red-team dynamic analysis and running on Py-EVM.
+`sevm` is an interactive Solidity debugger and EVM playground, built for red-team dynamic analysis and running on Py-EVM.
 
 - **Full control**: reading the machine is only half of it. Here you are `root` on the EVM, free to rewrite state, the stack, memory, storage, and gas while the transaction is still live.
 - **Foundry compatible**: if you know Foundry, you know sevm. Same tests, same cheatcodes.
