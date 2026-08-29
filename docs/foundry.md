@@ -162,8 +162,9 @@ Implemented:
 - block env: `warp roll fee chainId coinbase prevrandao difficulty`, plus the
   `getBlockNumber getBlockTimestamp getChainId` readers.
 - account state: `deal etch store load getNonce setNonce setNonceUnsafe resetNonce warmSlot`.
-- identity: `prank startPrank stopPrank label getLabel`, including the two- and three-arg
-  pranks that also rewrite `tx.origin`.
+- identity: `prank startPrank stopPrank label getLabel`, including the overloads that also
+  rewrite `tx.origin` and the `delegateCall` flag, which rewrites `msg.sender` *and*
+  `address(this)` inside a DELEGATECALL the pranking contract makes.
 - keys and wallets: `addr sign signCompact deriveKey rememberKey createWallet`.
 - environment: the whole `vm.env*` family (`envBytes envUint envInt envAddress envBool
   envBytes32 envString`, their `(name, delimiter)` array forms, `envOr`, `envExists`,
