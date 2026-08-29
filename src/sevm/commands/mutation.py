@@ -1,4 +1,5 @@
-"""Verbs that write to the live VM: `set`, inline assembly, and `jump`."""
+"""Verbs that write to the live VM: `set`, inline assembly, `jump`, and the frame-model
+re-seating (`reseat`/`bind`) for a pc reached outside solc's calling convention."""
 
 from __future__ import annotations
 
@@ -98,6 +99,56 @@ def cmd_jump(proc: CommandProcessor, args: list[str], rest: str) -> CommandResul
     )
 
 
+def cmd_reseat(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`reseat [<entry_sp>] [--push]`: name the frame at the current pc.
+
+    After a JOP gadget or manual `jump` lands inside a function, solc's calling
+    convention was bypassed, so the backtrace and VARIABLES stay pinned to the last
+    real frame. This re-seats the Solidity frame model here.
+    """
+    push = "--push" in args
+    positional = [a for a in args if not a.startswith("-")]
+    entry_sp = _integer(positional[0], "reseat") if positional else None
+    info = proc.inspect("reseat_frame", entry_sp=entry_sp, push=push)
+    verb = "pushed frame" if push else "reseated to"
+    return CommandResult(mutated=True).add(
+        f"[yellow]{verb} {_escape(info['name'])}[/yellow] "
+        f"[dim](frame base sp={info['entry_sp']})[/dim]"
+    )
+
+
+def cmd_bind(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`bind <local> = $stack[<n>]`: pin a local to a stack slot by hand.
+
+    For a local sevm could not observe because the frame was entered outside the
+    prologue (a JOP landing). `n` counts from the top, as the STACK pane shows it.
+    """
+    body = rest.strip()
+    if "=" in body:
+        lhs, rhs = body.split("=", 1)
+    else:
+        parts = body.split(None, 1)
+        if len(parts) != 2:
+            return CommandResult(error="usage: bind <local> = $stack[<n>]")
+        lhs, rhs = parts
+    name = lhs.strip()
+    match = re.fullmatch(r"\$?stack\[(\d+)\]", rhs.strip()) or re.fullmatch(
+        r"(\d+)", rhs.strip()
+    )
+    if not name or match is None:
+        return CommandResult(
+            error="usage: bind <local> = $stack[<n>]  "
+            "(n counts from the top, as the STACK pane shows)"
+        )
+    index = int(match.group(1))
+    info = proc.inspect("bind_local", name, index, internal_index=proc.selected_internal)
+    tail = "" if info["available"] else "  [dim](still unavailable here)[/dim]"
+    return CommandResult(mutated=True).add(
+        f"[yellow]{_escape(name)}[/yellow] = {_escape(str(info['display']))} "
+        f"[dim](from $stack[{index}])[/dim]{tail}"
+    )
+
+
 # ==================================================================
 # info subcommands
 # ==================================================================
@@ -120,4 +171,6 @@ VERBS = {
     "assembly": cmd_asm,
     "yul": cmd_asm,
     "jump": cmd_jump,
+    "reseat": cmd_reseat,
+    "bind": cmd_bind,
 }

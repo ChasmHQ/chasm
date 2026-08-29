@@ -11,7 +11,7 @@ from typing import Any
 
 from .. import assembly
 from ..cheatcodes import apply_cheat
-from ..frames import EvmFrame
+from ..frames import EvmFrame, InternalFrame
 from . import snapshots
 from .events import Failure, Inspect, SessionError
 
@@ -226,6 +226,88 @@ class InspectOps:
             raise ValueError(f"0x{value:x} is not a JUMPDEST; refusing to jump")
         computation.code.program_counter = value
         return value
+
+    def _op_reseat_frame(
+        self,
+        frame: EvmFrame,
+        computation: Any,
+        entry_sp: int | None = None,
+        push: bool = False,
+    ) -> dict:
+        """Re-seat the Solidity frame model at the current pc.
+
+        The internal (JUMP-based) call stack is tracked from solc's source-map jump
+        markers, so a hand-crafted jump (a JOP gadget, or a manual `jump`) carries no
+        `i` marker and the model stays pinned to the frame it last legitimately
+        entered. This rebuilds the innermost internal frame at wherever the pc now
+        stands, so the backtrace, VARIABLES pane and stack labels name the function
+        actually running.
+
+        `entry_sp` is the frame base parameters are measured from, defaulting to the
+        current stack height. Body locals declared before the landing point were never
+        observed and stay `<unavailable>` until `bind` gives one a slot.
+        """
+        pc = max(0, computation.code.program_counter - 1)
+        loc = frame.location(pc)
+        fn = self.session.functions.at_location(loc)
+        if fn is None:
+            raise ValueError(f"no Solidity function at pc 0x{pc:x}; nothing to reseat to")
+        base = entry_sp if entry_sp is not None else len(computation._stack.values)
+        seat = InternalFrame(function=fn, entry_pc=pc, call_site_pc=-1, entry_sp=base)
+        if push or not frame.internal:
+            frame.internal.append(seat)
+        else:
+            frame.internal[-1] = seat
+        return {"name": fn.signature, "entry_sp": base, "depth": len(frame.internal)}
+
+    def _op_bind_local(
+        self,
+        frame: EvmFrame,
+        computation: Any,
+        name: str,
+        stack_index: int,
+        internal_index: int | None = None,
+    ) -> dict:
+        """Pin a local to a stack slot by hand, for a frame we jumped into.
+
+        `stack_index` counts from the top, matching the STACK pane and `$stack[N]`.
+        Recovering a local normally means observing the prologue instruction that
+        allocates it, which a JOP landing skips; this records the slot directly into
+        the internal frame so `read_frame_locals` decodes it like any other.
+        """
+        internals = frame.internal
+        if not internals:
+            raise ValueError("no Solidity frame here; `reseat` to a function first")
+        idx = internal_index if internal_index is not None else len(internals) - 1
+        if not 0 <= idx < len(internals):
+            raise ValueError(f"no such internal frame: {idx}")
+        internal = internals[idx]
+        fn = internal.function
+        if fn is None:
+            raise ValueError("this frame has no function; `reseat` first")
+        pc = max(0, computation.code.program_counter - 1)
+        loc = frame.location(pc)
+        offset = loc.entry.start if loc and not loc.is_generated else -1
+        matches = [
+            v for v in self.session.locals.visible(fn.ast_id, offset) if v.name == name
+        ]
+        if not matches:
+            raise ValueError(f"no local named `{name}` in scope in {fn.signature} here")
+        sp = len(computation._stack.values)
+        if not 0 <= stack_index < sp:
+            raise IndexError(f"stack index {stack_index} out of range (depth {sp})")
+        internal.slots[matches[0].ast_id] = sp - 1 - stack_index
+        reread = [
+            v
+            for v in self.session.frame_locals(frame, computation, idx)
+            if v.name == name
+        ]
+        return {
+            "name": name,
+            "stack_index": stack_index,
+            "display": reread[0].display if reread else "<unavailable>",
+            "available": bool(reread and reread[0].available),
+        }
 
     def _op_assembly(self, frame: EvmFrame, computation: Any, source: str) -> Any:
         """Run Yul against the live frame. See `assembly.run` for the semantics.

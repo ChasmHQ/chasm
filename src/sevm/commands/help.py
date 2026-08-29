@@ -52,6 +52,8 @@ HELP_SUMMARY = """
   [cyan]set var[/cyan] X = V          write storage through Solidity: [dim]set var balances[a] = 5 ether[/dim]
                          a bare local name writes its stack slot: [dim]set var fee = 1 ether[/dim]
   [cyan]set[/cyan] $pc = 0x108        jump; [cyan]set[/cyan] $gas = N; [cyan]set[/cyan] $stack[0] = V; [cyan]set[/cyan] $storage[1] = V
+  [cyan]reseat[/cyan]                 name the frame at the current pc after a JOP/manual jump
+  [cyan]bind[/cyan] x = $stack[3]     pin a local to a stack slot sevm could not observe
 
 [bold]Assembly[/bold]
   [cyan]mstore[/cyan](0x80, 1)        type a builtin call straight at the prompt
@@ -189,6 +191,12 @@ pointer, 0x60 zero slot.
   set $mem[0x80] = 1
   set $storage[0] = 0xdead            raw slot write, bypassing the layout
   jump 0x108                          move the program counter (JUMPDESTs only)
+
+  reseat                              re-name the Solidity frame at the current pc, after a
+  reseat 7 --push                     JOP gadget or manual `jump` landed outside solc's
+                                      calling convention (optional frame base; --push nests)
+  bind arr = $stack[3]                pin a local sevm could not observe to a stack slot
+                                      (n counts from the top, as the STACK pane shows)
 
   mstore(0x80, 1)                     raw assembly; see `help assembly`
   vm.deal(alice, 10 ether)            Foundry cheatcodes; see `help cheatcodes`

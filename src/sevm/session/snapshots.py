@@ -37,6 +37,9 @@ def live_view(session: Any, frame: EvmFrame, computation: Any) -> dict[str, Any]
         "gas_used": meter.start_gas - meter.gas_remaining,
         "gas_refund": meter.gas_refunded,
         "locals": tuple(session.frame_locals(frame, computation)),
+        # `reseat` rewrites the internal call stack, so the backtrace is a mutable field
+        # too: a refresh after it must rebuild the CALL STACK, not just the VARIABLES.
+        "backtrace": tuple(build_backtrace(session)),
     }
 
 
@@ -87,7 +90,6 @@ def build_snapshot(
         end_line=loc.end_line if loc and not loc.is_generated else 0,
         jump=loc.jump if loc else "-",
         function=session.functions.at_location(loc),
-        backtrace=tuple(build_backtrace(session)),
         stop_reason=reason,
         **live,
         hit_breakpoints=tuple(hits),

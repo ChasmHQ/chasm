@@ -5,6 +5,7 @@ from __future__ import annotations
 from harness import (
     Debugger,
     line_of,
+    locals_debugger,
 )
 
 from sevm.session import Finished, Paused, StepMode
@@ -146,5 +147,113 @@ def test_loop_iterates_with_next(bank):
             if event.snapshot.line == body:
                 hits += 1
         assert hits >= 1, "the loop body should be reached"
+    finally:
+        dbg.close()
+
+
+# --- reseat / bind: naming a frame reached outside solc's calling convention -------
+#
+# A JOP gadget corrupts a JUMP's destination to land inside a function without the
+# `i`-tagged jump solc emits for a real call, so the internal-frame model stays pinned
+# to the function it last legitimately entered. `reseat` re-names the frame at the pc;
+# `bind` pins a body local the landing skipped the prologue for.
+
+
+def _cross_function_jumpdest(session, frame, current_ast_id):
+    """A JUMPDEST inside a *different* Solidity function than the one we are in."""
+    for pc in sorted(frame.disassembly.jumpdests):
+        loc = frame.location(pc)
+        fn = session.functions.at_location(loc)
+        if fn is not None and fn.ast_id != current_ast_id:
+            return pc, fn
+    return None, None
+
+
+def _body_jumpdest_where_visible(session, frame, fn, name):
+    """A JUMPDEST in `fn` where the local `name` is in scope."""
+    for pc in sorted(frame.disassembly.jumpdests):
+        loc = frame.location(pc)
+        if loc is None or loc.is_generated:
+            continue
+        here = session.functions.at_location(loc)
+        if here is None or here.ast_id != fn.ast_id:
+            continue
+        if any(
+            v.name == name for v in session.locals.visible(fn.ast_id, loc.entry.start)
+        ):
+            return pc
+    return None
+
+
+def test_reseat_names_the_function_reached_by_a_hand_jump(locals_contract):
+    w3, proj_, contract = locals_contract
+    dbg = locals_debugger(w3, proj_, contract, "values", 7)
+    try:
+        dbg.run("b Locals.sol:22")
+        assert dbg.run("c").ok
+        assert dbg.snap.backtrace[0].name.startswith("Locals.values")
+
+        frame = dbg.session._frames[-1]
+        target_pc, target_fn = _cross_function_jumpdest(
+            dbg.session, frame, dbg.snap.function.ast_id
+        )
+        assert target_pc is not None, "no cross-function JUMPDEST to test with"
+
+        # Land there for real: `jump` sets the pc, `stepi` executes the JUMPDEST so the
+        # pause (and its snapshot) is taken at the target, as a gadget's jump would be.
+        dbg.run(f"jump 0x{target_pc:x}")
+        dbg.step(StepMode.STEPI)
+        # The pc-derived header moved, but the frame model is still pinned to `values`.
+        assert dbg.snap.backtrace[0].name.startswith("Locals.values")
+
+        result = dbg.run("reseat")
+        assert result.ok, result.error
+        assert dbg.snap.backtrace[0].name.startswith(f"Locals.{target_fn.name}")
+    finally:
+        dbg.close()
+
+
+def test_bind_recovers_a_local_a_jump_landing_could_not_observe(locals_contract):
+    w3, proj_, contract = locals_contract
+    dbg = locals_debugger(w3, proj_, contract, "scoping", 5)
+    try:
+        dbg.run("b Locals.sol:31")
+        assert dbg.run("c").ok
+
+        scoping = dbg.session.functions.find("scoping")[0]
+        frame = dbg.session._frames[-1]
+        pc = _body_jumpdest_where_visible(dbg.session, frame, scoping, "total")
+        assert pc is not None, "no JUMPDEST with `total` in scope"
+
+        dbg.run(f"jump 0x{pc:x}")
+        dbg.step(StepMode.STEPI)
+        dbg.run(
+            "reseat"
+        )  # a fresh frame: its slots are cleared, so `total` is unobserved
+
+        before = {r["name"]: r for r in dbg.commands.read_locals()}
+        assert not before["total"]["available"], "a jump landing cannot observe it"
+
+        # Point the local at a slot we control, the way you would at a crafted stack.
+        dbg.run("set $stack[0] = 0x2a")
+        result = dbg.run("bind total = $stack[0]")
+        assert result.ok, result.error
+
+        after = {r["name"]: r for r in dbg.commands.read_locals()}
+        assert after["total"]["available"]
+        assert after["total"]["value"] == "42"
+    finally:
+        dbg.close()
+
+
+def test_bind_rejects_a_name_not_in_scope(locals_contract):
+    w3, proj_, contract = locals_contract
+    dbg = locals_debugger(w3, proj_, contract, "values", 7)
+    try:
+        dbg.run("b Locals.sol:22")
+        assert dbg.run("c").ok
+        result = dbg.run("bind not_a_local = $stack[0]")
+        assert not result.ok
+        assert "not_a_local" in result.error
     finally:
         dbg.close()
