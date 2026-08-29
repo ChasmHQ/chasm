@@ -12,6 +12,7 @@ access, internal calls and every future Solidity feature come out correct for fr
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Sequence
 from typing import Any
@@ -23,6 +24,7 @@ from ..compile import Artifact, CompileError, Project, compile_standard
 from ..decode import decode_revert
 from .bindings import (
     MSG_FIELDS,
+    Binding,
     _call_data,
     _parameter_list,
     bindings_for,
@@ -45,6 +47,8 @@ from .injection import (
 
 EVAL_SELECTOR = function_signature_to_4byte_selector(f"{EVAL_FUNCTION}()")
 
+_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+
 
 class Evaluator:
     """Compiles and runs Solidity expressions against a paused VM."""
@@ -54,6 +58,7 @@ class Evaluator:
         self._code_cache: dict[tuple[str, str, str], tuple[bytes, str]] = {}
         self._type_cache: dict[tuple[str, str, str], str | None] = {}
         self._closure_cache: dict[str, frozenset[str] | None] = {}
+        self._contracts_by_id: dict[int, dict] | None = None
         self.compile_count = 0
 
     # -- compilation --------------------------------------------------------
@@ -136,7 +141,80 @@ class Evaluator:
             remappings=self.project.remappings or None,
         )
 
+    def _contract_nodes(self) -> dict[int, dict]:
+        """Every ContractDefinition in the project, by AST id."""
+        if self._contracts_by_id is None:
+            self._contracts_by_id = {
+                node["id"]: node
+                for ast in self.project.asts.values()
+                for node in ast.get("nodes", [])
+                if node.get("nodeType") == "ContractDefinition" and "id" in node
+            }
+        return self._contracts_by_id
+
+    def _known_type(
+        self, artifact: Artifact, expression: str, bindings: Sequence[Binding] = ()
+    ) -> str | None:
+        """The type of a bare identifier, without paying for the probe compile.
+
+        `p amount` and `p totalDeposits` are most of what gets typed at a prompt, and
+        typing them costs a whole compile of its own. This is a lookup rather than a
+        second type checker: a bound local resolves to the parameter sevm itself
+        declares, and a state variable to solc's own `typeString`, so both are the
+        string the probe's diagnostic would have reported. Anything else returns None
+        and goes to solc.
+        """
+        if not _IDENTIFIER.match(expression):
+            return None
+        for binding in bindings:
+            if binding.name == expression:
+                return _normalise_type(binding.declared_type)
+        nodes = self._contract_nodes()
+        own = next(
+            (
+                node
+                for node in (self.project.asts.get(artifact.source_key) or {}).get(
+                    "nodes", []
+                )
+                if node.get("nodeType") == "ContractDefinition"
+                and node.get("name") == artifact.name
+            ),
+            None,
+        )
+        if own is None:
+            return None
+        # Linearized bases are C3 order, most derived first, so the first declaration
+        # found is the one that shadows, exactly as solc resolves it.
+        for contract_id in own.get("linearizedBaseContracts") or [own.get("id")]:
+            base = nodes.get(contract_id)
+            for node in (base or {}).get("nodes", []):
+                if (
+                    node.get("nodeType") == "VariableDeclaration"
+                    and node.get("stateVariable")
+                    and node.get("name") == expression
+                ):
+                    declared = (node.get("typeDescriptions") or {}).get("typeString")
+                    return _normalise_type(declared) if declared else None
+        return None
+
     def _infer_type(
+        self,
+        artifact: Artifact,
+        expression: str,
+        parameters: str = "",
+        bindings: Sequence[Binding] = (),
+    ) -> str | None:
+        """The expression's type, from the AST if it is a bare name, else from solc."""
+        key = (artifact.qualified_name, expression, parameters)
+        if key in self._type_cache:
+            return self._type_cache[key]
+        known = self._known_type(artifact, expression, bindings)
+        if known is not None:
+            self._type_cache[key] = known
+            return known
+        return self._probe_type(artifact, expression, parameters)
+
+    def _probe_type(
         self, artifact: Artifact, expression: str, parameters: str = ""
     ) -> str | None:
         """Ask solc the expression's type by making it complain.
@@ -146,8 +224,6 @@ class Evaluator:
         a void expression (a bare call), compiled as a statement instead.
         """
         key = (artifact.qualified_name, expression, parameters)
-        if key in self._type_cache:
-            return self._type_cache[key]
         try:
             self._try_compile(
                 artifact, expression, PROBE_TYPE, probe=True, parameters=parameters
@@ -168,7 +244,11 @@ class Evaluator:
         return result
 
     def _compiled(
-        self, artifact: Artifact, expression: str, parameters: str = ""
+        self,
+        artifact: Artifact,
+        expression: str,
+        parameters: str = "",
+        bindings: Sequence[Binding] = (),
     ) -> tuple[bytes, str | None]:
         # The parameter list is part of the key, not the values it carries: the same
         # expression over the same locals compiles once and is reused at every stop.
@@ -178,13 +258,25 @@ class Evaluator:
             code, declared = cached
             return code, (declared or None)
 
-        return_type = self._infer_type(artifact, expression, parameters)
+        known = self._known_type(artifact, expression, bindings)
+        return_type = self._infer_type(artifact, expression, parameters, bindings)
         try:
             out = self._try_compile(
                 artifact, expression, return_type, parameters=parameters
             )
         except CompileError as exc:
-            raise EvalError(_clean_solc_error(str(exc), expression)) from exc
+            if known is None:
+                raise EvalError(_clean_solc_error(str(exc), expression)) from exc
+            # A type read off the AST is the only thing here that solc did not say
+            # itself, so a failure to compile means the probe gets the last word.
+            self._type_cache.pop(key, None)
+            return_type = self._probe_type(artifact, expression, parameters)
+            try:
+                out = self._try_compile(
+                    artifact, expression, return_type, parameters=parameters
+                )
+            except CompileError as retry:
+                raise EvalError(_clean_solc_error(str(retry), expression)) from retry
 
         contracts = out.get("contracts", {}).get(artifact.source_key, {})
         data = contracts.get(artifact.name)
@@ -232,7 +324,7 @@ class Evaluator:
         parameters = _parameter_list(bound)
 
         started = time.time()
-        code, return_type = self._compiled(artifact, compiled, parameters)
+        code, return_type = self._compiled(artifact, compiled, parameters, bound)
         compile_ms = (time.time() - started) * 1000.0
 
         state = computation.state
@@ -317,7 +409,9 @@ class Evaluator:
             raise EvalError(blocked)
         compiled, msg_fields = rewrite_msg(expression)
         bound = bindings_for(compiled, bindings) + msg_bindings(frame, msg_fields)
-        return self._infer_type(artifact, compiled, _parameter_list(bound)) or "void"
+        return (
+            self._infer_type(artifact, compiled, _parameter_list(bound), bound) or "void"
+        )
 
 
 def _build_message(

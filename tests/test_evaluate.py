@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from harness import (
     line_of,
@@ -9,6 +11,8 @@ from harness import (
 
 from sevm.compile import compile_standard
 from sevm.evaluate import Evaluator, rewrite_msg
+from sevm.evaluate.bindings import Binding
+from sevm.evaluate.injection import EvalError
 from sevm.session import SessionError, StepMode
 
 
@@ -144,6 +148,64 @@ def test_evaluate_reads_uncommitted_mid_transaction_state(deposit_debugger):
     dbg.step(StepMode.RUN)
     # balances[] was written on the previous line, inside this uncommitted transaction.
     assert dbg.session.inspect("evaluate", "balances[msg.sender]").value > 0
+
+
+def _state_variables(evaluator, artifact):
+    """Every state variable the frame's contract declares, straight out of the AST."""
+    contract = next(
+        node
+        for node in evaluator.project.asts[artifact.source_key]["nodes"]
+        if node.get("nodeType") == "ContractDefinition" and node["name"] == artifact.name
+    )
+    return [
+        node["name"]
+        for node in contract["nodes"]
+        if node.get("nodeType") == "VariableDeclaration" and node.get("stateVariable")
+    ]
+
+
+def test_known_type_agrees_with_the_probe(deposit_debugger):
+    """The AST fast path must never report a type solc would not have reported.
+
+    Invariant 3 in reverse: skipping the probe is only safe while the type read off the
+    AST is the same string the probe's diagnostic would have named.
+    """
+    evaluator = deposit_debugger.evaluator
+    artifact = deposit_debugger.session.current_frame.artifact
+    names = _state_variables(evaluator, artifact)
+    assert {"owner", "feeBps", "totalDeposits", "name", "balances"} <= set(names)
+    for name in names:
+        try:
+            known = evaluator._known_type(artifact, name)
+        except EvalError as exc:
+            # A mapping is refused, and has to be refused in the same words.
+            with pytest.raises(EvalError, match=re.escape(str(exc))):
+                evaluator._probe_type(artifact, name)
+            continue
+        assert known is not None, f"no AST type for state variable {name}"
+        assert known == evaluator._probe_type(artifact, name), name
+
+
+def test_known_type_skips_the_probe_compile(deposit_debugger):
+    """A bare state variable costs one solc call, not the probe plus the real one."""
+    dbg = deposit_debugger
+    before = dbg.evaluator.compile_count
+    assert dbg.session.inspect("evaluate", "totalDeposits").type_name == "uint256"
+    assert dbg.evaluator.compile_count - before == 1
+    before = dbg.evaluator.compile_count
+    assert dbg.session.inspect("evaluate", "balances[msg.sender]").type_name == "uint256"
+    assert dbg.evaluator.compile_count - before == 2
+
+
+def test_a_shadowing_local_wins_over_the_state_variable(deposit_debugger):
+    """`_known_type` reads bindings first, as Solidity's own scoping does."""
+    evaluator = deposit_debugger.evaluator
+    artifact = deposit_debugger.session.current_frame.artifact
+    assert evaluator._known_type(artifact, "totalDeposits") == "uint256"
+    binding = Binding(
+        name="totalDeposits", declared_type="bytes4", abi_type="bytes4", value=b"\x00" * 4
+    )
+    assert evaluator._known_type(artifact, "totalDeposits", [binding]) == "bytes4"
 
 
 def test_eval_compiles_only_the_import_closure(token_project):
