@@ -15,8 +15,20 @@ interface Vm {
     function store(address target, bytes32 slot, bytes32 value) external;
     function load(address target, bytes32 slot) external view returns (bytes32 data);
     function prank(address msgSender) external;
+    function prank(address msgSender, bool delegateCall) external;
+    function prank(address msgSender, address txOrigin) external;
     function startPrank(address msgSender) external;
+    function startPrank(address msgSender, bool delegateCall) external;
     function stopPrank() external;
+    function getNonce(address account) external view returns (uint64 nonce);
+    function setNonce(address account, uint64 newNonce) external;
+    function setNonceUnsafe(address account, uint64 newNonce) external;
+    function resetNonce(address account) external;
+    function getBlockNumber() external view returns (uint256 height);
+    function getBlockTimestamp() external view returns (uint256 timestamp);
+    function getChainId() external view returns (uint256 chainId);
+    function prevrandao(bytes32 newPrevrandao) external;
+    function getLabel(address account) external view returns (string memory currentLabel);
     function addr(uint256 privateKey) external pure returns (address keyAddr);
     function sign(uint256 privateKey, bytes32 digest)
         external

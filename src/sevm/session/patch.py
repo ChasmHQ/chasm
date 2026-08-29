@@ -7,6 +7,8 @@ accounting and precompile dispatch stay bit-identical; only the loop body differ
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from eth.chains.base import Chain
@@ -26,8 +28,29 @@ ORIGINAL_APPLY = BaseComputation.__dict__["apply_computation"]
 ORIGINAL_ESTIMATE = Chain.__dict__["estimate_gas"]
 
 # Call opcodes a prank applies to (the child's msg.sender / value source is the caller's
-# storage_address): CALL, CALLCODE, STATICCALL. DELEGATECALL (0xF4) keeps the real caller.
+# storage_address): CALL, CALLCODE, STATICCALL. DELEGATECALL (0xF4) forwards the caller's
+# own msg.sender instead, so it is pranked only by the explicit `delegateCall` overloads.
 _PRANK_CALL_OPCODES = frozenset({0xF1, 0xF2, 0xFA})
+
+
+@contextmanager
+def _stable_base_fee(state: Any, message: Any) -> Iterator[None]:
+    """Keep `vm.fee` out of py-evm's end-of-transaction fee arithmetic.
+
+    The coinbase is paid `gas_used * (max_fee_per_gas - base_fee_per_gas)`, so a base fee
+    raised above the transaction's own cap pays a *negative* fee and py-evm then rejects
+    the negative balance. forge runs no such accounting, so the cheat's value stays visible
+    to the running code and the original is put back before the transaction settles.
+    """
+    if message.depth != 0:
+        yield
+        return
+    context = state.execution_context
+    saved = context._base_fee_per_gas
+    try:
+        yield
+    finally:
+        context._base_fee_per_gas = saved
 
 
 def make_apply_patch(session: Any) -> Any:
@@ -35,7 +58,10 @@ def make_apply_patch(session: Any) -> Any:
     def patched(cls, state, message, transaction_context, parent_computation=None):
         # Preamble copied verbatim from BaseComputation.apply_computation so that
         # create-message accounting and precompile dispatch stay bit-identical.
-        with cls(state, message, transaction_context) as computation:
+        with (
+            _stable_base_fee(state, message),
+            cls(state, message, transaction_context) as computation,
+        ):
             if computation.is_origin_computation:
                 computation.contracts_created = []
                 if message.is_create:
@@ -151,7 +177,7 @@ def exec_opcode(session: Any, opcode: int, opcode_fn: Any, computation: Any) -> 
     the EVM sources the call's value and gas, and the child's msg.sender, from the
     caller's `storage_address`. Temporarily setting that to the pranked address for the
     duration of the call makes value, gas and msg.sender all follow the prank, exactly
-    as forge does. DELEGATECALL is excluded: it preserves the original caller.
+    as forge does. DELEGATECALL is pranked only by `prank(sender, true)` and friends.
     """
     prank = session.cheats.prank
     applies = opcode in _PRANK_CALL_OPCODES or (
@@ -168,8 +194,15 @@ def exec_opcode(session: Any, opcode: int, opcode_fn: Any, computation: Any) -> 
         opcode_fn(computation=computation)
         return
 
+    # For CALL/CALLCODE/STATICCALL the child's msg.sender is the caller's
+    # storage_address, so swapping that is the whole prank. DELEGATECALL instead
+    # forwards the caller's own msg.sender, and forge rewrites both: inside the
+    # delegated frame `msg.sender` and `address(this)` are the pranked address.
     saved = computation.msg.storage_address
+    saved_sender = computation.msg.sender if opcode == 0xF4 else None
     computation.msg.storage_address = prank.new_sender
+    if saved_sender is not None:
+        computation.msg.sender = prank.new_sender
     # forge's prank(sender, origin) rewrites tx.origin for the pranked call subtree too.
     tx_ctx = computation.transaction_context
     saved_origin = tx_ctx._origin if prank.new_origin is not None else None
@@ -179,6 +212,8 @@ def exec_opcode(session: Any, opcode: int, opcode_fn: Any, computation: Any) -> 
         opcode_fn(computation=computation)
     finally:
         computation.msg.storage_address = saved
+        if saved_sender is not None:
+            computation.msg.sender = saved_sender
         if saved_origin is not None:
             tx_ctx._origin = saved_origin
         if not prank.persistent:

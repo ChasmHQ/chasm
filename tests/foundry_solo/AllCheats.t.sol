@@ -6,8 +6,17 @@ import {console} from "forge-std/console.sol";
 
 contract Recorder {
     address public lastSender; // storage slot 0
+    address public lastOrigin;
     function poke() external {
         lastSender = msg.sender;
+        lastOrigin = tx.origin;
+    }
+}
+
+contract Who {
+    // Reports the frame it is called in; used to prove a delegate prank rewrites both.
+    function ctx() external view returns (address sender, address self) {
+        return (msg.sender, address(this));
     }
 }
 
@@ -21,11 +30,14 @@ contract Vault {
 contract AllCheatsTest is Test {
     Recorder r;
     Vault vault;
+    Who who;
     address alice = address(0xA11CE);
+    address bob = address(0xB0B);
 
     function setUp() public {
         r = new Recorder();
         vault = new Vault();
+        who = new Who();
     }
 
     function testPrankValue() public {
@@ -79,5 +91,79 @@ contract AllCheatsTest is Test {
         (uint8 v, , ) = vm.sign(1, keccak256("hi"));
         assertTrue(v == 27 || v == 28);
         vm.label(alice, "alice");
+    }
+
+    function testBlockGetters() public {
+        vm.warp(1234);
+        vm.roll(56);
+        vm.chainId(7);
+        assertEq(vm.getBlockTimestamp(), 1234);
+        assertEq(vm.getBlockNumber(), 56);
+        assertEq(vm.getChainId(), 7);
+        vm.prevrandao(bytes32(uint256(0x99)));
+        assertEq(block.prevrandao, 0x99);
+    }
+
+    function testFeeIsNotChargedAtSettlement() public {
+        // A base fee above the transaction's own gas price would leave py-evm paying the
+        // coinbase a negative amount at the end of the transaction, and a fresh coinbase
+        // cannot go negative. The cheat must be visible here and gone by settlement.
+        vm.fee(7 gwei);
+        vm.coinbase(alice);
+        assertEq(block.basefee, 7 gwei);
+        assertEq(block.coinbase, alice);
+    }
+
+    function testNonceCheats() public {
+        assertEq(vm.getNonce(alice), 0);
+        vm.setNonce(alice, 5);
+        assertEq(vm.getNonce(alice), 5);
+        vm.setNonceUnsafe(alice, 2);
+        assertEq(vm.getNonce(alice), 2);
+        vm.resetNonce(alice);
+        assertEq(vm.getNonce(alice), 0);
+    }
+
+    function testLabelLookup() public {
+        vm.label(alice, "alice");
+        assertEq(vm.getLabel(alice), "alice");
+        assertEq(vm.getLabel(bob), "unlabeled:0x0000000000000000000000000000000000000B0b");
+    }
+
+    function testPrankOrigin() public {
+        vm.prank(alice, bob);
+        r.poke();
+        assertEq(r.lastSender(), alice);
+        assertEq(r.lastOrigin(), bob);
+    }
+
+    function testDelegatePrank() public {
+        // A delegate prank rewrites msg.sender *and* address(this) inside the delegated
+        // frame; a plain prank leaves a DELEGATECALL alone.
+        (bool plain, bytes memory before) =
+            address(who).delegatecall(abi.encodeWithSignature("ctx()"));
+        assertTrue(plain);
+        (, address selfBefore) = abi.decode(before, (address, address));
+        assertEq(selfBefore, address(this));
+
+        vm.prank(address(r), true);
+        (bool ok, bytes memory out) =
+            address(who).delegatecall(abi.encodeWithSignature("ctx()"));
+        assertTrue(ok);
+        (address sender, address self) = abi.decode(out, (address, address));
+        assertEq(sender, address(r));
+        assertEq(self, address(r));
+    }
+
+    function testStartPrankDelegate() public {
+        vm.startPrank(address(r), true);
+        for (uint256 i = 0; i < 2; i++) {
+            (bool ok, bytes memory out) =
+                address(who).delegatecall(abi.encodeWithSignature("ctx()"));
+            assertTrue(ok);
+            (address sender,) = abi.decode(out, (address, address));
+            assertEq(sender, address(r));
+        }
+        vm.stopPrank();
     }
 }
