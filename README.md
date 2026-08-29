@@ -14,6 +14,7 @@
 - [Usage](#usage)
   - [Debug a Foundry test](#debug-a-foundry-test)
   - [Debug a web3.py script](#debug-a-web3py-script)
+  - [Re-run with new calldata](#re-run-with-new-calldata)
   - [Set breakpoints](#set-breakpoints)
   - [Inspect the frame](#inspect-the-frame)
   - [Evaluate Solidity](#evaluate-solidity)
@@ -115,6 +116,36 @@ it:
 
 ```bash
 sevm run -x 'b _credit' -x c --contracts examples/bank/src examples/debug_bank.py
+```
+
+### Re-run with new calldata
+
+`reset` re-runs the target script from scratch — a fresh chain, with every breakpoint,
+watchpoint and `display` still armed — and `run [ARGS]` re-runs it with new arguments.
+For a script that takes its calldata as an argument, that is the whole iterate loop in
+one session, without relaunching anything:
+
+```bash
+(sevm) b CALLDATACOPY
+(sevm) c
+Breakpoint 1, ...
+pc 0x015c  CALLDATACOPY sp 1->7  gas 29,976,201  step 101
+(sevm) run 0x000040c3...your next attempt...
+(sevm) c                        # breakpoint survived the restart
+```
+
+Every stop ends with a one-line machine echo — pc, opcode, gas, step, and the stack
+height as `old->new` whenever it changed (a `POP` reads `sp 13->12`) — so opcode-level
+stepping always shows what the last instruction did to the machine.
+
+Payload hex runs to thousands of characters, past what a Windows console or command line
+will accept as one line, so an argument of the form `@path` is read from that file
+instead, with whitespace stripped. It works at launch, at the prompt, and standalone:
+
+```bash
+sevm run ... script.py @C:/path/to/payload.hex   # at launch
+(sevm) run @C:/path/to/payload.hex               # at the prompt
+python script.py @payload.hex                    # without sevm at all
 ```
 
 ### Set breakpoints
@@ -339,6 +370,15 @@ $gas = 100
 Stopped on error: OutOfGas: Out of gas: Needed 2100 - Remaining 67 - Reason: SLOAD
   Bank._fee(uint256) at src/Bank.sol:41
   41          return (amount * feeBps) / 10000;
+```
+
+The same stop is also the way **out** of an out-of-gas you did not plan: refill the
+meter and continue, and the failed instruction is retried on its original stack —
+the transaction then runs as if it had been sent with the larger limit:
+
+```bash
+(sevm) set $gas = 5000000
+(sevm) c
 ```
 
 The failure is real, not simulated. The script's own output shows the deposit never

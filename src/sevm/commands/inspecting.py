@@ -71,15 +71,22 @@ def cmd_undisplay(proc: CommandProcessor, args: list[str], rest: str) -> Command
 
 
 def cmd_examine(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
-    """gdb's `x/NFU addr` over EVM memory."""
+    """gdb's `x/NFU addr` over EVM memory.
+
+    Like gdb, an `x` with no address (or a bare format such as `x/4xg`) resumes
+    just past the last examination and reuses its format, so repeated `x` walks
+    forward through memory — through regions that only grow during the run —
+    instead of restarting at zero.
+    """
     snap = proc.require_stop()
-    spec, addr_text = "/8xg", ""
+    spec, addr_text = "", ""
     tokens = rest.strip().split(None, 1)
     if tokens and tokens[0].startswith("/"):
         spec = tokens[0]
-        addr_text = tokens[1] if len(tokens) > 1 else "0"
+        addr_text = tokens[1] if len(tokens) > 1 else ""
     elif tokens:
         addr_text = rest.strip()
+    spec = spec or proc._last_x_spec or "/8xg"
     match = _X_FORMAT.match(spec)
     if not match:
         return CommandResult(error=f"bad format {spec!r}; try x/32xb 0x40")
@@ -87,12 +94,17 @@ def cmd_examine(proc: CommandProcessor, args: list[str], rest: str) -> CommandRe
     fmt = match.group(2) or "x"
     unit = _UNIT_SIZES.get(match.group(3) or "g", 8)
 
-    try:
-        offset = int(proc.evaluate(addr_text or "0").value) if addr_text else 0
-    except Exception:
-        offset = int(addr_text, 0) if addr_text else 0
+    if addr_text:
+        try:
+            offset = int(proc.evaluate(addr_text).value)
+        except Exception:
+            offset = int(addr_text, 0)
+    else:
+        offset = proc._last_x_next
 
     total = count * unit
+    proc._last_x_spec = spec
+    proc._last_x_next = offset + total
     data = proc.inspect("read_memory", offset, total)
     result = CommandResult()
     if fmt == "s":
@@ -115,7 +127,12 @@ def cmd_examine(proc: CommandProcessor, args: list[str], rest: str) -> CommandRe
                 cells.append("".join(chr(b) if 32 <= b < 127 else "." for b in word))
             else:
                 cells.append(f"{value:0{unit * 2}x}")
-        annotation = _memory_region(offset + row_start)
+        row_addr = offset + row_start
+        # Rows at or past the current size read as zeros (EVM semantics) but are
+        # not allocated yet; mark them so a dump cannot mistake the two.
+        annotation = (
+            "beyond memory" if row_addr >= snap.memory_size else _memory_region(row_addr)
+        )
         result.add(
             f"[cyan]0x{offset + row_start:04x}[/cyan]: {' '.join(cells)}"
             + (f"  [dim]{annotation}[/dim]" if annotation else "")

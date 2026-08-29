@@ -81,6 +81,11 @@ def make_apply_patch(session: Any) -> Any:
                             mnemonic = opcode_fn.__wrapped__.mnemonic  # type: ignore[attr-defined]
                         session._on_opcode(frame, computation, pc, opcode, mnemonic)
                         gas_before = computation._gas_meter.gas_remaining
+                        # A failing opcode may already have popped its operands
+                        # (py-evm charges some costs after the pops), so keep a copy
+                        # to restore if the instruction is retried after a gas
+                        # rescue.
+                        stack_backup = list(computation._stack.values)
                         try:
                             exec_opcode(session, opcode, opcode_fn, computation)
                         except Halt:
@@ -90,9 +95,24 @@ def make_apply_patch(session: Any) -> Any:
                             break
                         except VMError as error:
                             # Pause on the failing instruction with the stack, memory
-                            # and gas still intact, then let it propagate normally.
-                            session._on_vm_error(frame, computation, pc, mnemonic, error)
-                            raise
+                            # and gas still intact. Normally the error then propagates;
+                            # but if the user topped the meter up during the pause
+                            # (`set $gas = N`), the opcode never ran to completion
+                            # and is retried on the restored stack.
+                            paused = session._on_vm_error(
+                                frame, computation, pc, mnemonic, error
+                            )
+                            if not (paused and session._gas_rescued):
+                                raise
+                            session._gas_rescued = False
+                            computation._stack.values[:] = stack_backup
+                            try:
+                                exec_opcode(session, opcode, opcode_fn, computation)
+                            except Halt:
+                                session._account_gas(
+                                    frame, computation, pc, mnemonic, gas_before
+                                )
+                                break
                         session._account_gas(frame, computation, pc, mnemonic, gas_before)
                         session._after_opcode(frame, computation, pc, mnemonic)
                     else:
@@ -103,6 +123,11 @@ def make_apply_patch(session: Any) -> Any:
             finally:
                 if frame is not None:
                     session._exit_frame(frame)
+        # A gas rescue can leave the meter above the message's own ceiling, which
+        # would later serialize as negative gas_used; clamp so the receipt stays
+        # constructible. Legitimate execution can never exceed the ceiling.
+        if computation._gas_meter.gas_remaining > message.gas:
+            computation._gas_meter.gas_remaining = message.gas
         if computation.is_origin_computation and computation.is_error:
             session._record_transaction_revert(computation)
         return computation

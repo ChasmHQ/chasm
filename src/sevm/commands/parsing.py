@@ -130,3 +130,41 @@ def _known_opcodes() -> frozenset:
 
         _OPCODE_NAMES = frozenset(OPCODES.values())
     return _OPCODE_NAMES
+
+
+def expand_file_args(args: list[str], rest: str) -> list[str] | str:
+    """Substitute `@path` arguments with the file's whitespace-stripped contents.
+
+    Returns the new argument list, or an error message string. Payload hex runs to
+    thousands of characters, past what a Windows console will accept on one input
+    line; `run @payload.hex` reads it instead of typing it.
+    """
+    out: list[str] = []
+    for arg in args:
+        if not arg.startswith("@"):
+            out.append(arg)
+            continue
+        try:
+            with open(arg[1:], encoding="utf-8") as f:
+                out.append(f.read().strip())
+        except OSError:
+            # shlex eats Windows backslashes (`C:\Users\...` arrives as `C:Users...`),
+            # so recover the path verbatim from the un-split line before giving up.
+            recovered = _recover_at_path(rest)
+            if recovered is not None:
+                try:
+                    with open(recovered, encoding="utf-8") as f:
+                        out.append(f.read().strip())
+                        continue
+                except OSError:
+                    pass
+            return f"cannot read {arg[1:]!r}: no such file"
+    return out
+
+
+def _recover_at_path(rest: str) -> str | None:
+    """The first `@path` in the raw command line, quotes respected, backslashes intact."""
+    match = re.search(r'"@([^"]+)"|@(\S+)', rest)
+    if match is None:
+        return None
+    return match.group(1) or match.group(2)

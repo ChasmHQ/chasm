@@ -50,17 +50,28 @@ class ConsoleFrontend:
             )
 
     def run(self, first_event=None) -> None:
-        """Read-eval-print until the user quits or the program ends."""
+        """Read-eval-print until the user quits.
+
+        The prompt stays up after the program finishes: `reset` / `run` can restart
+        it, so finishing is not a reason to abandon the session.
+        """
         self.on_first_stop(first_event)
         while True:
-            if self.session.finished:
-                self.console.print("[dim]program finished; nothing left to debug[/dim]")
-                break
             try:
                 raw = self.console.input("[bold green](sevm)[/bold green] ")
             except (EOFError, KeyboardInterrupt):
                 self.console.print()
                 break
+            except OSError as exc:
+                # The Windows console reader refuses single lines past its buffer
+                # ("The input line is too long.") — a full payload's hex is far past
+                # it. Say how to get the line in anyway instead of dying.
+                self.console.print(
+                    f"[bold red]could not read the input line:[/bold red] {exc}\n"
+                    "[yellow]tip:[/yellow] put it in a file and use "
+                    "`run @path/to/payload.hex`"
+                )
+                continue
             # Bare Enter repeats the last command, as gdb does.
             line = raw.strip() or self.last_line
             if not line:

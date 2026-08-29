@@ -70,6 +70,14 @@ class CommandProcessor:
         # How many console.log lines have already been shown, so a resume only prints new
         # output produced while the program ran.
         self._console_seen = 0
+        # The stop before the command currently running. `describe_stop` diffs the
+        # stack height against it, so a step that executes a POP reports `sp 13->12`
+        # instead of leaving the shrink invisible.
+        self._prev_snap: FrameSnapshot | None = None
+        # `x` continuation state: the last format used, and the address just past the
+        # last examination — a bare `x` resumes there, as in gdb.
+        self._last_x_spec: str | None = None
+        self._last_x_next: int = 0
 
         self._verbs: dict[str, Callable[[list[str], str], CommandResult]] = {}
         self._register()
@@ -100,6 +108,7 @@ class CommandProcessor:
         line = line.strip()
         if not line:
             return CommandResult()
+        self._prev_snap = self.session.last_snapshot
         try:
             result = self._dispatch(line)
         except (SessionError, EvalError, AsmError) as exc:
@@ -284,6 +293,10 @@ class CommandProcessor:
         self.selected_frame = None
         self.selected_row = 0
         event = self.session.resume(mode, count=count, target_pc=target_pc)
+        return self.render_event(event)
+
+    def render_event(self, event: Any) -> CommandResult:
+        """The standard rendering of a resume's outcome, shared by resume/reset/run."""
         result = CommandResult(resumed=True, event=event)
         self._emit_console(result)
         if isinstance(event, Finished):
@@ -321,12 +334,28 @@ class CommandProcessor:
             lines = self.source_lines(snap.source_key)
             if 0 < snap.line <= len(lines):
                 out.append(f"[dim]{snap.line:>4}[/dim]  {_escape(lines[snap.line - 1])}")
-        else:
-            out.append(
-                f"[dim]  no source for this contract; "
-                f"pc=0x{snap.pc:04x} {snap.mnemonic}[/dim]"
-            )
+        out.append(self._machine_line(snap))
         return out
+
+    def _machine_line(self, snap: FrameSnapshot) -> str:
+        """The one-line machine echo every stop ends with, gdb's `0xADDR in ...`.
+
+        At opcode granularity this is the only signal of what a step did to the
+        machine: the sp field shows old->new whenever the stack height changed
+        since the previous stop (a POP reads `sp 13->12`), suppressed across a
+        depth change where the two heights belong to different frames.
+        """
+        sp = len(snap.stack)
+        prev = self._prev_snap
+        if prev is not None and prev.depth == snap.depth and len(prev.stack) != sp:
+            sp_field = f"{len(prev.stack)}->{sp}"
+        else:
+            sp_field = f"{sp}"
+        nosrc = "" if snap.has_source else "  (no source)"
+        return (
+            f"[dim]pc 0x{snap.pc:04x}  {snap.mnemonic:<7} sp {sp_field}  "
+            f"gas {snap.gas_remaining:,}  step {snap.step}{nosrc}[/dim]"
+        )
 
     def _where(self, snap: FrameSnapshot) -> str:
         fn = snap.function.signature if snap.function else (snap.contract_name or "?")

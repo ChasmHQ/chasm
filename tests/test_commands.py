@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
+
 from harness import (
     line_of,
 )
 
 from sevm.commands.render import _calldata
-from sevm.session import Finished, StepMode
+from sevm.session import Finished, Paused, StepMode
 
 
 def test_command_break_and_continue(deposit_debugger):
@@ -288,3 +290,100 @@ def test_a_bare_expression_still_evaluates(deposit_debugger):
     dbg = deposit_debugger
     assert dbg.run("totalDeposits").ok
     assert dbg.run("balances[msg.sender]").ok
+
+
+# ==================================================================
+# stop echo, registers, memory examination, restart
+# ==================================================================
+
+
+def test_stepi_echoes_machine_state(deposit_debugger):
+    """Every stop ends with a machine line: pc, opcode, sp, gas, step."""
+    dbg = deposit_debugger
+    result = dbg.run("si")
+    joined = "\n".join(result.lines)
+    assert re.search(r"pc 0x[0-9a-f]+", joined)
+    assert re.search(r"sp \d+", joined)
+    assert "gas" in joined and "step" in joined
+
+
+def test_stack_height_change_is_surfaced(deposit_debugger):
+    """A step that changes the stack height (POP, DUP, PUSH) reports old->new."""
+    dbg = deposit_debugger
+    for _ in range(40):
+        result = dbg.run("si")
+        if re.search(r"sp \d+->\d+", "\n".join(result.lines)):
+            break
+    else:
+        raise AssertionError("no stack-height change reported within 40 steps")
+
+
+def test_info_registers_includes_sizes_and_refund(deposit_debugger):
+    result = deposit_debugger.run("info registers")
+    joined = "\n".join(result.lines)
+    for field in ("calldatasize", "memory", "refund", "sp", "pc"):
+        assert field in joined
+
+
+def test_bare_x_continues_after_last_examination(deposit_debugger):
+    """gdb semantics: `x` with no address resumes past the last dump, format reused."""
+    dbg = deposit_debugger
+    first = dbg.run("x/2xg 0x40")
+    assert first.ok and "0x0040" in "\n".join(first.lines)
+    second = dbg.run("x/2xg")
+    assert "0x0050" in "\n".join(second.lines)
+    third = dbg.run("x")
+    assert "0x0060" in "\n".join(third.lines)
+
+
+def test_x_marks_rows_beyond_current_memory(deposit_debugger):
+    dbg = deposit_debugger
+    result = dbg.run("x/8xg 0x1000")
+    joined = "\n".join(result.lines)
+    assert "beyond memory" in joined
+    assert "reads as zero" in joined
+
+
+def test_reset_reruns_the_script_and_keeps_breakpoints(deposit_debugger):
+    dbg = deposit_debugger
+    line = line_of(dbg.session.project, "totalDeposits += amount - fee;")
+    assert dbg.run(f"b Bank.sol:{line}").ok
+    assert isinstance(dbg.step(StepMode.RUN), Paused)  # consume the first hit
+    result = dbg.run("reset")
+    assert result.ok and result.lines, "reset must land on a fresh opening stop"
+    hit = dbg.run("c")
+    assert "Breakpoint 1" in "\n".join(hit.lines), "breakpoint must survive a reset"
+
+
+def test_run_passes_new_args_to_the_target(deposit_debugger):
+    dbg = deposit_debugger
+    seen: list[list[str]] = []
+
+    def factory(argv: list[str]):
+        seen.append(list(argv))
+        return lambda: None  # a target that does nothing finishes immediately
+
+    dbg.session.set_restart_factory(factory, ["original"])
+    result = dbg.run("run 0xdeadbeef")
+    assert result.ok
+    assert seen == [["0xdeadbeef"]], f"factory saw {seen}"
+
+
+def test_run_expands_at_file_arguments(deposit_debugger, tmp_path):
+    """`run @file` reads the argument from a file — payload hex outgrows a console line."""
+    dbg = deposit_debugger
+    seen: list[list[str]] = []
+    payload = tmp_path / "payload.hex"
+    payload.write_text("0x" + "00" * 64 + "\n")
+
+    def factory(argv: list[str]):
+        seen.append(list(argv))
+        return lambda: None
+
+    dbg.session.set_restart_factory(factory, [])
+    result = dbg.run(f"run @{payload}")
+    assert result.ok
+    assert seen == [["0x" + "00" * 64]], seen
+
+    missing = dbg.run(f"run @{tmp_path / 'nope.hex'}")
+    assert missing.error and "cannot read" in missing.error

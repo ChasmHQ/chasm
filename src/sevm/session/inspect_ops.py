@@ -216,6 +216,9 @@ class InspectOps:
 
     def _op_set_gas(self, frame: EvmFrame, computation: Any, value: int) -> int:
         computation._gas_meter.gas_remaining = value
+        # If this refill happens while parked on an out-of-gas error, the opcode that
+        # failed never ran; arming the flag makes the loop retry it on resume.
+        self.session._gas_rescued = True
         return value
 
     def _op_set_pc(self, frame: EvmFrame, computation: Any, value: int) -> int:

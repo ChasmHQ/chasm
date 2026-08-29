@@ -20,6 +20,10 @@ HELP_SUMMARY = """
   [cyan]si[/cyan] / [cyan]ni[/cyan] [N]               one opcode, into / over calls
   [cyan]finish[/cyan]                 run to the end of this frame
   [cyan]u[/cyan]ntil LOC              run to a line or *PC
+  [cyan]reset[/cyan]                 re-run the script: fresh chain, same breakpoints
+  [cyan]run[/cyan] [ARGS]             re-run, replacing the script's arguments
+                         ([dim]run 0x<hex>[/dim] sends new raw calldata;
+                         [dim]@file[/dim] reads an argument from a file)
 
 [bold]Breakpoints[/bold]
   [cyan]b[/cyan] FILE:LINE            break on a source line

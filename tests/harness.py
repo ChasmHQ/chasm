@@ -91,6 +91,8 @@ class Debugger:
         self.evaluator = Evaluator(proj)
         self.session.set_eval_hook(make_eval_hook(self.evaluator))
         self.commands = CommandProcessor(self.session, self.evaluator)
+        # Bind a restart target so `reset` / `run` work under test as via `sevm run`.
+        self.session.set_restart_factory(lambda argv: txfn, [])
         self.session.start(txfn)
         self.first = self.session.wait(timeout=TIMEOUT)
 

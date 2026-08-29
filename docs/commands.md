@@ -10,6 +10,8 @@ expressions are Solidity and the machine underneath is the EVM.
 | Command | Meaning here |
 |---|---|
 | `c` / `continue` | run until a breakpoint |
+| `reset` | re-run the target script from scratch: fresh chain, same breakpoints |
+| `run [ARGS]` | re-run, replacing the script's arguments (`run 0x<hex>` re-sends raw calldata) |
 | `n` / `next [N]` | next Solidity line, stepping over calls |
 | `s` / `step [N]` | next Solidity line, stepping into calls |
 | `si` / `ni [N]` | one opcode, into / over `CALL` |
@@ -19,6 +21,25 @@ expressions are Solidity and the machine underneath is the EVM.
 `step` and `next` understand *internal* Solidity calls. Those compile to `JUMP`, so EVM
 depth never changes, and sevm tracks them through the source map's `i` and `o` jump
 markers.
+
+Every stop ends with a one-line machine echo, so opcode-level stepping always shows what
+the last step did to the machine — the stack height as old->new when it changed (a `POP`
+reads `sp 13->12`), plus pc, opcode, gas remaining and step count:
+
+```bash
+(sevm) si
+pc 0x0077  POP     sp 13->12  gas 2,843,413  step 5
+```
+
+`reset` and `run` work mid-transaction and after the program has finished; the prompt
+does not exit when the program ends. Breakpoints, watchpoints and `display` expressions
+survive the restart; the chain does not, because a fresh script run builds a fresh
+tester chain — a genuine clean slate for iterating on calldata. An argument of the form
+`@path` (at launch, or to `run`) is replaced by that file's whitespace-stripped contents:
+payload hex runs to thousands of characters, past what a Windows console or command line
+will carry. The same `@file` syntax works at launch
+(`sevm run ... script.py @payload.hex`), at the prompt (`run @payload.hex`) and anywhere
+else the script's arguments are set.
 
 ## Breakpoints
 
@@ -48,10 +69,10 @@ as `reverted: "..."`, `panic 0x11`, or a custom error with its arguments.
 | `call EXPR` | evaluate and **keep** the side effects |
 | `ptype EXPR` | report the Solidity type |
 | `display EXPR` | re-evaluate at every stop |
-| `x/NFU ADDR` | examine memory, gdb syntax |
+| `x/NFU ADDR` | examine memory, gdb syntax; a bare `x` continues past the last dump, format reused |
 | `bt` / `f N` / `up` / `down` | call stack and frame selection |
 | `l` / `list` / `disas` | source listing / disassembly |
-| `info registers` | pc, gas, depth, stack height, `msg.*`, `tx.origin`, static flag |
+| `info registers` | pc, gas + refund, depth, stack height, memory and calldata sizes, `msg.*`, `tx.origin`, static flag |
 | `info args` / `info locals` / `info storage` | frame args / locals / state vars, decoded |
 | `info gas` | limit, used, refund, and a profile by source line and by opcode |
 | `info frame` / `info logs` / `info sources` / `info functions` | the rest |
@@ -77,7 +98,7 @@ Bank at 0x4f9da333dcf4e5a53772791b95c161b2fc041859
 | `set var balances[alice] = 5 ether` | mappings, packed slots and structs encode correctly |
 | `call deposit()` | run a function and keep the effects |
 | `set $stack[0] = 0xc0ffee` | rewrite an operand before the opcode consumes it |
-| `set $gas = 100` | force an out-of-gas at an exact instruction |
+| `set $gas = 100` | force an out-of-gas at an exact instruction — and at an out-of-gas stop, refill with `set $gas = N` then `c` to retry the failed instruction and keep going |
 | `set var fee = 1 ether` | write a local's stack slot |
 | `set $mem[0x80] = 1` / `set $storage[0] = 0xdead` | raw writes |
 | `jump 0x108` | move the program counter, JUMPDESTs only |

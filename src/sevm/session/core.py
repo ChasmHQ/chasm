@@ -22,7 +22,7 @@ from dataclasses import replace
 from typing import Any
 
 from eth.chains.base import Chain
-from eth.exceptions import Revert
+from eth.exceptions import OutOfGas, Revert
 from eth.vm.computation import BaseComputation
 
 from ..breakpoints import WATCH_WRITE, BreakpointSet
@@ -91,6 +91,14 @@ class DebugSession:
         self._thread: threading.Thread | None = None
         self._patched = False
         self._local = threading.local()  # re-entrancy guard for speculative execution
+
+        # How to relaunch the target for `reset` / `run`: argv -> target callable.
+        # Bound by `sevm run`; sessions started directly (tests, embedding) have none.
+        self._restart_factory: Callable[[list[str]], Callable[[], Any]] | None = None
+        self._restart_argv: list[str] = []
+        # Set by `set $gas` while parked on an out-of-gas error; the opcode loop reads
+        # it right after the pause lifts and retries the instruction instead of raising.
+        self._gas_rescued = False
 
         self.armed = False
         self.finished = False
@@ -177,6 +185,68 @@ class DebugSession:
         if isinstance(event, Paused):
             self.last_snapshot = event.snapshot
         return event
+
+    def set_restart_factory(
+        self, factory: Callable[[list[str]], Callable[[], Any]], initial_argv: list[str]
+    ) -> None:
+        """Remember how to relaunch the target, for the `reset` and `run` commands."""
+        self._restart_factory = factory
+        self._restart_argv = list(initial_argv)
+
+    def restart(self, argv: list[str] | None = None, timeout: float = 120.0) -> Any:
+        """Re-run the target from scratch and return the first stop event.
+
+        Breakpoints, watchpoints and displays survive the restart, as they do in gdb;
+        the chain does not — a fresh script run builds a fresh tester chain, which is
+        what makes a restart a genuine clean slate for iterating on calldata.
+        """
+        if self._restart_factory is None:
+            raise SessionError(
+                "no restart target; the session was not started by `sevm run`"
+            )
+        if self._thread is not None and not self.finished:
+            self._cmd_q.put(Resume(mode=StepMode.RUN, detach=True))
+            while True:
+                event = self.wait(timeout=timeout)
+                if event is None:
+                    raise SessionError("the current run did not finish; restart aborted")
+                if isinstance(event, Finished):
+                    break
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        for q in (self._event_q, self._reply_q, self._cmd_q):
+            while True:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
+        self._thread = None
+        self.finished = False
+        self.last_snapshot = None
+        self.exit_error = None
+        self.last_revert = None
+        self.estimations = 0
+        self.step_index = 0
+        self.gas_by_line.clear()
+        self.gas_by_opcode.clear()
+        # Stop policy back to the opening stop, exactly as a fresh session.
+        self._mode = StepMode.STEP if self.skip_to_source else StepMode.STEPI
+        self._mode_depth = 0
+        self._mode_internal = 0
+        self._mode_key = None
+        self._mode_target_pc = None
+        self._mode_function = None
+        self._mode_at_function_entry = False
+        self._pending_count = 1
+        self._pending_annotation = ""
+        # Watchpoints re-arm against the new chain instead of diffing a dead one.
+        for wp in self.breakpoints.active_watchpoints():
+            wp.initialised = False
+            wp.old_value = None
+        if argv is not None:
+            self._restart_argv = list(argv)
+        self.start(self._restart_factory(self._restart_argv))
+        return self.wait(timeout=timeout)
 
     def resume(
         self,
@@ -478,9 +548,10 @@ class DebugSession:
 
     def _on_vm_error(
         self, frame: EvmFrame, computation: Any, pc: int, mnemonic: str, error: Exception
-    ) -> None:
+    ) -> bool:
+        """Park on the failing instruction; returns True iff a pause actually happened."""
         if not self.stop_on_revert or not self.armed:
-            return
+            return False
         detail = (
             f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
         )
@@ -489,6 +560,9 @@ class DebugSession:
 
             abi = frame.artifact.abi if frame.artifact else None
             detail = decode_revert(bytes(computation.output or b""), abi)
+        if isinstance(error, OutOfGas):
+            detail += "  — `set $gas = N` then `c` refills the meter and retries this"
+            detail += " instruction"
         self._pause(
             frame,
             computation,
@@ -500,6 +574,7 @@ class DebugSession:
             (),
             annotation=detail,
         )
+        return True
 
     def _account_gas(
         self, frame: EvmFrame, computation: Any, pc: int, mnemonic: str, gas_before: int
@@ -554,6 +629,8 @@ class DebugSession:
         hits: Sequence[int],
         annotation: str = "",
     ) -> None:
+        # A `set $gas` from an earlier stop must not arm a rescue for this one.
+        self._gas_rescued = False
         snapshot = snapshots.build_snapshot(
             self, frame, computation, pc, opcode, mnemonic, loc, reason, hits, annotation
         )

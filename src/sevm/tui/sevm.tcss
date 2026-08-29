@@ -20,12 +20,14 @@ Screen {
     height: 1fr;
 }
 
+/* Left column (source + disassembly/stack/memory) gets the wider share; the right
+   column's decoded rows ellipsize gracefully, raw words do not. */
 #left {
-    width: 62%;
+    width: 67%;
 }
 
 #right {
-    width: 38%;
+    width: 33%;
 }
 
 /* SOURCE takes whatever the low-level row is not using, so hiding that row (F2)

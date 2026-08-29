@@ -176,3 +176,30 @@ def test_script_exception_is_reported_not_swallowed(proj):
     assert isinstance(event, Finished)
     assert not event.ok and "script blew up" in event.error
     session.detach(timeout=TIMEOUT)
+
+
+def test_out_of_gas_is_rescuable_by_topping_up(bank):
+    """`set $gas = N` at an out-of-gas stop refills the meter and retries the opcode."""
+    w3, proj_, contract, _callee, alice = bank
+    status: dict[str, object] = {}
+
+    def txfn():
+        tx = contract.functions.deposit().transact(
+            {"from": alice.address, "value": w3.to_wei(1, "ether"), "gas": 30_000}
+        )
+        try:
+            status["receipt"] = w3.eth.wait_for_transaction_receipt(tx).status
+        except Exception as exc:  # a failing tx raises on this backend
+            status["error"] = repr(exc)
+
+    dbg = Debugger(proj_, txfn)
+    try:
+        result = dbg.run("c")  # past the constructor, into the underfunded deposit
+        joined = "\n".join(result.lines)
+        assert "OutOfGas" in joined and "set $gas" in joined, joined
+        assert dbg.run("set $gas = 5000000").ok
+        result = dbg.run("c")
+        assert "program finished" in "\n".join(result.lines)
+        assert status.get("receipt") == 1, status
+    finally:
+        dbg.close()

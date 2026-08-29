@@ -19,6 +19,7 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
+from .commands.parsing import expand_file_args
 from .compile import CompileError, compile_foundry_project, find_foundry_root
 from .evaluate import Evaluator, make_eval_hook
 from .session import DebugSession, Finished, StepMode
@@ -316,8 +317,22 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
         f"{', '.join(a.name for a in project.artifacts.values())}[/dim]",
         highlight=False,
     )
-    target = _run_script(script, args.args)
-    return _debug(console, project, target, args, foundry_mode=True)
+    # `@path` script arguments are read from that file: payload hex outgrows what a
+    # Windows command line (or console input) will carry. Same syntax as `run @file`.
+    expanded = expand_file_args(list(args.args), " ".join(args.args))
+    if isinstance(expanded, str):
+        console.print(f"[bold red]{expanded}[/bold red]", highlight=False)
+        return 1
+    target = _run_script(script, expanded)
+    return _debug(
+        console,
+        project,
+        target,
+        args,
+        foundry_mode=True,
+        restart_factory=lambda argv: _run_script(script, argv),
+        restart_argv=expanded,
+    )
 
 
 def _run_foundry(console: Any, args: argparse.Namespace) -> int:
@@ -388,17 +403,21 @@ def _debug(
     args: argparse.Namespace,
     foundry_mode: bool,
     stop_functions: list[str] | None = None,
+    restart_factory: Any = None,
+    restart_argv: list[str] | None = None,
 ) -> int:
     """Shared tail: start the target on the VM thread and hand off to a frontend.
 
     With `stop_functions`, a breakpoint is set on each (every test body). The session runs
     past deployment and `setUp` and opens at the first one; `continue` then stops at each
-    subsequent test in turn.
+    subsequent test in turn. `restart_factory` binds the `reset` / `run` commands.
     """
     session = DebugSession(project)
     session.foundry_mode = foundry_mode
     evaluator = Evaluator(project)
     session.set_eval_hook(make_eval_hook(evaluator))
+    if restart_factory is not None:
+        session.set_restart_factory(restart_factory, restart_argv or [])
 
     startup_commands = list(args.exec)
     first_contract = first_fn = None
