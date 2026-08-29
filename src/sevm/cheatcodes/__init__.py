@@ -13,7 +13,7 @@ themselves with `@_cheat` at import time, and without it `apply_cheat` finds an 
   convert.py     pure transforms: toString, parse*, base64, string ops, CREATE address
   wallet.py      key derivation, compact signing, createWallet
   assertions.py  the `vm.assert*` family, generated from an op x type matrix
-  args.py        parsing and encoding arguments typed at the prompt
+  args.py        parsing, typing and encoding arguments typed at the prompt
   console.py     decoding `console.log` payloads
 """
 
@@ -21,8 +21,10 @@ from __future__ import annotations
 
 from . import assertions, cheats, convert, env, wallet  # noqa: F401  (registers handlers)
 from .args import (
+    CheatArg,
     encode_cheat_call,
     format_cheat_result,
+    is_cheat_literal,
     parse_cheat_arg,
 )
 from .console import CONSOLE_ADDRESS, decode_console_log
@@ -44,6 +46,7 @@ from .registry import (
 __all__ = [
     "CONSOLE_ADDRESS",
     "VM_ADDRESS",
+    "CheatArg",
     "CheatContext",
     "CheatError",
     "CheatSpec",
@@ -55,6 +58,7 @@ __all__ = [
     "decode_console_log",
     "encode_cheat_call",
     "format_cheat_result",
+    "is_cheat_literal",
     "listing",
     "parse_cheat_arg",
     "spec_by_name",

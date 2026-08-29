@@ -24,9 +24,11 @@ from typing import Any
 
 from ..assembly import AsmError, has_builtin_head, lexes
 from ..cheatcodes import (
+    CheatArg,
     CheatError,
     encode_cheat_call,
     format_cheat_result,
+    is_cheat_literal,
     parse_cheat_arg,
 )
 from ..decode import StorageDecoder
@@ -38,6 +40,7 @@ from .parsing import (
     _CALL_SHAPED,
     _CONVENIENCE,
     _did_you_mean,
+    _first_line,
     _looks_like_a_command,
     _split_top_level,
 )
@@ -188,11 +191,29 @@ class CommandProcessor:
                 "Try `help` for the command list, or `p <expr>` to evaluate Solidity."
             )
 
+    def _cheat_arg(self, text: str) -> CheatArg:
+        """One cheat argument, as a literal if it reads as one and as Solidity if not.
+
+        A literal is taken as-is so `vm.warp(12345)` never pays for a compile. Anything
+        else goes through the evaluator, which both resolves it against the paused frame
+        (`vm.prank(alice)`, `vm.deal(owner, bal * 2)`) and hands back solc's own ABI type,
+        so the overload is chosen rather than guessed. An expression solc rejects falls
+        back to the raw text, which is how a bare word still reaches a `string` parameter,
+        and the reason is kept for the error if that text does not fit either.
+        """
+        text = text.strip()
+        if is_cheat_literal(text):
+            return CheatArg(value=parse_cheat_arg(text), text=text)
+        try:
+            result = self.evaluate(text)
+        except Exception as exc:  # any evaluation failure degrades to the literal
+            return CheatArg(value=text, text=text, note=_first_line(str(exc)))
+        return CheatArg(value=result.value, abi_type=result.abi_type, text=text)
+
     def cmd_cheat(self, line: str) -> CommandResult:
         """Apply a Foundry cheatcode entered live: `vm.warp(12345)`, `vm.deal(a, 1 ether)`.
 
-        Arguments are simple literals (ints, `N ether`, 0x addresses/bytes, quoted
-        strings), not full Solidity expressions. Runs against the frame in view.
+        Arguments are literals or Solidity expressions evaluated against the frame in view.
         """
         match = re.match(r"vm\.(\w+)\s*\((.*)\)\s*$", line, re.DOTALL)
         if not match:
@@ -200,8 +221,7 @@ class CommandProcessor:
         name, argstr = match.group(1), match.group(2).strip()
         arg_texts = _split_top_level(argstr) if argstr else []
         try:
-            values = [parse_cheat_arg(t) for t in arg_texts]
-            calldata = encode_cheat_call(name, values)
+            calldata = encode_cheat_call(name, [self._cheat_arg(t) for t in arg_texts])
         except (CheatError, ValueError) as exc:
             return CommandResult(error=str(exc))
         try:

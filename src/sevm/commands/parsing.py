@@ -90,6 +90,17 @@ def _looks_like_a_command(line: str) -> bool:
     return _COMMAND_SHAPED.fullmatch(line.strip()) is not None
 
 
+# The inspect boundary re-raises everything as "<ClassName>: <message>"; the class name
+# is noise once the message is quoted inside another error.
+_ERROR_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*Error: ")
+
+
+def _first_line(text: str, limit: int = 90) -> str:
+    """The first line of an error, for a message that has room for one clause."""
+    head = _ERROR_PREFIX.sub("", text.strip()).split("\n", 1)[0].strip()
+    return head if len(head) <= limit else head[: limit - 1] + "…"
+
+
 def _did_you_mean(verb: str, verbs: dict) -> str:
     """The nearest real verbs, gdb-style, or "" when nothing is close enough.
 

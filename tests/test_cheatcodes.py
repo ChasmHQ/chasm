@@ -19,7 +19,16 @@ from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
 from eth_utils import function_signature_to_4byte_selector
 
-from sevm.cheatcodes import CheatError, CheatState, all_specs, apply_cheat
+from sevm.cheatcodes import (
+    CheatArg,
+    CheatError,
+    CheatState,
+    all_specs,
+    apply_cheat,
+    encode_cheat_call,
+    is_cheat_literal,
+    parse_cheat_arg,
+)
 
 SPECS = {spec.signature: spec for spec in all_specs()}
 
@@ -611,6 +620,94 @@ def test_assert_failures_print_forges_comparison(signature, args, message):
 
 def test_approx_eq_rel_holds_when_both_sides_are_zero():
     call("assertApproxEqRel(uint256,uint256,uint256)", [0, 0, 0])
+
+
+# ==================================================================
+# arguments typed at the prompt
+# ==================================================================
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("1 ether", 10**18),
+        ("42", 42),
+        ("-5", -5),
+        ("true", True),
+        ('"hi"', "hi"),
+        ("0xA11cE", "0xA11cE"),
+    ],
+)
+def test_prompt_literals(text, expected):
+    assert is_cheat_literal(text)
+    assert parse_cheat_arg(text) == expected
+
+
+@pytest.mark.parametrize("text", ["address(0xcafe)", "alice", "bal * 2", "owner"])
+def test_expressions_are_not_literals(text):
+    # Not a literal, so the prompt hands it to solc instead of guessing at it.
+    assert not is_cheat_literal(text)
+    # It still round-trips as raw text, which is how a bare word reaches a string param.
+    assert parse_cheat_arg(text) == text
+
+
+def test_short_hex_pads_into_an_address():
+    # Solidity's `address(0xcafe)` pads, so the bare literal does too.
+    padded = encode_cheat_call("prank", ["0xcafe"])
+    assert padded == encode_cheat_call("prank", ["0x" + "00" * 18 + "cafe"])
+
+
+def test_an_over_long_value_is_not_quietly_truncated():
+    # Padding is for short literals only; anything longer is an error, not a prefix.
+    with pytest.raises(CheatError, match="not a valid address"):
+        encode_cheat_call("prank", ["0x" + "11" * 25])
+
+
+def test_overload_error_names_the_argument_and_the_reason():
+    arg = CheatArg(value="nope", text="alcie", note="Undeclared identifier")
+    with pytest.raises(CheatError) as exc:
+        encode_cheat_call("prank", [arg])
+    assert "argument 1 (alcie) is not a valid address" in str(exc.value)
+    assert "Undeclared identifier" in str(exc.value)
+
+
+def test_overload_error_names_the_closest_of_several():
+    with pytest.raises(CheatError) as exc:
+        encode_cheat_call("assertEq", [CheatArg(value="nope", text="alcie"), 1])
+    assert "argument 1 (alcie)" in str(exc.value)
+    assert "closest of 14 overloads is vm.assertEq(uint256,uint256)" in str(exc.value)
+
+
+def test_a_mistyped_name_does_not_become_true():
+    # `bool("alcie")` is True, so a loose coercion would drop a typo into a bool overload
+    # and pass. Every arity-2 assertEq overload must turn it down.
+    with pytest.raises(CheatError):
+        encode_cheat_call("assertEq", [CheatArg(value="alcie", text="alcie"), True])
+
+
+def test_a_solc_typed_argument_picks_the_overload():
+    # `1` alone encodes as bool just as happily as uint256, so an untyped pair needs the
+    # literal heuristic; a typed one must simply be believed.
+    typed = CheatArg(value=True, abi_type="bool")
+    assert encode_cheat_call("assertEq", [typed, typed]) == encode_cheat_call(
+        "assertEq", [True, True]
+    )
+    narrow = CheatArg(value=7, abi_type="uint8")
+    assert encode_cheat_call("assertEq", [narrow, narrow]) == encode_cheat_call(
+        "assertEq", [7, 7]
+    )
+
+
+def test_a_typed_string_does_not_land_in_a_bytes_overload():
+    call_data = encode_cheat_call(
+        "toBase64", [CheatArg(value="hello", abi_type="string")]
+    )
+    assert call_data == encode_cheat_call("toBase64", ["hello"])
+
+
+def test_arity_mismatch_lists_the_arities():
+    with pytest.raises(CheatError, match="takes 1 or 2 or 3 argument"):
+        encode_cheat_call("prank", [])
 
 
 # ==================================================================

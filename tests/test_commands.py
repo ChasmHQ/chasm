@@ -387,3 +387,63 @@ def test_run_expands_at_file_arguments(deposit_debugger, tmp_path):
 
     missing = dbg.run(f"run @{tmp_path / 'nope.hex'}")
     assert missing.error and "cannot read" in missing.error
+
+
+# ==================================================================
+# cheatcode arguments at the prompt
+# ==================================================================
+
+CAFE = bytes.fromhex("00" * 18 + "cafe")
+
+
+def test_cheat_argument_accepts_a_solidity_expression(deposit_debugger):
+    # `address(0xcafe)` is a cast, not a literal, so it only works if the argument is
+    # evaluated against the paused frame the way `p` evaluates one.
+    result = deposit_debugger.run("vm.prank(address(0xcafe))")
+    assert not result.error
+    assert deposit_debugger.session.cheats.prank.new_sender == CAFE
+
+
+def test_cheat_argument_reads_a_state_variable(deposit_debugger):
+    owner = deposit_debugger.run("p owner").lines[0]
+    assert not deposit_debugger.run("vm.prank(owner)").error
+    sender = deposit_debugger.session.cheats.prank.new_sender
+    assert sender.hex() in owner.lower()
+
+
+def test_short_hex_pads_to_an_address(deposit_debugger):
+    # Solidity's own `address(0xcafe)` pads; the bare literal now does too.
+    assert not deposit_debugger.run("vm.prank(0xcafe)").error
+    assert deposit_debugger.session.cheats.prank.new_sender == CAFE
+
+
+def test_cheat_error_names_the_argument_and_the_reason(deposit_debugger):
+    error = deposit_debugger.run("vm.prank(alcie)").error
+    assert "argument 1" in error
+    assert "alcie" in error
+    assert "not a valid address" in error
+    # solc's own complaint survives, which is what points at the typo.
+    assert "Undeclared identifier" in error
+
+
+def test_a_literal_argument_is_never_evaluated(deposit_debugger, monkeypatch):
+    """The fast path matters: a literal must not pay for a solc round trip."""
+    proc = deposit_debugger.commands
+    seen: list[str] = []
+    real = proc.evaluate
+    monkeypatch.setattr(
+        proc, "evaluate", lambda expr, **kw: seen.append(expr) or real(expr, **kw)
+    )
+    assert not deposit_debugger.run("vm.warp(12345)").error
+    assert not deposit_debugger.run("vm.deal(0xcafe, 1 ether)").error
+    assert not deposit_debugger.run('vm.label(0xcafe, "cafe")').error
+    assert seen == []
+    # ...and an expression argument does reach it.
+    assert not deposit_debugger.run("vm.prank(address(0xcafe))").error
+    assert seen == ["address(0xcafe)"]
+
+
+def test_an_unquoted_word_still_reaches_a_string_parameter(deposit_debugger):
+    # It is not Solidity, so it falls back to the raw text rather than failing.
+    assert not deposit_debugger.run("vm.label(0xcafe, cafe)").error
+    assert deposit_debugger.run("vm.getLabel(0xcafe)").lines[0].endswith("cafe")
