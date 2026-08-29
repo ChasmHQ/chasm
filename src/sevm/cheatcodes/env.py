@@ -21,9 +21,9 @@ def _parse_scalar(abi_type: str, raw: str) -> Any:
     raw = raw.strip()
     if abi_type == "bool":
         low = raw.lower()
-        if low == "true":
+        if low in ("true", "1"):
             return True
-        if low == "false":
+        if low in ("false", "0"):
             return False
         raise CheatError(f"env value {raw!r} is not a bool")
     if abi_type.startswith(("uint", "int")):
@@ -32,9 +32,10 @@ def _parse_scalar(abi_type: str, raw: str) -> Any:
         return to_checksum_address(to_canonical_address(raw))
     if abi_type == "bytes32":
         b = bytes.fromhex(raw[2:] if raw.lower().startswith("0x") else raw)
-        if len(b) > 32:
-            raise CheatError("env value does not fit in bytes32")
-        return b.rjust(32, b"\x00")
+        # forge rejects any other length rather than padding; see `parseBytes32`.
+        if len(b) != 32:
+            raise CheatError(f"env value {raw!r} is not 32 bytes")
+        return b
     if abi_type == "bytes":
         return bytes.fromhex(raw[2:] if raw.lower().startswith("0x") else raw)
     return raw  # string

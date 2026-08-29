@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from eth_keys import keys
+from eth_utils import to_checksum_address
 
 from .registry import CheatContext, CheatError, Prank, _addr, _cheat
 
@@ -159,7 +160,8 @@ for _persistent, _base in ((False, "prank"), (True, "startPrank")):
 def _get_label(ctx: CheatContext) -> list[Any]:
     addr = _addr(ctx.args[0])
     label = ctx.cheats.labels.get(addr)
-    return [label if label is not None else f"unlabeled:{ctx.args[0]}"]
+    # forge's fallback prints the EIP-55 form, not eth_abi's lowercased decode.
+    return [label if label is not None else f"unlabeled:{to_checksum_address(addr)}"]
 
 
 # ---- nonce ----------------------------------------------------------------------------
@@ -276,11 +278,20 @@ def _random_uint(ctx: CheatContext) -> list[Any]:
     return [ctx.cheats.rng.getrandbits(256)]
 
 
+def _bits(name: str, value: Any) -> int:
+    """A `random*(bits)` width. Anything over 256 would encode out of range, so it is
+    refused here rather than escaping the cheat engine as an eth_abi error."""
+    bits = int(value)
+    if bits > 256:
+        raise CheatError(f"vm.{name}: number of bits cannot exceed 256")
+    return bits
+
+
 @_cheat(
     "randomUint(uint256)", ret_types=["uint256"], family="random", doc="a random value"
 )
 def _random_uint_bits(ctx: CheatContext) -> list[Any]:
-    bits = int(ctx.args[0])
+    bits = _bits("randomUint", ctx.args[0])
     return [ctx.cheats.rng.getrandbits(bits) if bits else 0]
 
 
@@ -292,6 +303,8 @@ def _random_uint_bits(ctx: CheatContext) -> list[Any]:
 )
 def _random_uint_range(ctx: CheatContext) -> list[Any]:
     lo, hi = int(ctx.args[0]), int(ctx.args[1])
+    if lo > hi:
+        raise CheatError("vm.randomUint: min must be less than or equal to max")
     return [ctx.cheats.rng.randint(lo, hi)]
 
 
@@ -302,7 +315,7 @@ def _random_int(ctx: CheatContext) -> list[Any]:
 
 @_cheat("randomInt(uint256)", ret_types=["int256"], family="random", doc="a random value")
 def _random_int_bits(ctx: CheatContext) -> list[Any]:
-    bits = int(ctx.args[0])
+    bits = _bits("randomInt", ctx.args[0])
     val = ctx.cheats.rng.getrandbits(bits) if bits else 0
     if bits and val >= (1 << (bits - 1)):
         val -= 1 << bits
@@ -311,8 +324,6 @@ def _random_int_bits(ctx: CheatContext) -> list[Any]:
 
 @_cheat("randomAddress()", ret_types=["address"], family="random", doc="a random value")
 def _random_address(ctx: CheatContext) -> list[Any]:
-    from eth_utils import to_checksum_address
-
     return [to_checksum_address(ctx.cheats.rng.getrandbits(160).to_bytes(20, "big"))]
 
 

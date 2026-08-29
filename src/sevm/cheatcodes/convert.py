@@ -146,9 +146,11 @@ def _p_bytes(ctx: CheatContext) -> list[Any]:
 def _p_bytes32(ctx: CheatContext) -> list[Any]:
     s = str(ctx.args[0]).strip()
     b = bytes.fromhex(s[2:] if s.lower().startswith("0x") else s)
-    if len(b) > 32:
-        raise CheatError("parseBytes32: value does not fit in 32 bytes")
-    return [b.rjust(32, b"\x00")]
+    # forge rejects any other length rather than padding: a short literal is ambiguous
+    # (Solidity pads bytes32 on the right, an integer on the left).
+    if len(b) != 32:
+        raise CheatError(f"parseBytes32: {ctx.args[0]!r} is not 32 bytes")
+    return [b]
 
 
 # ---- base64 ------------------------------------------------------------------------------
@@ -185,7 +187,7 @@ def _b64_string(ctx: CheatContext) -> list[Any]:
     doc="url-safe base64 encode",
 )
 def _b64url_bytes(ctx: CheatContext) -> list[Any]:
-    return [base64.urlsafe_b64encode(_as_bytes(ctx.args[0])).decode().rstrip("=")]
+    return [base64.urlsafe_b64encode(_as_bytes(ctx.args[0])).decode()]
 
 
 @_cheat(
@@ -195,7 +197,7 @@ def _b64url_bytes(ctx: CheatContext) -> list[Any]:
     doc="url-safe base64 encode",
 )
 def _b64url_string(ctx: CheatContext) -> list[Any]:
-    return [base64.urlsafe_b64encode(_as_bytes(ctx.args[0])).decode().rstrip("=")]
+    return [base64.urlsafe_b64encode(_as_bytes(ctx.args[0])).decode()]
 
 
 # ---- string utilities --------------------------------------------------------------------
@@ -253,7 +255,8 @@ def _contains(ctx: CheatContext) -> list[Any]:
     doc="string manipulation",
 )
 def _index_of(ctx: CheatContext) -> list[Any]:
-    idx = str(ctx.args[0]).find(str(ctx.args[1]))
+    # A byte offset, not a character one: Solidity indexes `string` as UTF-8 bytes.
+    idx = str(ctx.args[0]).encode().find(str(ctx.args[1]).encode())
     # forge returns type(uint256).max when the key is absent.
     return [idx if idx >= 0 else (1 << 256) - 1]
 

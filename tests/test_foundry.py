@@ -104,7 +104,20 @@ def test_discover_and_select_tests(solo_project):
 
 
 @pytest.mark.parametrize(
-    "fn", ["testEnv", "testPrank", "testStorageAndKeys", "testPrankValue"]
+    "fn",
+    [
+        "testEnv",
+        "testPrank",
+        "testStorageAndKeys",
+        "testPrankValue",
+        "testBlockGetters",
+        "testFeeIsNotChargedAtSettlement",
+        "testNonceCheats",
+        "testLabelLookup",
+        "testPrankOrigin",
+        "testDelegatePrank",
+        "testStartPrankDelegate",
+    ],
 )
 def test_cheats_take_effect(fn, solo_project):
     session, event = run_to_finish(solo_project, "AllCheatsTest", fn)
@@ -404,7 +417,7 @@ def test_env_exists(monkeypatch):
         ("parseUint(string)", ["string"], ["0xff"], ["uint256"], 255),
         ("parseBool(string)", ["string"], ["true"], ["bool"], True),
         ("toBase64(bytes)", ["bytes"], [b"hello"], ["string"], "aGVsbG8="),
-        ("toBase64URL(bytes)", ["bytes"], [b"\xff\xff"], ["string"], "__8"),
+        ("toBase64URL(bytes)", ["bytes"], [b"\xff\xff"], ["string"], "__8="),
         ("toUppercase(string)", ["string"], ["abc"], ["string"], "ABC"),
         ("toLowercase(string)", ["string"], ["ABC"], ["string"], "abc"),
         ("trim(string)", ["string"], ["  hi  "], ["string"], "hi"),

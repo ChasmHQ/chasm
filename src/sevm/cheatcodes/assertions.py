@@ -168,6 +168,3 @@ def _register_assertions() -> None:
 
 
 _register_assertions()
-
-
-_register_assertions()
