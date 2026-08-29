@@ -246,7 +246,9 @@ def test_python_run_resolves_libraries_and_enables_cheatcodes(
 
     captured: dict = {}
 
-    def fake_debug(console, project, target, args, foundry_mode, stop_functions=None):
+    def fake_debug(
+        console, project, target, args, foundry_mode, stop_functions=None, **kwargs
+    ):
         captured["project"] = project
         captured["foundry_mode"] = foundry_mode
         return 0
