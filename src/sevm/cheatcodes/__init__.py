@@ -4,11 +4,14 @@ A cheatcode is a call to the magic address `0x7109709E...`; `console.log` is the
 against `0x000000000000000000636F6e736F6c652e6c6f67`. sevm's patched opcode loop intercepts
 both and dispatches here.
 
-Importing `cheats` and `assertions` is load-bearing, not tidiness: their handlers register
+Importing the handler modules is load-bearing, not tidiness: their handlers register
 themselves with `@_cheat` at import time, and without it `apply_cheat` finds an empty table.
 
   registry.py    the spec table, `@_cheat`, and `apply_cheat`
-  cheats.py      environment, account state, identity, keys, labelling
+  cheats.py      block env, account state, nonce, prank, labelling, randomness
+  env.py         the `vm.env*` family (process environment variables)
+  convert.py     pure transforms: toString, parse*, base64, string ops, CREATE address
+  wallet.py      key derivation, compact signing, createWallet
   assertions.py  the `vm.assert*` family, generated from an op x type matrix
   args.py        parsing and encoding arguments typed at the prompt
   console.py     decoding `console.log` payloads
@@ -16,7 +19,7 @@ themselves with `@_cheat` at import time, and without it `apply_cheat` finds an 
 
 from __future__ import annotations
 
-from . import assertions, cheats  # noqa: F401  (registers the handlers)
+from . import assertions, cheats, convert, env, wallet  # noqa: F401  (registers handlers)
 from .args import (
     encode_cheat_call,
     format_cheat_result,

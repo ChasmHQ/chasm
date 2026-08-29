@@ -36,6 +36,16 @@ class Prank:
     caller: bytes | None  # the address that invoked the prank (None = any caller)
     new_sender: bytes
     persistent: bool  # startPrank -> True (stays until stopPrank); prank -> False
+    # forge's two/three-arg pranks also rewrite tx.origin, and can be told to apply to
+    # DELEGATECALL as well. None origin = leave tx.origin alone.
+    new_origin: bytes | None = None
+    delegate: bool = False
+
+
+# A private key seeded from a fixed constant, so `vm.random*` is reproducible across runs
+# until the caller changes it with `vm.setSeed`. forge uses a per-run seed; a debugger wants
+# the same value every time you re-run a stopped transaction.
+_DEFAULT_SEED = 0x5EED
 
 
 @dataclass
@@ -45,11 +55,27 @@ class CheatState:
     prank: Prank | None = None
     labels: dict[bytes, str] = field(default_factory=dict)
     console_lines: list[str] = field(default_factory=list)
+    seed: int = _DEFAULT_SEED
+    _rng: Any = None
+
+    @property
+    def rng(self) -> Any:
+        """The lazily-built PRNG behind `vm.random*`, reseeded by `vm.setSeed`."""
+        import random
+
+        if self._rng is None:
+            self._rng = random.Random(self.seed)
+        return self._rng
+
+    def reseed(self, seed: int) -> None:
+        self.seed = seed
+        self._rng = None
 
     def reset(self) -> None:
         self.prank = None
         self.labels.clear()
         self.console_lines.clear()
+        self.reseed(_DEFAULT_SEED)
 
 
 @dataclass

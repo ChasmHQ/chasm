@@ -154,9 +154,12 @@ def exec_opcode(session: Any, opcode: int, opcode_fn: Any, computation: Any) -> 
     as forge does. DELEGATECALL is excluded: it preserves the original caller.
     """
     prank = session.cheats.prank
+    applies = opcode in _PRANK_CALL_OPCODES or (
+        prank is not None and prank.delegate and opcode == 0xF4
+    )
     if (
         prank is None
-        or opcode not in _PRANK_CALL_OPCODES
+        or not applies
         or (
             prank.caller is not None
             and bytes(computation.msg.storage_address) != prank.caller
@@ -167,9 +170,16 @@ def exec_opcode(session: Any, opcode: int, opcode_fn: Any, computation: Any) -> 
 
     saved = computation.msg.storage_address
     computation.msg.storage_address = prank.new_sender
+    # forge's prank(sender, origin) rewrites tx.origin for the pranked call subtree too.
+    tx_ctx = computation.transaction_context
+    saved_origin = tx_ctx._origin if prank.new_origin is not None else None
+    if prank.new_origin is not None:
+        tx_ctx._origin = prank.new_origin
     try:
         opcode_fn(computation=computation)
     finally:
         computation.msg.storage_address = saved
+        if saved_origin is not None:
+            tx_ctx._origin = saved_origin
         if not prank.persistent:
             session.cheats.prank = None

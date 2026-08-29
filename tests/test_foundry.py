@@ -306,3 +306,234 @@ def test_decode_console_log():
         ["string", "uint256"], ["n", 7]
     )
     assert decode_console_log(payload) == "n 7"
+
+
+# ==================================================================
+# env / convert / wallet / state cheats
+# ==================================================================
+
+from eth_abi import decode as _abi_decode  # noqa: E402
+from eth_abi import encode as _abi_encode  # noqa: E402
+from eth_utils import function_signature_to_4byte_selector as _sel  # noqa: E402
+
+
+def _cheat(sig, arg_types, args, ret_types, state=None, caller=None):
+    """Call one cheat directly through the registry, ABI-encoding by explicit type so the
+    array overloads are exercised (the prompt heuristic never picks those)."""
+    body = _abi_encode(arg_types, args) if arg_types else b""
+    out = apply_cheat(state or CheatState(), state and None, _sel(sig) + body, caller)
+    return _abi_decode(ret_types, out) if ret_types else None
+
+
+@pytest.mark.parametrize(
+    "value,sol,abi,expected",
+    [
+        ("0xdeadbeef", "Bytes", "bytes", b"\xde\xad\xbe\xef"),
+        ("42", "Uint", "uint256", 42),
+        ("-5", "Int", "int256", -5),
+        ("true", "Bool", "bool", True),
+        ("0x" + "11" * 20, "Address", "address", "0x" + "11" * 20),
+    ],
+)
+def test_env_scalar_reads_the_process_environment(monkeypatch, value, sol, abi, expected):
+    monkeypatch.setenv("SEVM_T", value)
+    got = _cheat(f"env{sol}(string)", ["string"], ["SEVM_T"], [abi])[0]
+    if isinstance(got, str):
+        assert got.lower() == expected.lower()
+    else:
+        assert got == expected
+
+
+def test_env_array_splits_on_the_delimiter(monkeypatch):
+    monkeypatch.setenv("SEVM_NUMS", "1,2,3")
+    got = _cheat(
+        "envUint(string,string)", ["string", "string"], ["SEVM_NUMS", ","], ["uint256[]"]
+    )
+    assert got[0] == (1, 2, 3)
+
+
+def test_env_missing_variable_reverts():
+    with pytest.raises(CheatError, match="not found"):
+        _cheat("envUint(string)", ["string"], ["SEVM_DOES_NOT_EXIST"], ["uint256"])
+
+
+def test_env_or_returns_default_on_miss_and_value_on_hit(monkeypatch):
+    assert (
+        _cheat(
+            "envOr(string,uint256)",
+            ["string", "uint256"],
+            ["SEVM_ABSENT", 7],
+            ["uint256"],
+        )[0]
+        == 7
+    )
+    monkeypatch.setenv("SEVM_PRESENT", "99")
+    assert (
+        _cheat(
+            "envOr(string,uint256)",
+            ["string", "uint256"],
+            ["SEVM_PRESENT", 7],
+            ["uint256"],
+        )[0]
+        == 99
+    )
+
+
+def test_env_or_array_default(monkeypatch):
+    got = _cheat(
+        "envOr(string,string,uint256[])",
+        ["string", "string", "uint256[]"],
+        ["SEVM_ABSENT_ARR", ",", [4, 5]],
+        ["uint256[]"],
+    )
+    assert got[0] == (4, 5)
+
+
+def test_env_exists(monkeypatch):
+    monkeypatch.setenv("SEVM_EXISTS", "x")
+    assert _cheat("envExists(string)", ["string"], ["SEVM_EXISTS"], ["bool"])[0] is True
+    assert _cheat("envExists(string)", ["string"], ["SEVM_MISSING"], ["bool"])[0] is False
+
+
+@pytest.mark.parametrize(
+    "sig,arg_types,args,ret,expected",
+    [
+        ("toString(uint256)", ["uint256"], [255], ["string"], "255"),
+        ("toString(int256)", ["int256"], [-3], ["string"], "-3"),
+        ("toString(bool)", ["bool"], [True], ["string"], "true"),
+        ("parseUint(string)", ["string"], ["0xff"], ["uint256"], 255),
+        ("parseBool(string)", ["string"], ["true"], ["bool"], True),
+        ("toBase64(bytes)", ["bytes"], [b"hello"], ["string"], "aGVsbG8="),
+        ("toBase64URL(bytes)", ["bytes"], [b"\xff\xff"], ["string"], "__8"),
+        ("toUppercase(string)", ["string"], ["abc"], ["string"], "ABC"),
+        ("toLowercase(string)", ["string"], ["ABC"], ["string"], "abc"),
+        ("trim(string)", ["string"], ["  hi  "], ["string"], "hi"),
+        (
+            "replace(string,string,string)",
+            ["string", "string", "string"],
+            ["a-b", "-", "+"],
+            ["string"],
+            "a+b",
+        ),
+        (
+            "contains(string,string)",
+            ["string", "string"],
+            ["hello", "ell"],
+            ["bool"],
+            True,
+        ),
+    ],
+)
+def test_pure_convert_cheats(sig, arg_types, args, ret, expected):
+    assert _cheat(sig, arg_types, args, ret)[0] == expected
+
+
+def test_index_of_returns_uint_max_when_absent():
+    assert (
+        _cheat("indexOf(string,string)", ["string", "string"], ["abc", "z"], ["uint256"])[
+            0
+        ]
+        == (1 << 256) - 1
+    )
+
+
+def test_split_returns_the_parts():
+    assert _cheat(
+        "split(string,string)", ["string", "string"], ["a,b,c", ","], ["string[]"]
+    )[0] == ("a", "b", "c")
+
+
+def test_compute_create_address_matches_rlp_rule():
+    # deployer 0x00..00, nonce 0 is a well-known value.
+    got = _cheat(
+        "computeCreateAddress(address,uint256)",
+        ["address", "uint256"],
+        ["0x" + "00" * 20, 0],
+        ["address"],
+    )[0]
+    assert got.lower() == "0xbd770416a3345f91e4b34576cb804a576fa48eb1"
+
+
+def test_compute_create2_default_deployer():
+    got = _cheat(
+        "computeCreate2Address(bytes32,bytes32)",
+        ["bytes32", "bytes32"],
+        [b"\x00" * 32, b"\x00" * 32],
+        ["address"],
+    )[0]
+    assert got.lower() == "0x778a4590f20db0c23cb7c1befc8da04549f2aa95"
+
+
+def test_derive_key_matches_the_standard_test_mnemonic():
+    mnemonic = "test test test test test test test test test test test junk"
+    key = _cheat(
+        "deriveKey(string,uint32)", ["string", "uint32"], [mnemonic, 0], ["uint256"]
+    )[0]
+    assert key == 0xAC0974BEC39A17E36BA4A6B4D238FF944BACB478CBED5EFCAE784D7BF4F2FF80
+
+
+def test_create_wallet_from_key_one():
+    addr, x, y, priv = _cheat(
+        "createWallet(uint256)",
+        ["uint256"],
+        [1],
+        ["address", "uint256", "uint256", "uint256"],
+    )
+    assert addr.lower() == "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+    assert priv == 1
+
+
+def test_create_wallet_from_name_labels_the_address():
+    state = CheatState()
+    addr, *_ = _cheat(
+        "createWallet(string)",
+        ["string"],
+        ["alice"],
+        ["address", "uint256", "uint256", "uint256"],
+        state=state,
+    )
+    label = _cheat("getLabel(address)", ["address"], [addr], ["string"], state=state)[0]
+    assert label == "alice"
+
+
+def test_sign_compact_is_a_valid_2098_signature():
+    r, vs = _cheat(
+        "signCompact(uint256,bytes32)",
+        ["uint256", "bytes32"],
+        [1, b"\x02" * 32],
+        ["bytes32", "bytes32"],
+    )
+    # And plain sign returns the same r with a v/s that reconstructs vs.
+    v, r2, s = _cheat(
+        "sign(uint256,bytes32)",
+        ["uint256", "bytes32"],
+        [1, b"\x02" * 32],
+        ["uint8", "bytes32", "bytes32"],
+    )
+    assert r == r2
+    y_parity = (v - 27) & 1
+    assert int.from_bytes(vs, "big") == int.from_bytes(s, "big") | (y_parity << 255)
+
+
+def test_random_is_reproducible_across_two_states():
+    a = _cheat("randomUint()", [], [], ["uint256"])[0]
+    b = _cheat("randomUint()", [], [], ["uint256"])[0]
+    assert a == b  # default seed is fixed
+
+
+def test_set_seed_changes_the_stream():
+    s1 = CheatState()
+    _cheat("setSeed(uint256)", ["uint256"], [1], [], state=s1)
+    first = _cheat("randomUint()", [], [], ["uint256"], state=s1)[0]
+    s2 = CheatState()
+    _cheat("setSeed(uint256)", ["uint256"], [2], [], state=s2)
+    second = _cheat("randomUint()", [], [], ["uint256"], state=s2)[0]
+    assert first != second
+
+
+def test_random_uint_range_is_inclusive():
+    for _ in range(20):
+        v = _cheat(
+            "randomUint(uint256,uint256)", ["uint256", "uint256"], [10, 12], ["uint256"]
+        )[0]
+        assert 10 <= v <= 12

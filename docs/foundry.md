@@ -157,10 +157,26 @@ entry, `--no-cache` (or `SEVM_NO_CACHE=1`) writes nothing anywhere.
 ## Cheatcodes
 
 Cheatcodes run against live Py-EVM state and `console.log` prints as you step.
-Implemented: `warp roll fee chainId coinbase deal etch store load prank startPrank
-stopPrank addr sign assume label`, plus the full `vm.assert*` family (`assertEq`,
-`assertGt`, `assertApproxEqRel`, the `*Decimal` forms, 116 overloads) that forge-std's own
-`assertEq` calls into.
+Implemented:
+
+- block env: `warp roll fee chainId coinbase prevrandao difficulty`, plus the
+  `getBlockNumber getBlockTimestamp getChainId` readers.
+- account state: `deal etch store load getNonce setNonce setNonceUnsafe resetNonce warmSlot`.
+- identity: `prank startPrank stopPrank label getLabel`, including the two- and three-arg
+  pranks that also rewrite `tx.origin`.
+- keys and wallets: `addr sign signCompact deriveKey rememberKey createWallet`.
+- environment: the whole `vm.env*` family (`envBytes envUint envInt envAddress envBool
+  envBytes32 envString`, their `(name, delimiter)` array forms, `envOr`, `envExists`,
+  `setEnv`), reading the process environment exactly as forge does.
+- pure transforms: `toString parseUint parseInt parseBool parseAddress parseBytes
+  parseBytes32 toBase64 toBase64URL toLowercase toUppercase trim replace contains indexOf
+  split computeCreateAddress computeCreate2Address`.
+- randomness (seeded, reproducible; reseed with `setSeed`): `randomUint randomInt
+  randomAddress randomBool randomBytes randomBytes4 randomBytes8`.
+- `assume`, and the full `vm.assert*` family (`assertEq`, `assertGt`, `assertApproxEqRel`,
+  the `*Decimal` forms, 116 overloads) that forge-std's own `assertEq` calls into.
+- gas-metering knobs (`pauseGasMetering resumeGasMetering resetGasMetering`) and `skip` are
+  accepted as no-ops, since sevm meters gas itself and produces no gas snapshots.
 
 A failed assertion stops the debugger where it broke, with the comparison:
 
@@ -186,5 +202,9 @@ Interactive arguments are plain literals, not Solidity expressions. `help cheatc
 the implemented set, generated from the registry so it cannot drift. `help foundry` covers
 project resolution and installs.
 
-**Not yet supported:** `expectRevert`, `expectEmit`, `expectCall`, `mockCall`, `ffi`,
-forking, and fuzz or invariant argument generation.
+**Not yet supported:** the expectation and mocking cheats (`expectRevert`, `expectEmit`,
+`expectCall`, `mockCall`), `ffi`, state snapshots (`snapshotState`/`revertToState`), forking
+and RPC (`createFork`, `rollFork`, `rpc`), filesystem and JSON/TOML cheats (`readFile`,
+`writeFile`, `parseJson`, `serialize*`), broadcast/script cheats, and fuzz or invariant
+argument generation. An unimplemented selector reverts the calling contract with a clear
+`unimplemented cheatcode` message rather than passing silently.
