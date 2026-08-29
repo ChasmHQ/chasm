@@ -367,7 +367,8 @@ class MemoryPane(Pane):
 
     The EVM works in 32-byte words, so grouping in 8-byte giants (matching `x/4xg`)
     reads as four columns instead of thirty-two loose bytes. How many fit per row is
-    decided by pane width, since four giants need 75 columns and the pane rarely is.
+    decided by pane width, and a giant costs its 16 hex digits plus the 8 characters of
+    ASCII beside it, so four need 108 columns and the pane rarely has them.
     """
 
     TITLE = "MEMORY"
@@ -387,10 +388,21 @@ class MemoryPane(Pane):
         address_width = 7  # "0xffff:"
         giant_width = self.GIANT * 2
         budget = width - address_width - 1
-        per_row = max(1, min(4, (budget + 1) // (giant_width + 1)))
+        # A giant is packed together with the 8 ASCII characters that belong to it,
+        # rather than the preview taking whatever the hex leaves: a string is what that
+        # column is read for, and `flag{hereyoug...` cut two characters short of its `}`
+        # is worse than one giant less per row. Only a pane too narrow for even one
+        # giant and its preview falls back to packing hex first, ellipsising the rest.
+        with_note = giant_width + 1 + self.GIANT
+        if budget >= with_note:
+            per_row = min(4, budget // with_note)
+            note_width = per_row * self.GIANT
+            show_notes = True
+        else:
+            per_row = max(1, min(4, (budget + 1) // (giant_width + 1)))
+            note_width = budget - per_row * giant_width - per_row
+            show_notes = note_width >= 6
         hex_width = per_row * giant_width + (per_row - 1)
-        note_width = budget - hex_width - 1
-        show_notes = note_width >= 6
         step = per_row * self.GIANT
 
         out: list[Content] = []

@@ -54,7 +54,7 @@ Screen {
 
 #disasm {
     scrollbar-size: 1 1;
-    width: 27%;
+    width: 25%;
     border: round $warning;
     border-title-color: $warning;
     padding: 0 1;
@@ -63,17 +63,19 @@ Screen {
 /* The stack names the frame's locals, so it needs room for a value AND a label. */
 #stack {
     scrollbar-size: 1 1;
-    width: 33%;
+    width: 31%;
     border: round $accent;
     border-title-color: $accent;
     padding: 0 1;
 }
 
 /* MEMORY shows 8-byte giant words, so it wants the widest share it can get: every
-   extra 17 columns is one more word per row. */
+   extra 25 columns is one more word per row, hex plus the ASCII beside it. The four
+   points over disasm and stack, whose rows are short, are what keeps a second word on
+   the row at 150 columns instead of dropping to one. */
 #memory {
     scrollbar-size: 1 1;
-    width: 40%;
+    width: 44%;
     border: round $primary;
     border-title-color: $primary;
     padding: 0 1;

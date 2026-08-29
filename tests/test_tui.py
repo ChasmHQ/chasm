@@ -421,6 +421,27 @@ def test_memory_pane_renders_giant_words(bank):
     assert "free mem ptr" in text
 
 
+def test_memory_preview_is_never_cut_short(bank):
+    """The ASCII column shows every byte of its row or the pane shows fewer bytes.
+
+    A preview ellipsised mid-string is worse than a narrower row: `flag{hereyoug...`
+    reads as the whole value and hides where the string actually ends.
+    """
+    session, proj_, app, size = tui_app(bank, size=(230, 46))
+
+    async def body(pilot):
+        await stop_at_credit(app, pilot, proj_)
+        app.run_command('mstore(0x50, "flag{hereyougo}")')
+        await asyncio.sleep(1.5)
+        await pilot.pause()
+        return screen_text(app)
+
+    text = run_tui(session, app, size, body)
+    row = next(line for line in text.splitlines() if "0x0050:" in line)
+    assert "666c61677b686572 65796f75676f7d00" in row
+    assert "flag{hereyougo}" in row
+
+
 def test_mouse_is_on_by_default_and_can_be_turned_off():
     """Panes render Content, which Textual can select, so the mouse is worth having."""
     from sevm.cli import build_parser

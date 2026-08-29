@@ -201,7 +201,7 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (747 tests; ~2.5 min, solc compile is the slow part)
+uv run pytest -q        # test suite (751 tests; ~2.5 min, solc compile is the slow part)
 SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
