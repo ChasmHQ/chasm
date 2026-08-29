@@ -90,6 +90,23 @@ registered programmatically in `cheatcodes/assertions.py` from an op x type matr
 `family` so `help cheatcodes` prints one row instead of 116. They implement the comparison
 for real: the `*Decimal` and `*ApproxEq*` forms are called even when the assertion holds.
 
+Evaluating an expression is two solc invocations, and both are kept off the whole project.
+`Evaluator._closure` walks the ASTs to the frame source's import closure and sends only
+that, because Solidity resolves names per source unit: a source the contract does not
+import could not have been named, so solc would only have parsed it. `outputSelection`
+narrows to the single contract read back, dropping codegen for the rest of a library.
+On a 22-source forge-std project, evaluating inside a contract that imports nothing goes
+from ~710ms to ~28ms. Inside the test contract itself the closure is nearly the whole
+project, so the cost stands.
+
+The second invocation is skipped outright for a bare identifier. `Evaluator._known_type`
+takes a bound local's type from the parameter sevm declares for it and a state variable's
+from solc's `typeString` in the AST, searching bindings first and then
+`linearizedBaseContracts`, which is the order Solidity itself shadows in. Both strings are
+what the probe's diagnostic would have named, so this is a lookup and not a second type
+checker. `test_known_type_agrees_with_the_probe` holds it to that, and `_compiled` falls
+back to the probe if a type ever fails to compile.
+
 A Yul builtin typed at the prompt (`mstore(0x80, 1)`, or the explicit `asm ...`) is parsed
 by `assembly/parser.py` and executed by Py-EVM's own opcode functions against the paused
 computation: arguments pushed in EVM order, `opcode_fn(computation=...)` called, result
@@ -183,7 +200,7 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (742 tests; ~2.5 min, solc compile is the slow part)
+uv run pytest -q        # test suite (747 tests; ~2.5 min, solc compile is the slow part)
 SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
@@ -296,7 +313,8 @@ rather than surfacing as "unimplemented cheatcode" at run time.
 
 1. The `next` exemption for a function entering its own body.
 2. Inject eval code at the artifact's own `source_range`, not an arbitrary offset.
-3. Probe expression types with an unreachable struct, not `uint256`.
+3. Probe expression types with an unreachable struct, not `uint256`. The AST fast path
+   in `_known_type` is only safe because it reports the same string the probe would.
 4. Choose the snapped breakpoint line across *all* artifacts before collecting pcs.
 5. Truncate TUI cells with Rich `no_wrap` columns, not by hand.
 6. Run the unknown-verb fallback (`_not_a_command`) inside `execute()`'s error boundary.
@@ -327,7 +345,7 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 742 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 747 tests pass as of
 2026-08-29 (4 more with `SEVM_NETWORK_TESTS=1`), covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and
 remapping derivation, the assertion engine, the Yul assembly surface, the build cache and
