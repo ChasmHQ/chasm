@@ -97,6 +97,14 @@ read off the top, then the stack restored by slice-assignment (never rebinding
 reported and then handed back; memory expansion is kept. Yul's own exclusions (`jump`,
 `pc`, `push*`, `dup*`, `swap*`) plus the frame terminators are refused with a reason.
 
+A cheat argument typed at the prompt is a literal when it reads as one and a Solidity
+expression when it does not: `CommandProcessor._cheat_arg` sends the latter through the
+evaluator, so only that path pays for a compile. An evaluated argument keeps solc's ABI
+type on its `CheatArg`, which selects the overload outright, while a literal is still ranked
+against the declared types (`_type_rank`) because `1` fits `bool` as readily as `uint256`.
+Coercion is deliberately strict for `bool` and `string`: `bool("alcie")` is `True`, so a
+loose one would drop a mistyped name into a bool overload and pass.
+
 `help assembly` and `help cheatcodes` are generated at import time from the builtin table
 and the cheat registry, so adding a builtin, or a `@_cheat(..., doc="...")`, documents
 itself. A cheat left without a `doc` fails the suite rather than quietly vanishing from
@@ -174,7 +182,7 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (702 tests; ~2.5 min, solc compile is the slow part)
+uv run pytest -q        # test suite (726 tests; ~2.5 min, solc compile is the slow part)
 SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
@@ -312,7 +320,7 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 702 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 726 tests pass as of
 2026-08-29 (4 more with `SEVM_NETWORK_TESTS=1`), covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and
 remapping derivation, the assertion engine, the Yul assembly surface, the build cache and

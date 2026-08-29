@@ -196,12 +196,40 @@ Fire one at the prompt against the frame you are stopped in:
 (sevm) vm.warp(12345)
 vm.warp -> ok
 (sevm) p block.timestamp
-$2 = 12345  (uint256)
+$1 = 12345  (uint256)
 ```
 
-Interactive arguments are plain literals, not Solidity expressions. `help cheatcodes` lists
-the implemented set, generated from the registry so it cannot drift. `help foundry` covers
-project resolution and installs.
+An argument is a literal (`12345`, `5 ether`, `0xcafe`, `true`, `"a string"`) when it reads
+as one, and otherwise a Solidity expression evaluated against the paused frame, exactly as
+`p` evaluates one:
+
+```bash
+(sevm) vm.deal(alice, 5 ether)
+vm.deal -> ok
+(sevm) p alice.balance
+$2 = 5000000000000000000 (5 ether)  (uint256)
+(sevm) vm.label(bank.owner(), "owner")
+vm.label -> ok
+(sevm) vm.getLabel(bank.owner())
+vm.getLabel -> owner
+```
+
+Only the expression path compiles, so a literal argument costs nothing. Solc's type for an
+evaluated argument also picks the overload outright, where a bare literal has to be ranked
+against the declared types (`1` fits `bool` as readily as `uint256`). A short hex literal
+pads to an address, the way Solidity's own `address(0xcafe)` does, and text solc rejects
+falls back to being a plain string, which is how an unquoted word still reaches a `string`
+parameter. If that does not fit either, the error names the argument and carries solc's
+reason:
+
+```bash
+(sevm) vm.prank(alcie)
+error: vm.prank: argument 1 (alcie) is not a valid address (Undeclared identifier. Did you mean "alice"? (in
+`alcie`))
+```
+
+`help cheatcodes` lists the implemented set, generated from the registry so it cannot drift.
+`help foundry` covers project resolution and installs.
 
 **Not yet supported:** the expectation and mocking cheats (`expectRevert`, `expectEmit`,
 `expectCall`, `mockCall`), `ffi`, state snapshots (`snapshotState`/`revertToState`), forking

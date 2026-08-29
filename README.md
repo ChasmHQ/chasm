@@ -447,11 +447,28 @@ against the frame you are stopped in:
 vm.warp -> ok
 (sevm) p block.timestamp
 $1 = 12345  (uint256)
+(sevm) vm.deal(alice, 5 ether)
+vm.deal -> ok
+(sevm) p alice.balance
+$2 = 5000000000000000000 (5 ether)  (uint256)
+(sevm) vm.prank(address(0xcafe))
+vm.prank -> ok
+```
+
+An argument is either a literal (`12345`, `5 ether`, `0xcafe`, `true`, `"a string"`) or a
+Solidity expression, so a local, a getter and a cast all work. A short hex value pads to an
+address the way Solidity's own `address(0xcafe)` does. When nothing fits, the error names
+the argument and keeps solc's reason:
+
+```bash
+(sevm) vm.prank(alcie)
+error: vm.prank: argument 1 (alcie) is not a valid address (Undeclared identifier. Did you mean "alice"? (in
+`alcie`))
 ```
 
 Implemented: `warp roll fee chainId coinbase deal etch store load prank startPrank
 stopPrank addr sign assume label`, plus the `vm.assert*` family. `console.log` prints as you
-step. Interactive arguments are plain literals, not Solidity expressions.
+step.
 
 Not yet supported: `expectRevert`, `expectEmit`, `expectCall`, `mockCall`, `ffi`, forking,
 and fuzz or invariant argument generation.
