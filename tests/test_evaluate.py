@@ -7,7 +7,8 @@ from harness import (
     line_of,
 )
 
-from sevm.evaluate import rewrite_msg
+from sevm.compile import compile_standard
+from sevm.evaluate import Evaluator, rewrite_msg
 from sevm.session import SessionError, StepMode
 
 
@@ -143,3 +144,36 @@ def test_evaluate_reads_uncommitted_mid_transaction_state(deposit_debugger):
     dbg.step(StepMode.RUN)
     # balances[] was written on the previous line, inside this uncommitted transaction.
     assert dbg.session.inspect("evaluate", "balances[msg.sender]").value > 0
+
+
+def test_eval_compiles_only_the_import_closure(token_project):
+    """Sources the frame's contract cannot name never reach solc."""
+    evaluator = Evaluator(token_project)
+    token = token_project.artifacts["src/Token.sol:Token"]
+    test = token_project.artifacts["test/Token.t.sol:TokenTest"]
+
+    closure = evaluator._closure(token.source_key)
+    assert closure == {token.source_key}
+    assert len(closure) < len(token_project.sources)
+    assert evaluator._sources_with(token, "owner", "address").keys() == closure
+
+    # The test contract really does need forge-std, so its closure keeps it.
+    assert "lib/forge-std/src/Test.sol" in evaluator._closure(test.source_key)
+
+
+def test_narrowing_does_not_change_the_compiled_code(token_project):
+    """The narrowed compile must be byte-for-byte what the whole-project one produced."""
+    evaluator = Evaluator(token_project)
+    token = token_project.artifacts["src/Token.sol:Token"]
+    narrow, _ = evaluator._compiled(token, "balanceOf[owner]")
+
+    wide = compile_standard(
+        evaluator._sources_with(token, "balanceOf[owner]", "uint256")
+        | {k: s.text for k, s in token_project.sources.items() if k != token.source_key},
+        solc_version=token_project.solc_version,
+        optimize=False,
+        output_selection={"*": {"*": ["evm.deployedBytecode.object"]}},
+        remappings=token_project.remappings or None,
+    )
+    expected = wide["contracts"][token.source_key][token.name]
+    assert narrow.hex() == expected["evm"]["deployedBytecode"]["object"]

@@ -53,9 +53,39 @@ class Evaluator:
         self.project = project
         self._code_cache: dict[tuple[str, str, str], tuple[bytes, str]] = {}
         self._type_cache: dict[tuple[str, str, str], str | None] = {}
+        self._closure_cache: dict[str, frozenset[str] | None] = {}
         self.compile_count = 0
 
     # -- compilation --------------------------------------------------------
+
+    def _closure(self, source_key: str) -> frozenset[str] | None:
+        """The source keys reachable from `source_key` by imports.
+
+        Solidity resolves names per source unit, so a source outside the closure could
+        not have been named by the expression anyway: sending it to solc buys nothing
+        and costs a parse. On a forge-std project that is most of the compile. None when
+        the import graph cannot be read off the ASTs, which sends everything instead.
+        """
+        if source_key in self._closure_cache:
+            return self._closure_cache[source_key]
+        seen: set[str] = set()
+        queue = [source_key]
+        while queue:
+            key = queue.pop()
+            if key in seen:
+                continue
+            ast = self.project.asts.get(key)
+            if ast is None or key not in self.project.sources:
+                self._closure_cache[source_key] = None
+                return None
+            seen.add(key)
+            queue.extend(
+                node["absolutePath"]
+                for node in ast.get("nodes", [])
+                if node.get("nodeType") == "ImportDirective" and node.get("absolutePath")
+            )
+        self._closure_cache[source_key] = frozenset(seen)
+        return self._closure_cache[source_key]
 
     def _sources_with(
         self,
@@ -65,7 +95,12 @@ class Evaluator:
         probe: bool = False,
         parameters: str = "",
     ) -> dict[str, str]:
-        sources = {key: src.text for key, src in self.project.sources.items()}
+        keys = self._closure(artifact.source_key)
+        sources = {
+            key: src.text
+            for key, src in self.project.sources.items()
+            if keys is None or key in keys
+        }
         if artifact.source_key not in sources:
             raise EvalError(f"no source available for {artifact.qualified_name}")
         sources[artifact.source_key] = _inject(
@@ -93,7 +128,11 @@ class Evaluator:
             ),
             solc_version=self.project.solc_version,
             optimize=False,
-            output_selection={"*": {"*": ["evm.deployedBytecode.object"]}},
+            # Only the one contract is ever read back, and codegen for the rest of a
+            # library is the other half of the compile.
+            output_selection={
+                artifact.source_key: {artifact.name: ["evm.deployedBytecode.object"]}
+            },
             remappings=self.project.remappings or None,
         )
 
