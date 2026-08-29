@@ -518,6 +518,21 @@ $3 = 5000000000000000 (0.005000 ether)  (uint256)
 The full set is `$pc` `$gas` `$gasused` `$depth` `$sp` `$step` `$stack[N]` `$mem[0x40]`
 `$storage[1]`, plus the value history `$1` `$2` and so on.
 
+Selectors come out of the bytecode rather than the ABI, so a 4-byte value from a trace can
+be traced to the pc it routes to even when nothing here declares it:
+
+```bash
+(sevm) sig transfer(address,uint256)
+transfer(address,uint256)  0xa9059cbb  (hashed here; not in this ABI)
+(sevm) info address 0xa9059cbb
+selector     0xa9059cbb
+the dispatcher never tests this selector: a call carrying it lands in the fallback
+```
+
+When the dispatcher does test it, `info address` reports the wrapper it jumps to and the
+implementation's JUMPDEST behind it, which is the pc every caller converges on. See
+[docs/commands.md](docs/commands.md#selectors-and-the-dispatcher).
+
 ### Compile a project
 
 `sevm compile` runs the same build the debugger does and reports what it produced, which is

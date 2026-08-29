@@ -1,13 +1,9 @@
 """The external dispatcher, read back out of runtime bytecode.
 
-`b withdraw` breaks in the *body*, but the pc a call actually arrives at is the
-selector's external wrapper, and the wrapper is not the implementation: solc emits it as
-`push return tag; decode the arguments; push the implementation tag; JUMP`. This module
-walks that shape to recover the tag, which is the pc every caller of that function
-converges on, including one arriving through a proxy or with no source at all.
-
-Analysis is static and bytecode-only, so it works on any deployed contract, matching what
-`cast disassemble` plus a hand-written scan gives you.
+A call arrives at the selector's external wrapper, not at the implementation: solc emits
+the wrapper as `push return tag; decode calldata; push the implementation tag; JUMP`.
+Walking that shape recovers the tag, which is the pc every caller of the function
+converges on. Static and bytecode-only, so it holds for code with no artifact.
 """
 
 from __future__ import annotations
@@ -80,12 +76,11 @@ def find_selector(dis: Disassembly, selector: int) -> Entry | None:
 
 
 def entries(dis: Disassembly) -> list[Entry]:
-    """Every selector the dispatcher tests, in bytecode order.
+    """Every selector the dispatcher tests, in bytecode order. For code with no ABI.
 
-    Best-effort, for code with no ABI to hand: it reads the comparison shape rather than
-    the dispatcher's bounds, so it takes only `PUSH4` to keep a `PUSH1 0x01; DUP2; EQ`
-    inside a memory-copy helper out of the list. With an artifact, drive it from
-    `method_identifiers` and call `find_selector` instead.
+    Reads the comparison shape, not the dispatcher's bounds, so it takes only `PUSH4`:
+    a memory-copy helper's `PUSH1 0x01; DUP2; EQ` is the same shape four instructions
+    from a JUMPI. With an artifact, drive `find_selector` from `method_identifiers`.
     """
     found: dict[int, Entry] = {}
     for n, ins in enumerate(dis.instructions):
@@ -107,11 +102,9 @@ def entries(dis: Disassembly) -> list[Entry]:
 def _follow_wrapper(dis: Disassembly, wrapper: int) -> tuple[int | None, int | None, str]:
     """Walk the wrapper from its JUMPDEST to the tag it calls.
 
-    Two steps, both keyed on the return tag. The wrapper pushes it first, before any
-    argument decoding, and the implementation is whichever call comes back to it: the
-    decoder calls that precede it return to their own tags, and the return-value encoder
-    that follows is reached after it. Taking the last call before the tag instead would
-    read a payable guard's revert stub as the end of the wrapper.
+    Keyed on the return tag, which the wrapper pushes first: the implementation is
+    whichever call comes back to it. Argument decoders return to their own tags, and the
+    return-value encoder runs after it.
     """
     ret, index = _return_tag(dis, wrapper)
     if ret is None:
@@ -134,8 +127,8 @@ def _return_tag(dis: Disassembly, wrapper: int) -> tuple[int | None, int]:
     """The first tag the wrapper pushes as a plain value, and where it sits.
 
     A non-payable function opens with `CALLVALUE; DUP1; ISZERO; PUSH <ok>; JUMPI` over a
-    revert stub, so the walk takes that branch rather than falling into the stub and
-    reading its REVERT as the end of the wrapper.
+    revert stub. Take that branch: falling through reads the stub's REVERT as the end of
+    the wrapper and loses the call.
     """
     index = dis.index_of(wrapper)
     if index is None:

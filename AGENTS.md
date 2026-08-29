@@ -183,7 +183,7 @@ uv run sevm --help      # run the CLI
 uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
 uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
 uv run sevm compile tests/contracts                                  # what sevm sees
-uv run pytest -q        # test suite (726 tests; ~2.5 min, solc compile is the slow part)
+uv run pytest -q        # test suite (742 tests; ~2.5 min, solc compile is the slow part)
 SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
@@ -270,7 +270,9 @@ transaction, which is where the prank and fee-settlement bugs lived. `test_found
 also covers the Foundry path itself; `test_libs*.py` cover
 dependency resolution, the compile pipeline around it, and the network-only equivalents;
 `test_cache.py` covers the build cache, and proves a partial build is field-for-field the
-same Project as a full one. `test_layout.py` guards the package tree itself: every module
+same Project as a full one. `test_dispatch.py` covers the selector layer both ways: every
+selector in every fixture contract has to route to the line that declares it, and breaking
+on the address it reports has to stop the VM there. `test_layout.py` guards the package tree itself: every module
 imports, every relative import names a real sibling (a deferred `from .x import y` inside a
 function body survives its module moving a level deeper and fails only at run time), and
 every package `__init__` still maps its own modules. The suite never touches
@@ -313,6 +315,10 @@ rather than surfacing as "unimplemented cheatcode" at run time.
 11. Put `base_fee_per_gas` back before the transaction settles. The coinbase is paid
     `gas_used * (max_fee_per_gas - base_fee_per_gas)`, so a `vm.fee` above the
     transaction's own cap pays a negative fee and Py-EVM rejects the negative balance.
+12. Walk an external wrapper through the payable guard's `JUMPI`, and key the
+    implementation on the return tag the wrapper pushes first. Falling through the guard
+    reads its revert stub as the end of the wrapper, so every non-payable function
+    reports no implementation while `deposit()` looks fine.
 
 Underlying Py-EVM monkeypatch gotchas (inherited from the tracer, still apply): restore
 the raw classmethod descriptor not the bound method; stack items are `int` or `bytes`;
@@ -321,8 +327,9 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 726 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 742 tests pass as of
 2026-08-29 (4 more with `SEVM_NETWORK_TESTS=1`), covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and
 remapping derivation, the assertion engine, the Yul assembly surface, the build cache and
-its artifacts, the snapshot refresh after a mutation, and the package layout itself.
+its artifacts, the snapshot refresh after a mutation, the dispatcher and selector layer,
+and the package layout itself.

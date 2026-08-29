@@ -43,9 +43,10 @@ HELP_SUMMARY = """
   [cyan]bt[/cyan] / [cyan]f[/cyan] N / [cyan]up[/cyan] / [cyan]down[/cyan]   call stack, EVM and Solidity frames
   [cyan]l[/cyan]ist [LINE]                  source listing
   [cyan]disas[/cyan]semble            disassembly around the pc
+  [cyan]sig[/cyan] FUNC               the signature and 4-byte selector: [dim]sig withdraw[/dim]
   [cyan]copy[/cyan] [CMD]                  put a command's output on the system clipboard
-  [cyan]i[/cyan]nfo TOPIC             registers, breakpoints, frame, args, locals,
-                         storage, gas, logs, sources, functions [dim](help info)[/dim]
+  [cyan]i[/cyan]nfo TOPIC             registers, breakpoints, frame, args, locals, storage,
+                         gas, logs, sources, functions, address [dim](help info)[/dim]
 
 [bold]Mutation[/bold]
   [cyan]set var[/cyan] X = V          write storage through Solidity: [dim]set var balances[a] = 5 ether[/dim]
@@ -78,7 +79,7 @@ HELP_SUMMARY = """
   A pane you scroll stays where you left it; scroll back, or click the marker in
   its border, to have it follow execution again.
 
-[dim]help <topic> for detail. topics: breakpoints, print, memory, mutation, assembly, cheatcodes, foundry, gas, locals, info[/dim]
+[dim]help <topic> for detail. topics: breakpoints, print, memory, mutation, assembly, cheatcodes, foundry, gas, locals, info, selectors[/dim]
 """
 
 HELP_TOPICS = {
@@ -101,6 +102,30 @@ HELP_TOPICS = {
                          [dim]abbreviated `info b`; `info watchpoints` is the same list[/dim]
   info sources           the compiled sources and their file ids
   info functions [PAT]   every function, with visibility and line, filtered by PAT
+  info address FUNC      the route a call takes in: the dispatcher's test, the external
+                         wrapper, and the internal JUMPDEST the wrapper calls, which is
+                         the pc every caller of FUNC converges on
+                         [dim]no argument lists every selector in the contract[/dim]
+                         [dim]see [/dim][cyan]help selectors[/cyan]
+""",
+    "selectors": """
+[bold]Selectors and the dispatcher[/bold]
+  sig withdraw              the signature and selector, by name, for every overload
+  sig withdraw(uint256)     a signature, hashed whether or not this ABI declares it
+  sig 0x2e1a7d4d            the reverse lookup, against the contract in view
+  sig                       every function the contract declares
+  info address withdraw     where that selector routes to in the bytecode
+  info address 0x2e1a7d4d   the same, for a selector no source here explains
+
+A call arrives at the external wrapper, which checks callvalue, decodes calldata, then
+jumps to the implementation and comes back to encode the return value. `b withdraw`
+breaks on the body's first source line; `info address` reports the wrapper and the
+implementation's JUMPDEST, which is the pc every caller converges on, so
+`b *0x544` catches a proxy, a raw-calldata call and an internal call alike.
+
+Both work on code sevm never compiled: a target already qualified as a signature or a
+selector is read straight off the running bytecode, ABI or no ABI. Add `Contract.` to
+ask about a contract other than the one in view.
 """,
     "breakpoints": """
 [bold]Breakpoints[/bold]

@@ -1,7 +1,7 @@
 """`info <topic>`: the state of the machine, the frame, and the contract.
 
-`registers`, `frame`, `args`, `locals` and `breakpoints` are gdb's. `storage`, `gas`,
-`logs`, `sources` and `functions` have no gdb equivalent and are ours.
+`registers`, `frame`, `args`, `locals`, `address` and `breakpoints` are gdb's. `storage`,
+`gas`, `logs`, `sources` and `functions` have no gdb equivalent and are ours.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from ..decode import decode_calldata
 from ..frames import FrameSnapshot
 from .render import _addr, _calldata, _escape, _event_name, _short, _wei
 from .result import CommandResult
+from .symbols import info_address
 
 if TYPE_CHECKING:
     from .processor import CommandProcessor
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 def cmd_info(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
     if not args:
         return CommandResult(
-            error="usage: info <registers|breakpoints|frame|args|locals|storage|gas|logs|sources|functions|watchpoints>"
+            error="usage: info <registers|breakpoints|frame|args|locals|storage|gas|logs|sources|functions|address|watchpoints>"
         )
     topic = args[0]
     table = {
@@ -40,6 +41,7 @@ def cmd_info(proc: CommandProcessor, args: list[str], rest: str) -> CommandResul
         "logs": _info_logs,
         "sources": _info_sources,
         "functions": _info_functions,
+        "address": info_address,
     }
     handler = table.get(topic)
     if handler is None:
@@ -247,12 +249,12 @@ def _info_gas(proc: CommandProcessor, args: list[str]) -> CommandResult:
 
 def _info_logs(proc: CommandProcessor, args: list[str]) -> CommandResult:
     snap = proc.require_stop()
-    entries = proc.inspect("logs")
-    if not entries:
+    records = proc.inspect("logs")
+    if not records:
         return CommandResult().add("[dim]no events emitted yet in this frame[/dim]")
     art = proc.project.artifact(snap.contract_name) if snap.contract_name else None
     result = CommandResult()
-    for address, topics, data in entries:
+    for address, topics, data in records:
         name = _event_name(art.abi if art else [], topics)
         result.add(f"[cyan]{name}[/cyan] [dim]from {_short(address)}[/dim]")
         for i, topic in enumerate(topics):

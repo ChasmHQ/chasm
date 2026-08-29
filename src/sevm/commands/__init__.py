@@ -8,6 +8,7 @@ Where things live:
   breaking.py    break, tbreak, delete, watch and friends
   inspecting.py  print, call, x, backtrace, frame, list, disassemble
   info.py        `info <topic>`
+  symbols.py     selectors, signatures, and the dispatcher route: `sig`, `info address`
   mutation.py    set, asm, jump
   misc.py        copy, help, quit
   render.py      value -> Rich markup

@@ -35,7 +35,7 @@ from ..decode import StorageDecoder
 from ..evaluate import EvalError, EvalResult, Evaluator
 from ..frames import FrameSnapshot
 from ..session import DebugSession, Finished, Paused, SessionError, StepMode
-from . import breaking, execution, info, inspecting, misc, mutation
+from . import breaking, execution, info, inspecting, misc, mutation, symbols
 from .parsing import (
     _CALL_SHAPED,
     _CONVENIENCE,
@@ -92,7 +92,7 @@ class CommandProcessor:
     # Each group module owns its own verb names next to the implementations, so adding a
     # command is one function plus one line, in one file. Order decides who wins a
     # duplicate; there are none today.
-    _GROUPS = (execution, breaking, inspecting, info, mutation, misc)
+    _GROUPS = (execution, breaking, inspecting, info, symbols, mutation, misc)
 
     def _register(self) -> None:
         table: dict[str, Callable[[list[str], str], CommandResult]] = {}

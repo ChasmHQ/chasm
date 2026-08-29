@@ -75,6 +75,8 @@ as `reverted: "..."`, `panic 0x11`, or a custom error with its arguments.
 | `info registers` | pc, gas + refund, depth, stack height, memory and calldata sizes, `msg.*`, `tx.origin`, static flag |
 | `info args` / `info locals` / `info storage` | frame args / locals / state vars, decoded |
 | `info gas` | limit, used, refund, and a profile by source line and by opcode |
+| `sig FUNC` | the signature and 4-byte selector, by name, signature or selector |
+| `info address FUNC` | where that selector routes to in the bytecode |
 | `info frame` / `info logs` / `info sources` / `info functions` | the rest |
 
 `info storage` decodes the whole layout, packed slots included:
@@ -88,6 +90,52 @@ Bank at 0x4f9da333dcf4e5a53772791b95c161b2fc041859
   slot   2+0  balances         mapping(address => uint256) = <mapping: query a key> (cold)
   slot   4+0  history          uint256[]              = [0 items] [] (cold)
   slot   5+0  name             string                 = "bank" (cold)
+```
+
+## Selectors and the dispatcher
+
+`b withdraw` breaks on the first line of the body. The pc a *call* arrives at is somewhere
+else: the dispatcher tests the selector, jumps to an external wrapper that checks callvalue
+and decodes calldata, and only then jumps to the implementation. `info address` reports all
+three, and the implementation's JUMPDEST is the pc every caller converges on, so breaking
+there catches a proxy, a raw-calldata call and an internal call alike:
+
+```bash
+(sevm) sig balances
+balances(address)  0x27e235e3
+(sevm) info address balances
+Bank.balances(address)
+selector     0x27e235e3
+dispatch     0x0096  where the dispatcher compares it
+wrapper      0x0167  the external entry: guards, then decodes calldata
+internal     0x052f  src/Bank.sol:17
+break there with `b *0x52f`
+(sevm) b *0x52f
+Breakpoint 4 at pc 0x52f
+(sevm) c
+Breakpoint 4, Bank at src/Bank.sol:17
+  17      mapping(address => uint256) public balances;   // slot 2
+pc 0x052f  JUMPDEST sp 3  gas 29,400,111  step 2027
+(sevm) bt
+-> #0 <compiler-generated> at src/Bank.sol:17
+   #1 Bank at pc 0x18c
+   #2 BankTest.testDeposit() at test/Bank.t.sol:19
+   #3 BankTest at pc 0x19e
+```
+
+Both commands take a name, a canonical signature, a 4-byte selector, or any of those
+qualified as `Contract.name`. A bare `sig` lists every function the contract declares, and
+a bare `info address` adds each one's wrapper and implementation.
+
+Neither needs an ABI. A signature this contract does not declare is hashed, as `cast sig`
+does, and the selector is looked for in the bytecode anyway:
+
+```bash
+(sevm) sig transfer(address,uint256)
+transfer(address,uint256)  0xa9059cbb  (hashed here; not in this ABI)
+(sevm) info address 0xa9059cbb
+selector     0xa9059cbb
+the dispatcher never tests this selector: a call carrying it lands in the fallback
 ```
 
 ## Mutation
