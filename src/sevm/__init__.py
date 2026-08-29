@@ -19,6 +19,7 @@ Where things live:
   clipboard.py   copying through the platform's own tool
   decode.py      storage layout, calldata and revert decoding
   disasm.py      the opcode table and disassembler
+  dispatch.py    the external dispatcher read back out of runtime bytecode
   foundry.py     the Foundry test runner
   frames.py      EVM and Solidity frames, and the snapshot handed to the UI
   libs.py        dependency resolution: imports -> repo -> clone -> remapping

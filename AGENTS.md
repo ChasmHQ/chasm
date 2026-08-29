@@ -41,7 +41,8 @@ sevm/
 │   ├── artifacts.py      # forge-shaped `out/sevm/<File.sol>/<Contract>.json`
 │   ├── libs.py           # dependency resolution: imports -> repo -> clone -> remapping
 │   ├── foundry.py        # Foundry test runner: resolve project, discover, driver
-│   ├── frames.py, srcmap.py, decode.py, disasm.py, breakpoints.py, clipboard.py
+│   ├── frames.py, srcmap.py, decode.py, disasm.py, dispatch.py
+│   ├── breakpoints.py, clipboard.py
 │   └── console.py        # plain-text frontend (`--console`)
 ├── tests/                # one file per layer + conftest/harness/tui_harness
 └── examples/             # runnable, self-contained projects
