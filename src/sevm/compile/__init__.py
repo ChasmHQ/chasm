@@ -8,6 +8,7 @@ Where things live:
   model.py            `SourceFile`, `Artifact`, `Project`, and bytecode identity
   solc.py             calling solc, and reading .sol files in
   solcbin.py          finding or downloading a solc binary this machine can run
+  wasm.py             solc's WebAssembly build, for machines no binary runs on
   versions.py         picking the solc version from the sources' pragmas
   foundry_config.py   foundry.toml, remappings, project sources, dependencies
   build.py            `compile_project` / `compile_foundry_project`

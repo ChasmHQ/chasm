@@ -11,8 +11,6 @@ import os
 from collections.abc import Sequence
 from typing import Any
 
-import solcx
-
 from . import solcbin
 from .model import CompileError, SourceFile
 
@@ -110,16 +108,13 @@ def compile_standard(
         "sources": {k: {"content": v} for k, v in sources.items()},
         "settings": settings,
     }
-    try:
-        return solcx.compile_standard(payload, solc_binary=solcbin.ensure(solc_version))
-    except solcx.exceptions.SolcError as exc:
-        raise CompileError(str(exc)) from exc
+    return solcbin.compiler(solc_version).compile(payload)
 
 
-def ensure_solc(version: str = DEFAULT_SOLC_VERSION) -> str:
-    """Path to a solc `version` that runs here, downloading it if the machine lacks one.
+def ensure_solc(version: str = DEFAULT_SOLC_VERSION) -> solcbin.Compiler:
+    """The solc `version` this machine compiles with, downloading it if it lacks one.
 
     Provisioning is `solcbin`'s, not py-solc-x's, which fetches x86-64 whatever the
-    machine is; solcx is still what runs the binary.
+    machine is; solcx is still what runs a native binary.
     """
-    return solcbin.ensure(version)
+    return solcbin.compiler(version)

@@ -45,6 +45,7 @@ import solcx
 from packaging.version import InvalidVersion, Version
 
 from .. import cache
+from . import wasm
 from .model import CompileError
 
 _OFFICIAL = "https://binaries.soliditylang.org"
@@ -73,6 +74,23 @@ _HEADERS = {"User-Agent": "sevm"}
 # Set by `--solc-binary`, and read before anything is looked up or downloaded: on a
 # platform with no published build, a compiler the user already has is the whole answer.
 _override: str | None = None
+
+
+@dataclass(frozen=True)
+class Compiler:
+    """A solc that runs here: a native binary, or soljson.js under a JS runtime."""
+
+    version: str
+    path: str
+    wasm: bool = False
+
+    def compile(self, payload: dict) -> dict:
+        if self.wasm:
+            return wasm.compile_standard(self.path, payload)
+        try:
+            return solcx.compile_standard(payload, solc_binary=self.path)
+        except solcx.exceptions.SolcError as exc:
+            raise CompileError(str(exc)) from exc
 
 
 @dataclass(frozen=True)
@@ -179,6 +197,12 @@ def _sources(key: str) -> list[_Source]:
     if key in ("linux-amd64", "macosx-amd64", "windows-amd64"):
         return [_Source(f"{_OFFICIAL}/{key}/list.json", f"{_OFFICIAL}/{key}", True)]
     return []
+
+
+def _wasm_source() -> _Source:
+    """solc's Emscripten builds, published for every release and every machine."""
+    base = f"{_OFFICIAL}/emscripten-wasm32"
+    return _Source(f"{base}/list.json", base, official=True)
 
 
 def _fetch_json(url: str) -> dict:
@@ -389,6 +413,75 @@ def ensure(version: str) -> str:
     if version_of(path) is None:
         raise CompileError(_will_not_run_message(version, path))
     return path
+
+
+def wasm_index() -> dict[str, Release]:
+    """Emscripten builds, cached like the native lists."""
+    raw = cache.cached_json("solc-index-wasm.json", _fetch_wasm_index)
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        version: Release(version, entry[0], entry[1])
+        for version, entry in raw.items()
+        if isinstance(entry, list) and len(entry) == 2
+    }
+
+
+def _fetch_wasm_index() -> dict[str, list[str]]:
+    return {
+        version: [release.url, release.sha256]
+        for version, release in _releases(_wasm_source()).items()
+    }
+
+
+def wasm_dir() -> str:
+    """soljson.js bundles live in sevm's cache, not `~/.solcx`, which holds binaries."""
+    return os.path.join(cache.user_cache_dir(), "solc-wasm")
+
+
+def ensure_wasm(version: str) -> str:
+    """Path to `version`'s soljson.js, downloading it if the cache lacks it."""
+    target = os.path.join(wasm_dir(), f"soljson-v{version}.js")
+    if os.path.isfile(target):
+        return target
+    release = wasm_index().get(version)
+    if release is None:
+        raise CompileError(f"no WebAssembly build of solc {version} is published")
+    payload = _download(release.url)
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != release.sha256:
+        raise CompileError(
+            f"solc {version} (wasm) failed its checksum ({release.url}): expected "
+            f"{release.sha256}, got {digest}"
+        )
+    os.makedirs(wasm_dir(), exist_ok=True)
+    temporary = f"{target}.{os.getpid()}.tmp"
+    with open(temporary, "wb") as fh:
+        fh.write(payload)
+    os.replace(temporary, target)
+    return target
+
+
+@functools.cache
+def compiler(version: str) -> Compiler:
+    """The solc `version` this machine will actually compile with.
+
+    A native binary whenever one exists and runs; otherwise solc's WebAssembly build,
+    which is the only answer on musl, NixOS and architectures Solidity does not publish
+    for. Cached per process: every compile asks, and answering runs a binary.
+    """
+    try:
+        return Compiler(version, ensure(version))
+    except CompileError as native:
+        if wasm.runtime() is None:
+            raise CompileError(
+                f"{native}\n\nsolc also has a WebAssembly build that runs anywhere, but "
+                "it needs a JS runtime: install node (or name one with SEVM_NODE)."
+            ) from native
+        try:
+            return Compiler(version, ensure_wasm(version), wasm=True)
+        except CompileError as fallback:
+            raise CompileError(f"{native}\n\n{fallback}") from native
 
 
 def _no_build_message(version: str, key: str) -> str:

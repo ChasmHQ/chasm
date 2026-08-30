@@ -31,7 +31,7 @@ sevm/
 │   ├── session/          # the stepping engine: core, patch, stepping, snapshots,
 │   │                     #   framelocals, inspect_ops, code, events
 │   ├── commands/         # the gdb command layer: processor + one module per verb group
-│   ├── compile/          # model, solc, solcbin, versions, foundry_config, build
+│   ├── compile/          # model, solc, solcbin, wasm, versions, foundry_config, build
 │   ├── evaluate/         # bindings, injection, evaluator
 │   ├── assembly/         # builtins, parser, execute
 │   ├── cheatcodes/       # registry, cheats, assertions, args, console
@@ -267,10 +267,11 @@ nowhere but x86_64 until this was untangled. `eth-hash[pycryptodome]` (wheels ev
 is named for the same reason: it is the keccak backend that remains, and web3 requiring it
 today is not a promise it will tomorrow.
 
-The Textual stylesheet `src/sevm/tui/sevm.tcss` is package data loaded relative to
-`app.py`; hatchling includes it in the wheel automatically. If you move or rename it,
-update `CSS_PATH` in `tui/app.py` and re-check `uv build` still bundles it. It is the only
-package data left: forge-std is no longer vendored.
+Two files are package data, both loaded relative to their module and both bundled by
+hatchling automatically: the Textual stylesheet `src/sevm/tui/sevm.tcss` and the node
+driver `src/sevm/compile/soljson.js`. If you move or rename either, update `CSS_PATH` in
+`tui/app.py` or `DRIVER` in `compile/wasm.py`, and re-check `uv build` still bundles it.
+Nothing else is: forge-std is no longer vendored.
 
 solc is fetched on demand into `~/.solcx` (not vendored). Which build to fetch is
 `compile/solcbin.py`'s decision, not py-solc-x's: py-solc-x hardcodes
@@ -284,7 +285,16 @@ cannot run them. An existing `~/.solcx` binary, one of Foundry's under `~/.svm`,
 matching `solc` on PATH is used before anything is downloaded, and `--solc-binary` /
 `SEVM_SOLC` overrides the lot (that binary then also names the version, because it is what
 runs and the version keys the build cache). py-solc-x still *invokes* solc through
-`compile_standard(solc_binary=...)`. Tests and examples use solc 0.8.28.
+`compile_standard(solc_binary=...)`.
+
+Where no native build exists or the one downloaded cannot execute, `compile/wasm.py` runs
+solc's Emscripten build (`soljson.js`, cached under `~/.cache/sevm/solc-wasm/`) through
+node, which is the only option on musl, NixOS and unpublished architectures — it is a JS
+bundle, not a WASI module, so no Python runtime can load it. `SEVM_NODE` names the
+runtime. Output is identical to the native compiler's, which the build cache depends on
+since it is keyed on the solc version and not on the backend, so `solcbin.Compiler` is
+what the rest of the package holds rather than a path. Tests and examples use solc
+0.8.28.
 
 ## Tests
 
@@ -314,7 +324,9 @@ selector in every fixture contract has to route to the line that declares it, an
 on the address it reports has to stop the VM there. `test_solcbin.py` covers solc
 provisioning against faked release lists and downloads: which list each platform and
 version comes from, the checksum gate, and that an already-installed binary (including
-svm's) is preferred to a download. `test_packaging.py` guards `pyproject.toml`: no dependency may
+svm's) is preferred to a download. `test_wasm.py` covers the fallback with a stub runtime
+in place of node, and its one network test compiles a fixture both ways and requires the
+documents to be equal. `test_packaging.py` guards `pyproject.toml`: no dependency may
 ask for the `tester` extra, every package the sources import is declared, and keccak
 answers on the pycryptodome backend. `test_layout.py` guards the package tree itself: every module
 imports, every relative import names a real sibling (a deferred `from .x import y` inside a
@@ -364,6 +376,10 @@ rather than surfacing as "unimplemented cheatcode" at run time.
     implementation on the return tag the wrapper pushes first. Falling through the guard
     reads its revert stub as the end of the wrapper, so every non-payable function
     reports no implementation while `deposit()` looks fine.
+13. Sign builtin declaration ids back when compiling through the wasm build. The
+    Emscripten build serialises solidity's negative ids (`msg` is -15) as unsigned 32-bit,
+    so `referencedDeclaration` comes back as 4294967281 and the two backends' ASTs differ
+    for every builtin reference while bytecode, source maps and layouts match exactly.
 
 Underlying Py-EVM monkeypatch gotchas (inherited from the tracer, still apply): restore
 the raw classmethod descriptor not the bound method; stack items are `int` or `bytes`;
@@ -372,8 +388,8 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 780 tests pass as of
-2026-08-30 (4 more with `SEVM_NETWORK_TESTS=1`), that run on linux/arm64 against a native
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 790 tests pass as of
+2026-08-30 (5 more with `SEVM_NETWORK_TESTS=1`), that run on linux/arm64 against a native
 arm64 solc, covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and
 remapping derivation, the assertion engine, the Yul assembly surface, the build cache and
