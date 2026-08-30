@@ -1,6 +1,6 @@
 # sevm
 
-`sevm` is an interactive EVM playground on Py-EVM, built for red-team dynamic analysis.
+`sevm` is an interactive, gdb-style Solidity/EVM debugger on Py-EVM, built for red-team dynamic analysis.
 
 - **Full control**: Stepping through Solidity is only half of what this debugger does. Here you are `root` on the EVM, free to rewrite state, the stack, memory, storage, and gas while the transaction is still live.
 - **Go low or high level**: Whether you are checking invariants with the source in hand, or dropping into raw EVM to build a jump-oriented programming (JOP) chain from a contract's bytecode, sevm handles both.
@@ -46,11 +46,11 @@ pipx install uv
 uv tool install .
 ```
 
-sevm needs Python 3.10+ and `git`; it downloads solc itself, into `~/.solcx`, picking the
-build for this machine — x86-64 and arm64 Linux, Intel and Apple silicon macOS, and
+sevm needs Python 3.10+ and `git`, and it downloads solc itself, into `~/.solcx`, picking the
+build for this machine. x86-64 and arm64 Linux, Intel and Apple silicon macOS, and
 Windows are all covered, and a solc already installed by Foundry (`~/.svm`) or sitting on
-`PATH` is used instead of a download. Anywhere else — musl systems like Alpine, NixOS,
-an architecture Solidity does not publish for — sevm falls back to solc's WebAssembly
+`PATH` is used instead of a download. Anywhere else, on musl systems like Alpine, NixOS, or
+an architecture Solidity does not publish for, sevm falls back to solc's WebAssembly
 build, which needs `node` on PATH (or named by `SEVM_NODE`). Failing that, point sevm at a
 compiler you have:
 
@@ -136,8 +136,8 @@ sevm run -x 'b _credit' -x c --contracts examples/bank/src examples/debug_bank.p
 
 ### Re-run with new calldata
 
-`reset` re-runs the target script from scratch — a fresh chain, with every breakpoint,
-watchpoint and `display` still armed — and `run [ARGS]` re-runs it with new arguments.
+`reset` re-runs the target script from scratch (a fresh chain, with every breakpoint,
+watchpoint and `display` still armed), and `run [ARGS]` re-runs it with new arguments.
 For a script that takes its calldata as an argument, that is the whole iterate loop in
 one session, without relaunching anything:
 
@@ -150,8 +150,8 @@ pc 0x015c  CALLDATACOPY sp 1->7  gas 29,976,201  step 101
 (sevm) c                        # breakpoint survived the restart
 ```
 
-Every stop ends with a one-line machine echo — pc, opcode, gas, step, and the stack
-height as `old->new` whenever it changed (a `POP` reads `sp 13->12`) — so opcode-level
+Every stop ends with a one-line machine echo, giving pc, opcode, gas, step, and the stack
+height as `old->new` whenever it changed (a `POP` reads `sp 13->12`), so opcode-level
 stepping always shows what the last instruction did to the machine.
 
 Payload hex runs to thousands of characters, past what a Windows console or command line
@@ -389,8 +389,8 @@ Stopped on error: OutOfGas: Out of gas: Needed 2100 - Remaining 67 - Reason: SLO
 ```
 
 The same stop is also the way **out** of an out-of-gas you did not plan: refill the
-meter and continue, and the failed instruction is retried on its original stack —
-the transaction then runs as if it had been sent with the larger limit:
+meter and continue, and the failed instruction is retried on its original stack. The
+transaction then runs as if it had been sent with the larger limit:
 
 ```bash
 (sevm) set $gas = 5000000
@@ -586,7 +586,7 @@ cleared by `forge clean`. A directory with no `foundry.toml` gets nothing writte
 ### Check the environment
 
 `sevm doctor` says which compiler this machine will use, where it came from, and what is
-missing. It downloads nothing — a compiler that is not installed yet is reported as the
+missing. It downloads nothing: a compiler that is not installed yet is reported as the
 URL it would be fetched from:
 
 ```bash
@@ -604,8 +604,8 @@ $ sevm doctor
 ```
 
 Anything that would stop sevm working is marked `!` and makes the command exit non-zero,
-so it doubles as a CI check. `platform` is the build sevm downloads for; `available` is
-what that platform publishes. Where nothing is published, `wasm solc` is what will run
+so it doubles as a CI check. `platform` is the build sevm downloads for, and `available`
+is what that platform publishes. Where nothing is published, `wasm solc` is what will run
 instead, and an override from `SEVM_SOLC`, `SEVM_NODE` or `SOLCX_BINARY_PATH` is listed on
 an `overrides` line so a stale environment variable cannot hide.
 

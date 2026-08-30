@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sevm"
 version = "0.1.0"
-description = "sevm is an interactive EVM playground on Py-EVM, built for red-team dynamic analysis."
+description = "sevm is an interactive, gdb-style Solidity/EVM debugger on Py-EVM, built for red-team dynamic analysis."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
