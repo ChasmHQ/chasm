@@ -251,10 +251,13 @@ for directory trees only.
 ## Dependencies
 
 Declared in `pyproject.toml`. Rule: every third-party package imported under `src/sevm`
-is a direct dependency, not left to transitive resolution. `eth` (py-evm), `eth_abi`,
-`eth_utils` and `eth_account` arrive with web3 but are imported directly, so they are named
-explicitly. Dev-only tools (`pytest`, `textual-dev`) live in the PEP 735
-`[dependency-groups] dev`, not in the runtime deps, and are not shipped in the wheel.
+is a direct dependency, not left to transitive resolution — `eth` (py-evm), `eth_abi`,
+`eth_utils`, `eth_account`, `eth_keys`, `rlp` and `packaging` all arrive under something
+else's tree, and are named anyway, so a release that drops one does not take sevm with it.
+`test_packaging.py` walks the imports and fails if one goes undeclared, mapping import name
+to distribution through the installed metadata (`eth` -> py-evm, `solcx` -> py-solc-x).
+Dev-only tools (`pytest`, `textual-dev`) live in the PEP 735 `[dependency-groups] dev`,
+not in the runtime deps, and are not shipped in the wheel.
 
 The eth-tester stack is named piece by piece (`web3`, `eth-tester`, `py-evm`) instead of
 taken as `web3[tester]`, because that extra requires `eth-hash[pysha3]` -> safe-pysha3,
@@ -262,7 +265,7 @@ a C extension whose wheels are x86_64-only. On arm64 Linux, Apple silicon or Win
 builds from source, so an install fails on any machine without a compiler; sevm ran
 nowhere but x86_64 until this was untangled. `eth-hash[pycryptodome]` (wheels everywhere)
 is named for the same reason: it is the keccak backend that remains, and web3 requiring it
-today is not a promise it will tomorrow. `test_packaging.py` holds both halves in place.
+today is not a promise it will tomorrow.
 
 The Textual stylesheet `src/sevm/tui/sevm.tcss` is package data loaded relative to
 `app.py`; hatchling includes it in the wheel automatically. If you move or rename it,
@@ -297,7 +300,9 @@ dependency resolution, the compile pipeline around it, and the network-only equi
 `test_cache.py` covers the build cache, and proves a partial build is field-for-field the
 same Project as a full one. `test_dispatch.py` covers the selector layer both ways: every
 selector in every fixture contract has to route to the line that declares it, and breaking
-on the address it reports has to stop the VM there. `test_layout.py` guards the package tree itself: every module
+on the address it reports has to stop the VM there. `test_packaging.py` guards `pyproject.toml`: no dependency may
+ask for the `tester` extra, every package the sources import is declared, and keccak
+answers on the pycryptodome backend. `test_layout.py` guards the package tree itself: every module
 imports, every relative import names a real sibling (a deferred `from .x import y` inside a
 function body survives its module moving a level deeper and fails only at run time), and
 every package `__init__` still maps its own modules. The suite never touches
@@ -353,7 +358,7 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 753 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 754 tests pass as of
 2026-08-30 (4 more with `SEVM_NETWORK_TESTS=1`), that run on linux/arm64 against a native
 arm64 solc, covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and

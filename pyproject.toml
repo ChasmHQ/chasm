@@ -43,6 +43,9 @@ dependencies = [
     "eth-abi>=5.2",
     "eth-utils>=5.0",
     "eth-account>=0.13",
+    "eth-keys>=0.6",
+    "rlp>=4.0",
+    "packaging>=23.0",
 ]
 
 [project.scripts]
