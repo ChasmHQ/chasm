@@ -45,6 +45,18 @@ pipx install uv
 uv tool install .
 ```
 
+sevm needs Python 3.10+ and `git`; it downloads solc itself, into `~/.solcx`, picking the
+build for this machine — x86-64 and arm64 Linux, Intel and Apple silicon macOS, and
+Windows are all covered, and a solc already installed by Foundry (`~/.svm`) or sitting on
+`PATH` is used instead of a download. Anywhere else, and on musl systems like Alpine where
+the official binaries cannot run, point sevm at a compiler you have:
+
+```bash
+sevm compile --solc-binary /usr/bin/solc examples/bank/src
+```
+
+`SEVM_SOLC=/usr/bin/solc` does the same for every command.
+
 ## Usage
 
 sevm has the following subcommands:

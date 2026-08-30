@@ -46,6 +46,7 @@ dependencies = [
     "eth-keys>=0.6",
     "rlp>=4.0",
     "packaging>=23.0",
+    "requests>=2.31",
 ]
 
 [project.scripts]

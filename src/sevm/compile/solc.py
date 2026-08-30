@@ -13,6 +13,7 @@ from typing import Any
 
 import solcx
 
+from . import solcbin
 from .model import CompileError, SourceFile
 
 # Used when a source carries no `pragma solidity` at all (rare). When a pragma is present,
@@ -110,13 +111,15 @@ def compile_standard(
         "settings": settings,
     }
     try:
-        return solcx.compile_standard(payload, solc_version=solc_version)
+        return solcx.compile_standard(payload, solc_binary=solcbin.ensure(solc_version))
     except solcx.exceptions.SolcError as exc:
         raise CompileError(str(exc)) from exc
 
 
-def ensure_solc(version: str = DEFAULT_SOLC_VERSION) -> None:
-    """Install the pinned solc if this machine does not have it yet."""
-    installed = {str(v) for v in solcx.get_installed_solc_versions()}
-    if version not in installed:
-        solcx.install_solc(version)
+def ensure_solc(version: str = DEFAULT_SOLC_VERSION) -> str:
+    """Path to a solc `version` that runs here, downloading it if the machine lacks one.
+
+    Provisioning is `solcbin`'s, not py-solc-x's, which fetches x86-64 whatever the
+    machine is; solcx is still what runs the binary.
+    """
+    return solcbin.ensure(version)

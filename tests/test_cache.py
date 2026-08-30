@@ -361,10 +361,11 @@ def test_release_list_is_fetched_once_a_day():
         calls.append(1)
         return ["0.8.28", "0.8.29"]
 
-    assert cache.installable_versions(fetch) == ["0.8.28", "0.8.29"]
-    assert cache.installable_versions(fetch) == ["0.8.28", "0.8.29"]
+    name = "solc-index-linux-amd64.json"
+    assert cache.cached_json(name, fetch) == ["0.8.28", "0.8.29"]
+    assert cache.cached_json(name, fetch) == ["0.8.28", "0.8.29"]
     assert len(calls) == 1
-    cache.installable_versions(fetch, ttl=-1)
+    cache.cached_json(name, fetch, ttl=-1)
     assert len(calls) == 2
 
 
@@ -372,4 +373,4 @@ def test_release_list_offline_is_empty_not_an_error():
     def boom():
         raise ConnectionError("offline")
 
-    assert cache.installable_versions(boom) == []
+    assert cache.cached_json("solc-index-linux-amd64.json", boom) == {}

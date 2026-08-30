@@ -244,35 +244,34 @@ def _write_atomic(path: str, payload: bytes) -> None:
     os.replace(tmp, path)
 
 
-# -- solc release list -------------------------------------------------------
+# -- solc release lists ------------------------------------------------------
 
 
-def installable_versions(
-    fetch: Callable[[], list], ttl: float = _VERSIONS_TTL
-) -> list[str]:
-    """solc's downloadable releases as version strings, cached for a day.
+def cached_json(name: str, fetch: Callable[[], Any], ttl: float = _VERSIONS_TTL) -> Any:
+    """`fetch()`'s result, kept in `<cache>/<name>` for a day.
 
     Version auto-detection otherwise pays a network round-trip on every run, and silently
     degrades to the installed set when offline; a cached list keeps resolution the same
-    off the network as on it.
+    off the network as on it. A fetch that raises returns `{}` rather than propagating,
+    for the same reason a stale cache entry only costs a recompile.
     """
-    path = os.path.join(user_cache_dir(), "solc-versions.json")
+    path = os.path.join(user_cache_dir(), name)
     try:
         with open(path, "rb") as fh:
             entry = json.loads(fh.read())
         if time.time() - float(entry["fetched"]) < ttl:
-            return [str(v) for v in entry["versions"]]
+            return entry["payload"]
     except Exception:
         pass
     try:
-        versions = [str(v) for v in fetch()]
+        payload = fetch()
     except Exception:
-        return []
+        return {}
     try:
         os.makedirs(user_cache_dir(), exist_ok=True)
         _write_atomic(
-            path, json.dumps({"fetched": time.time(), "versions": versions}).encode()
+            path, json.dumps({"fetched": time.time(), "payload": payload}).encode()
         )
     except Exception:
         pass
-    return versions
+    return payload

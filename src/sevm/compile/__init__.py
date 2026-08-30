@@ -7,6 +7,7 @@ Where things live:
 
   model.py            `SourceFile`, `Artifact`, `Project`, and bytecode identity
   solc.py             calling solc, and reading .sol files in
+  solcbin.py          finding or downloading a solc binary this machine can run
   versions.py         picking the solc version from the sources' pragmas
   foundry_config.py   foundry.toml, remappings, project sources, dependencies
   build.py            `compile_project` / `compile_foundry_project`
@@ -28,6 +29,7 @@ from .foundry_config import (
 )
 from .model import Artifact, CompileError, Project, SourceFile
 from .solc import DEFAULT_SOLC_VERSION, compile_standard, ensure_solc
+from .solcbin import platform_key
 from .versions import resolve_solc_version
 
 __all__ = [
@@ -46,6 +48,7 @@ __all__ = [
     "compile_standard",
     "ensure_solc",
     "find_foundry_root",
+    "platform_key",
     "read_foundry_config",
     "resolve_dependencies",
     "resolve_solc_version",

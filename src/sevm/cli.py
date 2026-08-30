@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from .commands.parsing import expand_file_args
-from .compile import CompileError, compile_foundry_project, find_foundry_root
+from .compile import CompileError, compile_foundry_project, find_foundry_root, solcbin
 from .evaluate import Evaluator, make_eval_hook
 from .session import DebugSession, Finished, StepMode
 
@@ -77,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
         "-c", "--contracts", help="directory of .sol sources (default: ./contracts)"
     )
     run.add_argument("--solc", default=None, help="solc version to compile with")
+    run.add_argument(
+        "--solc-binary",
+        default=None,
+        metavar="PATH",
+        help="use this solc executable instead of downloading one (env: SEVM_SOLC)",
+    )
     run.add_argument(
         "--console", action="store_true", help="plain text frontend instead of the TUI"
     )
@@ -137,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compile_cmd.add_argument("contracts", help="directory or file of .sol sources")
     compile_cmd.add_argument("--solc", default=None)
+    compile_cmd.add_argument("--solc-binary", default=None, metavar="PATH")
     compile_cmd.add_argument(
         "-y",
         "--yes",
@@ -494,6 +501,8 @@ def _debug(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "solc_binary", None):
+        solcbin.use_binary(args.solc_binary)
     if args.command == "run":
         return cmd_run(args)
     if args.command == "compile":

@@ -10,12 +10,18 @@ from __future__ import annotations
 import pytest
 from packaging.version import Version
 
-from sevm.compile import CompileError, SourceFile, resolve_solc_version
-from sevm.compile import solc as C
+from sevm.compile import (
+    DEFAULT_SOLC_VERSION,
+    CompileError,
+    SourceFile,
+    resolve_solc_version,
+    solcbin,
+)
 from sevm.compile.versions import _extract_pragmas, _pragma_matches
 
-# A stand-in for what solcx would report as installable, spanning the versions the tests
-# care about (a pinned 0.8.21, a caret range, and a couple of neighbours to pick between).
+# A stand-in for what this platform's release index would offer, spanning the versions the
+# tests care about (a pinned 0.8.21, a caret range, and a couple of neighbours to pick
+# between).
 INSTALLABLE = [
     Version(v)
     for v in (
@@ -42,9 +48,9 @@ def _sources(*texts: str) -> dict[str, SourceFile]:
 def mock_versions(monkeypatch):
     """Point the resolver at a fixed installable list and an empty installed set."""
     monkeypatch.setattr(
-        C.solcx, "get_installable_solc_versions", lambda: list(INSTALLABLE)
+        solcbin, "available_versions", lambda: [str(v) for v in INSTALLABLE]
     )
-    monkeypatch.setattr(C.solcx, "get_installed_solc_versions", lambda: [])
+    monkeypatch.setattr(solcbin, "installed_versions", lambda: [])
 
 
 # -- pragma extraction -------------------------------------------------------
@@ -130,7 +136,7 @@ def test_config_pin_overrides_pragma(mock_versions):
 
 
 def test_no_pragma_falls_back_to_default(mock_versions):
-    assert resolve_solc_version(_sources("contract A {}")) == C.DEFAULT_SOLC_VERSION
+    assert resolve_solc_version(_sources("contract A {}")) == DEFAULT_SOLC_VERSION
 
 
 def test_conflicting_pragmas_raise_and_name_files(mock_versions):
@@ -146,14 +152,22 @@ def test_conflicting_pragmas_raise_and_name_files(mock_versions):
     assert "F0.sol" in msg and "F1.sol" in msg
 
 
+def test_an_override_binary_wins_over_every_other_source(mock_versions, monkeypatch):
+    # The binary is what runs, and its version labels the build cache, so it also wins
+    # over an explicit --solc and a foundry.toml pin.
+    monkeypatch.setattr(solcbin, "override_version", lambda: "0.8.19")
+    srcs = _sources("pragma solidity ^0.8.20;\ncontract A {}")
+    assert resolve_solc_version(srcs) == "0.8.19"
+    assert resolve_solc_version(srcs, explicit="0.8.28") == "0.8.19"
+    assert resolve_solc_version(srcs, config_pinned="0.8.28") == "0.8.19"
+
+
 def test_offline_falls_back_to_installed(monkeypatch):
     # Installable lookup fails (offline); an installed version still satisfies the pragma.
     def boom():
         raise ConnectionError("offline")
 
-    monkeypatch.setattr(C.solcx, "get_installable_solc_versions", boom)
-    monkeypatch.setattr(
-        C.solcx, "get_installed_solc_versions", lambda: [Version("0.8.21")]
-    )
+    monkeypatch.setattr(solcbin, "available_versions", boom)
+    monkeypatch.setattr(solcbin, "installed_versions", lambda: ["0.8.21"])
     srcs = _sources("pragma solidity ^0.8.0;\ncontract A {}")
     assert resolve_solc_version(srcs) == "0.8.21"

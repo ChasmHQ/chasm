@@ -10,11 +10,10 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-import solcx
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-from .. import cache
+from . import solcbin
 from .model import CompileError, SourceFile
 from .solc import DEFAULT_SOLC_VERSION
 
@@ -91,6 +90,11 @@ def resolve_solc_version(
 
     Raises CompileError when the pragmas cannot all be satisfied by any known release.
     """
+    # A binary named outright is the one that will run, so it also names the version;
+    # anything else would label the build cache with a compiler that never ran.
+    override = solcbin.override_version()
+    if override:
+        return override
     if explicit:
         return explicit
     if config_pinned:
@@ -101,18 +105,15 @@ def resolve_solc_version(
         return DEFAULT_SOLC_VERSION
     constraints = list(pragmas)
 
-    # Foundry-exact: consider every installable release and pick the highest match, then
-    # install it if missing. Fall back to the installed set when offline.
+    # Foundry-exact: consider every release this platform can install and pick the highest
+    # match, then install it if missing. Fall back to the installed set when offline.
     try:
-        installable = [
-            Version(v)
-            for v in cache.installable_versions(solcx.get_installable_solc_versions)
-        ]
+        installable = [Version(v) for v in solcbin.available_versions()]
     except Exception:
         installable = []
     selected = _select_from(constraints, installable)
     if selected is None:
-        installed = solcx.get_installed_solc_versions()
+        installed = [Version(v) for v in solcbin.installed_versions()]
         selected = _select_from(constraints, installed)
     if selected is None:
         raise CompileError(_conflict_message(pragmas))

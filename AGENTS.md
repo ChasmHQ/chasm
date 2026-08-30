@@ -31,7 +31,7 @@ sevm/
 │   ├── session/          # the stepping engine: core, patch, stepping, snapshots,
 │   │                     #   framelocals, inspect_ops, code, events
 │   ├── commands/         # the gdb command layer: processor + one module per verb group
-│   ├── compile/          # model, solc, versions, foundry_config, build
+│   ├── compile/          # model, solc, solcbin, versions, foundry_config, build
 │   ├── evaluate/         # bindings, injection, evaluator
 │   ├── assembly/         # builtins, parser, execute
 │   ├── cheatcodes/       # registry, cheats, assertions, args, console
@@ -272,8 +272,19 @@ The Textual stylesheet `src/sevm/tui/sevm.tcss` is package data loaded relative 
 update `CSS_PATH` in `tui/app.py` and re-check `uv build` still bundles it. It is the only
 package data left: forge-std is no longer vendored.
 
-solc is fetched on demand by py-solc-x into `~/.solcx` (not vendored). Tests and examples
-use solc 0.8.28.
+solc is fetched on demand into `~/.solcx` (not vendored). Which build to fetch is
+`compile/solcbin.py`'s decision, not py-solc-x's: py-solc-x hardcodes
+`binaries.soliditylang.org/{os}-amd64` and detects the OS only, so on arm64 Linux or
+Apple silicon it downloads an x86-64 binary and fails validating it. solcbin follows svm's
+platform map instead (official `linux-arm64` from 0.8.31, `nikitastupin/solc` below it,
+`alloy-rs/solc-builds` for macOS arm64 between 0.8.5 and 0.8.24), verifies the sha256 the
+release list publishes, and proves the result by running `--version` — a downloaded binary
+is not evidence it can execute, since the Linux builds are glibc-linked and musl or NixOS
+cannot run them. An existing `~/.solcx` binary, one of Foundry's under `~/.svm`, or a
+matching `solc` on PATH is used before anything is downloaded, and `--solc-binary` /
+`SEVM_SOLC` overrides the lot (that binary then also names the version, because it is what
+runs and the version keys the build cache). py-solc-x still *invokes* solc through
+`compile_standard(solc_binary=...)`. Tests and examples use solc 0.8.28.
 
 ## Tests
 
@@ -300,7 +311,10 @@ dependency resolution, the compile pipeline around it, and the network-only equi
 `test_cache.py` covers the build cache, and proves a partial build is field-for-field the
 same Project as a full one. `test_dispatch.py` covers the selector layer both ways: every
 selector in every fixture contract has to route to the line that declares it, and breaking
-on the address it reports has to stop the VM there. `test_packaging.py` guards `pyproject.toml`: no dependency may
+on the address it reports has to stop the VM there. `test_solcbin.py` covers solc
+provisioning against faked release lists and downloads: which list each platform and
+version comes from, the checksum gate, and that an already-installed binary (including
+svm's) is preferred to a download. `test_packaging.py` guards `pyproject.toml`: no dependency may
 ask for the `tester` extra, every package the sources import is declared, and keccak
 answers on the pycryptodome backend. `test_layout.py` guards the package tree itself: every module
 imports, every relative import names a real sibling (a deferred `from .x import y` inside a
@@ -358,7 +372,7 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 754 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 780 tests pass as of
 2026-08-30 (4 more with `SEVM_NETWORK_TESTS=1`), that run on linux/arm64 against a native
 arm64 solc, covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and
