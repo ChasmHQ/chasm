@@ -164,7 +164,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="recompile even if the cache has this build"
     )
 
+    sub.add_parser(
+        "doctor", help="report the compiler, runtimes and caches sevm found here"
+    )
+
     return parser
+
+
+def cmd_doctor(_args: argparse.Namespace) -> int:
+    """Print what sevm found, and fail if none of it can compile."""
+    from . import doctor
+
+    lines = doctor.report()
+    print(doctor.render(lines))
+    return 0 if doctor.ok(lines) else 1
 
 
 def cmd_compile(args: argparse.Namespace) -> int:
@@ -507,6 +520,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(args)
     if args.command == "compile":
         return cmd_compile(args)
+    if args.command == "doctor":
+        return cmd_doctor(args)
     parser.print_help()
     return 1
 

@@ -28,6 +28,7 @@
   - [Run Yul at the prompt](#run-yul-at-the-prompt)
   - [Work without source](#work-without-source)
   - [Compile a project](#compile-a-project)
+  - [Check the environment](#check-the-environment)
 - [Reference](#reference)
 - [Development](#development)
   - [Test](#test)
@@ -64,6 +65,7 @@ sevm compile --solc-binary /usr/bin/solc examples/bank/src
 sevm has the following subcommands:
 - `run`: debug a Foundry test, or a web3.py driver script.
 - `compile`: compile the contracts and report what sevm sees.
+- `doctor`: report the compiler, runtimes and caches sevm found on this machine.
 
 For detailed information on each command and its options, run:
 
@@ -580,6 +582,32 @@ real  1.02
 
 Artifacts land in `out/sevm/` in forge's layout, and the cache in `cache/sevm/`. Both are
 cleared by `forge clean`. A directory with no `foundry.toml` gets nothing written into it.
+
+### Check the environment
+
+`sevm doctor` says which compiler this machine will use, where it came from, and what is
+missing. It downloads nothing — a compiler that is not installed yet is reported as the
+URL it would be fetched from:
+
+```bash
+$ sevm doctor
+  sevm       0.1.0
+  python     3.12.14 (CPython) at /home/fev/Projects/debugger/.venv/bin/python3
+  platform   linux-arm64 (Linux aarch64, glibc 2.43)
+  git        git version 2.55.0
+  solc       0.8.28 at /home/fev/.solcx/solc-v0.8.28
+  installed  0.8.36, 0.8.28
+  available  68 releases, 0.5.0 .. 0.8.36
+  wasm solc  /home/fev/.local/share/mise/installs/node/latest/bin/node v26.8.1
+  binaries   /home/fev/.solcx
+  cache      /home/fev/.cache/sevm
+```
+
+Anything that would stop sevm working is marked `!` and makes the command exit non-zero,
+so it doubles as a CI check. `platform` is the build sevm downloads for; `available` is
+what that platform publishes. Where nothing is published, `wasm solc` is what will run
+instead, and an override from `SEVM_SOLC`, `SEVM_NODE` or `SOLCX_BINARY_PATH` is listed on
+an `overrides` line so a stale environment variable cannot hide.
 
 ## Reference
 

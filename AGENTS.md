@@ -42,6 +42,7 @@ sevm/
 │   ├── libs.py           # dependency resolution: imports -> repo -> clone -> remapping
 │   ├── foundry.py        # Foundry test runner: resolve project, discover, driver
 │   ├── frames.py, srcmap.py, decode.py, disasm.py, dispatch.py
+│   ├── doctor.py         # `sevm doctor`: compiler, runtimes, caches, overrides
 │   ├── breakpoints.py, clipboard.py
 │   └── console.py        # plain-text frontend (`--console`)
 ├── tests/                # one file per layer + conftest/harness/tui_harness
@@ -217,7 +218,7 @@ fixture tuple and using only some fields is normal). Every module carries
 `from __future__ import annotations`, so annotations use builtin generics (`dict`,
 `list`, `X | None`), not `typing.Dict`/`Optional`.
 
-CLI shape: `sevm {run,compile}`. Options go **before** the target script; everything
+CLI shape: `sevm {run,compile,doctor}`. Options go **before** the target script; everything
 after the script is forwarded to it. Recognition of user contracts is by bytecode
 (runtime code matched against compiled artifacts, metadata hash stripped, immutables
 masked), so an unmodified web3 script works as a `run` target.
@@ -326,7 +327,8 @@ provisioning against faked release lists and downloads: which list each platform
 version comes from, the checksum gate, and that an already-installed binary (including
 svm's) is preferred to a download. `test_wasm.py` covers the fallback with a stub runtime
 in place of node, and its one network test compiles a fixture both ways and requires the
-documents to be equal. `test_packaging.py` guards `pyproject.toml`: no dependency may
+documents to be equal. `test_doctor.py` covers which facts `sevm doctor` calls problems,
+since that is what its exit status is. `test_packaging.py` guards `pyproject.toml`: no dependency may
 ask for the `tester` extra, every package the sources import is declared, and keccak
 answers on the pycryptodome backend. `test_layout.py` guards the package tree itself: every module
 imports, every relative import names a real sibling (a deferred `from .x import y` inside a
@@ -388,7 +390,7 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 790 tests pass as of
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 798 tests pass as of
 2026-08-30 (5 more with `SEVM_NETWORK_TESTS=1`), that run on linux/arm64 against a native
 arm64 solc, covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and
