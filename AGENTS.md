@@ -252,9 +252,17 @@ for directory trees only.
 
 Declared in `pyproject.toml`. Rule: every third-party package imported under `src/sevm`
 is a direct dependency, not left to transitive resolution. `eth` (py-evm), `eth_abi`,
-`eth_utils` and `eth_account` ship with `web3[tester]` but are imported directly, so they
-are named explicitly. Dev-only tools (`pytest`, `textual-dev`) live in the PEP 735
+`eth_utils` and `eth_account` arrive with web3 but are imported directly, so they are named
+explicitly. Dev-only tools (`pytest`, `textual-dev`) live in the PEP 735
 `[dependency-groups] dev`, not in the runtime deps, and are not shipped in the wheel.
+
+The eth-tester stack is named piece by piece (`web3`, `eth-tester`, `py-evm`) instead of
+taken as `web3[tester]`, because that extra requires `eth-hash[pysha3]` -> safe-pysha3,
+a C extension whose wheels are x86_64-only. On arm64 Linux, Apple silicon or Windows it
+builds from source, so an install fails on any machine without a compiler; sevm ran
+nowhere but x86_64 until this was untangled. `eth-hash[pycryptodome]` (wheels everywhere)
+is named for the same reason: it is the keccak backend that remains, and web3 requiring it
+today is not a promise it will tomorrow. `test_packaging.py` holds both halves in place.
 
 The Textual stylesheet `src/sevm/tui/sevm.tcss` is package data loaded relative to
 `app.py`; hatchling includes it in the wheel automatically. If you move or rename it,
@@ -345,8 +353,9 @@ pass explicit `gas=` so web3 does not re-run the tx during estimation.
 ## Verified environment
 
 web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 747 tests pass as of
-2026-08-29 (4 more with `SEVM_NETWORK_TESTS=1`), covering every registered cheatcode
+forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 753 tests pass as of
+2026-08-30 (4 more with `SEVM_NETWORK_TESTS=1`), that run on linux/arm64 against a native
+arm64 solc, covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and
 remapping derivation, the assertion engine, the Yul assembly surface, the build cache and
 its artifacts, the snapshot refresh after a mutation, the dispatcher and selector layer,

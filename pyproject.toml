@@ -22,10 +22,20 @@ classifiers = [
 
 # Runtime dependencies. Every third-party package imported by the sources under
 # src/sevm is declared here (not left to transitive resolution). `eth`, `eth_abi`,
-# `eth_utils` and `eth_account` all ship with web3[tester], but sevm imports them
-# directly, so they are named explicitly.
+# `eth_utils` and `eth_account` all arrive with web3, but sevm imports them directly,
+# so they are named explicitly.
+#
+# The eth-tester stack is spelled out rather than taken as `web3[tester]`, whose
+# `eth-tester[py-evm]` extra requires `eth-hash[pysha3]` -> safe-pysha3, a C extension
+# with x86_64-only wheels: on any other machine it builds from source and needs a
+# compiler. web3 itself already requires `eth-hash[pycryptodome]`, so that backend is
+# there either way; it is named here so the one keccak implementation sevm relies on is
+# not left to a transitive extra. The eth-tester range mirrors web3's own.
 dependencies = [
-    "web3[tester]>=7.0",
+    "web3>=7.0",
+    "eth-tester>=0.13.0b1,<0.14.0b1",
+    "py-evm>=0.12.0b2",
+    "eth-hash[pycryptodome]>=0.5.1",
     "py-solc-x>=2.0",
     "textual>=8.0",
     "rich>=15.0",
