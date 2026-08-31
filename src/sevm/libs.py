@@ -326,8 +326,14 @@ def remapping_for(prefix: str, dep_dir: str, sample_import: str, root: str) -> s
 
 
 def dep_dir_name(prefix: str, repo_url: str) -> str:
-    """Directory name under lib/, matching what `forge install` would create."""
-    return repo_url.rstrip("/").rsplit("/", 1)[-1] or prefix.replace("/", "-")
+    """Directory name under lib/, matching what `forge install` would create.
+
+    Backslashes are normalised first so a Windows-style local path in the URL
+    (`file://C:\\...\\forge-std`) still yields `forge-std` instead of the whole
+    drive-qualified path; on POSIX the substitution is a no-op.
+    """
+    url = repo_url.replace("\\", "/")
+    return url.rstrip("/").rsplit("/", 1)[-1] or prefix.replace("/", "-")
 
 
 def install(

@@ -9,11 +9,29 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 
 import pytest
 from conftest import FAKE_NEWEST, FIXTURES, make_repo
 
 from sevm import libs
+
+
+def remove_tree(path: str) -> None:
+    """shutil.rmtree that clears read-only files first.
+
+    Git writes its object files read-only, which makes rmtree fail on Windows with
+    PermissionError; on POSIX the retry handler is never needed but costs nothing.
+    """
+
+    def clear_readonly(func, p, _exc):  # type: ignore[no-untyped-def]
+        os.chmod(p, 0o777)
+        func(p)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=clear_readonly)
+    else:
+        shutil.rmtree(path, onerror=clear_readonly)
 
 
 def read_text(path: str) -> str:
@@ -155,7 +173,7 @@ def test_a_clone_without_git_metadata_is_still_usable(tmp_path, local_forge_std)
     """A library copied in by hand has no tags to describe; that is not an error."""
     root = str(tmp_path)
     libs.install("forge-std", "forge-std/Test.sol", root)
-    shutil.rmtree(os.path.join(root, "lib", "forge-std", ".git"))
+    remove_tree(os.path.join(root, "lib", "forge-std", ".git"))
     dep = libs.install("forge-std", "forge-std/Test.sol", root)
     assert dep.version == ""
     assert dep.remapping == "forge-std/=lib/forge-std/src/"
