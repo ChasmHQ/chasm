@@ -168,6 +168,22 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor", help="report the compiler, runtimes and caches sevm found here"
     )
 
+    mcp_cmd = sub.add_parser(
+        "mcp",
+        help="run the MCP server for AI clients (stdio transport)",
+        description=(
+            "Run sevm as a Model Context Protocol server over stdio. An MCP client "
+            "starts/steps debug sessions and reads structured, windowed state — "
+            "see docs/mcp.md for the tool list and client configuration."
+        ),
+    )
+    mcp_cmd.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="seconds to wait for the target to reach contract code (default: 120)",
+    )
+
     return parser
 
 
@@ -522,8 +538,20 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_compile(args)
     if args.command == "doctor":
         return cmd_doctor(args)
+    if args.command == "mcp":
+        return cmd_mcp(args)
     parser.print_help()
     return 1
+
+
+def cmd_mcp(args: argparse.Namespace) -> int:
+    """Serve the debugger over MCP stdio; logs go to stderr only."""
+    from .mcp_server import DebugDriver, build_server
+
+    driver = DebugDriver(timeout=args.timeout)
+    server = build_server(driver)
+    server.run()
+    return 0
 
 
 if __name__ == "__main__":

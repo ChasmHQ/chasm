@@ -79,9 +79,16 @@ class InspectOps:
         ]
 
     def _op_disassembly(
-        self, frame: EvmFrame, computation: Any, before: int = 6, after: int = 18
+        self,
+        frame: EvmFrame,
+        computation: Any,
+        before: int = 6,
+        after: int = 18,
+        center: int | None = None,
     ) -> list[dict]:
-        pc = max(0, computation.code.program_counter - 1)
+        pc = (
+            center if center is not None else max(0, computation.code.program_counter - 1)
+        )
         rows = []
         for ins in frame.disassembly.window(pc, before, after):
             loc = frame.location(ins.pc)
@@ -95,6 +102,53 @@ class InspectOps:
                 }
             )
         return rows
+
+    def _op_find_needle(
+        self, frame: EvmFrame, computation: Any, needle_hex: str, limit: int = 200
+    ) -> dict:
+        """Every offset in the running code where the hex needle occurs.
+
+        Gadget hunting for jump-oriented payloads: the same needle can sit inside a
+        PUSH operand or at a real instruction, so each hit reports its pc, whether it
+        starts on an instruction boundary, whether it is itself a JUMPDEST, and the
+        nearest preceding JUMPDEST — the address an indirect jump can actually reach.
+        """
+        needle = bytes.fromhex(needle_hex)
+        # bytes(CodeStream) iterates from the CURRENT position, yielding a partial
+        # tail of the program; the whole thing is in _raw_code_bytes.
+        raw = getattr(computation.code, "_raw_code_bytes", None)
+        code = bytes(raw) if raw is not None else bytes(computation.code)
+        aligned_pcs = {ins.pc for ins in frame.disassembly.instructions}
+        jumpdests = sorted(frame.disassembly.jumpdests)
+        hits: list[dict] = []
+        start = 0
+        while len(hits) < limit:
+            idx = code.find(needle, start)
+            if idx < 0:
+                break
+            prev_dest = None
+            for dest in jumpdests:
+                if dest <= idx:
+                    prev_dest = dest
+                else:
+                    break
+            loc = frame.location(idx) if idx in aligned_pcs else None
+            hits.append(
+                {
+                    "pc": idx,
+                    "instruction_aligned": idx in aligned_pcs,
+                    "jumpdest": idx in frame.disassembly.jumpdests,
+                    "nearest_jumpdest": prev_dest,
+                    "text": (
+                        frame.disassembly.at(idx).render()
+                        if frame.disassembly.at(idx) is not None
+                        else code[idx : idx + len(needle)].hex()
+                    ),
+                    "line": loc.line if loc and not loc.is_generated else 0,
+                }
+            )
+            start = idx + 1
+        return {"hits": hits, "total": code.count(needle), "code_size": len(code)}
 
     def _op_locals(
         self, frame: EvmFrame, computation: Any, internal_index: int | None = None

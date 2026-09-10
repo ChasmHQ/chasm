@@ -27,6 +27,8 @@
   - [Use Foundry cheatcodes](#use-foundry-cheatcodes)
   - [Run Yul at the prompt](#run-yul-at-the-prompt)
   - [Work without source](#work-without-source)
+  - [Find a gadget](#find-a-gadget)
+  - [Debug from an AI client (MCP)](#debug-from-an-ai-client-mcp)
   - [Compile a project](#compile-a-project)
   - [Check the environment](#check-the-environment)
 - [Reference](#reference)
@@ -549,6 +551,27 @@ When the dispatcher does test it, `info address` reports the wrapper it jumps to
 implementation's JUMPDEST behind it, which is the pc every caller converges on. See
 [docs/commands.md](docs/commands.md#selectors-and-the-dispatcher).
 
+### Find a gadget
+
+`find HEX` reports every offset in the running code where the byte pattern occurs, with
+the context a jump-oriented chain needs — instruction alignment and the nearest preceding
+JUMPDEST, the address an indirect jump can actually reach:
+
+```bash
+(sevm) find 5b50505050
+2 occurrence(s) of 5b50505050 in Counter
+  0x0184  JUMPDEST  (JUMPDEST, jump via 0x0184)
+  0x0279  5b50505050  (inside operand, jump via 0x0210)
+```
+
+### Debug from an AI client (MCP)
+
+`sevm mcp` serves the whole debugger over the Model Context Protocol (stdio) — the third
+frontend after the console and the TUI, shaped for a consumer that cannot scroll panes or
+watch them change: windowed reads with explicit truncation, a uniform stop report after
+every navigation, and a diff of what the last step changed. See
+[docs/mcp.md](docs/mcp.md) for the tool list and client configuration.
+
 ### Compile a project
 
 `sevm compile` runs the same build the debugger does and reports what it produced, which is
@@ -617,6 +640,7 @@ an `overrides` line so a stale environment variable cannot hide.
 | [docs/expressions.md](docs/expressions.md) | evaluating Solidity, reading and writing local variables |
 | [docs/assembly.md](docs/assembly.md) | Yul builtins at the prompt, what is refused and why |
 | [docs/foundry.md](docs/foundry.md) | projects, library install, the build cache, cheatcodes |
+| [docs/mcp.md](docs/mcp.md) | the MCP server for AI clients: tools, data shapes, configuration |
 
 ## Development
 

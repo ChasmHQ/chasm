@@ -161,6 +161,50 @@ def cmd_backtrace(proc: CommandProcessor, args: list[str], rest: str) -> Command
     return result
 
 
+def cmd_find(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`find <hex>` — every offset in the running code where the byte pattern occurs.
+
+    Gadget hunting: reports whether each hit starts on an instruction boundary, and
+    the nearest preceding JUMPDEST — the address an indirect jump can actually reach.
+    """
+    proc.require_stop()
+    if not args:
+        return CommandResult(error="usage: find <hex>   e.g. find 60515255")
+    pattern = args[0].lower().removeprefix("0x")
+    if (
+        not pattern
+        or len(pattern) % 2
+        or any(c not in "0123456789abcdef" for c in pattern)
+    ):
+        return CommandResult(error=f"not a hex pattern: {args[0]!r}")
+    found = proc.inspect("find_needle", pattern)
+    hits, total = found["hits"], found["total"]
+    name = proc.snapshot.contract_name if proc.snapshot else "the running code"
+    if not hits:
+        return CommandResult().add(f"[dim]no occurrence of {pattern} in {name}[/dim]")
+    result = CommandResult().add(
+        f"[dim]{total} occurrence(s) of {pattern} in {name}[/dim]"
+    )
+    for hit in hits[:20]:
+        flags = []
+        if hit["jumpdest"]:
+            flags.append("JUMPDEST")
+        elif hit["instruction_aligned"]:
+            flags.append("aligned")
+        else:
+            flags.append("inside operand")
+        if hit["nearest_jumpdest"] is not None:
+            flags.append(f"jump via 0x{hit['nearest_jumpdest']:04x}")
+        line = f" [dim]L{hit['line']}[/dim]" if hit["line"] else ""
+        result.add(
+            f"  [cyan]0x{hit['pc']:04x}[/cyan]  {_escape(hit['text'])}"
+            f"  [dim]({', '.join(flags)})[/dim]{line}"
+        )
+    if total > len(hits):
+        result.add(f"[dim]... and {total - len(hits)} more[/dim]")
+    return result
+
+
 def cmd_frame(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
     snap = proc.require_stop()
     if not args:
@@ -294,4 +338,5 @@ VERBS = {
     "l": cmd_list,
     "disassemble": cmd_disassemble,
     "disas": cmd_disassemble,
+    "find": cmd_find,
 }

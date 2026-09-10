@@ -43,6 +43,7 @@ HELP_SUMMARY = """
   [cyan]bt[/cyan] / [cyan]f[/cyan] N / [cyan]up[/cyan] / [cyan]down[/cyan]   call stack, EVM and Solidity frames
   [cyan]l[/cyan]ist [LINE]                  source listing
   [cyan]disas[/cyan]semble            disassembly around the pc
+  [cyan]find[/cyan] HEX               offsets of a byte pattern in the running code
   [cyan]sig[/cyan] FUNC               the signature and 4-byte selector: [dim]sig withdraw[/dim]
   [cyan]copy[/cyan] [CMD]                  put a command's output on the system clipboard
   [cyan]i[/cyan]nfo TOPIC             registers, breakpoints, frame, args, locals, storage,

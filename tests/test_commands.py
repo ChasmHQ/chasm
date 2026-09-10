@@ -447,3 +447,17 @@ def test_an_unquoted_word_still_reaches_a_string_parameter(deposit_debugger):
     # It is not Solidity, so it falls back to the raw text rather than failing.
     assert not deposit_debugger.run("vm.label(0xcafe, cafe)").error
     assert deposit_debugger.run("vm.getLabel(0xcafe)").lines[0].endswith("cafe")
+
+
+def test_find_searches_running_code(deposit_debugger):
+    """`find HEX` reports every occurrence with gadget context (aligned/jumpdest)."""
+    dbg = deposit_debugger
+    result = dbg.run("find 6080604052")
+    assert result.ok
+    joined = "\n".join(result.lines)
+    assert "occurrence(s)" in joined
+    assert "0x0000" in joined  # the runtime prologue starts at pc 0
+    missing = dbg.run("find 5b5b5b5b5b5b")
+    assert missing.ok and "no occurrence" in "\n".join(missing.lines)
+    for bad in ("find", "find zz", "find 123"):
+        assert dbg.run(bad).error
