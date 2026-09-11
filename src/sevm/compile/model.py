@@ -143,6 +143,11 @@ def _strip_metadata(code: bytes) -> bytes:
 
 def _code_fingerprint(code: bytes, artifact: Artifact | None) -> bytes:
     """Metadata-stripped, immutable-masked hash of runtime code."""
+    return hashlib.sha256(_masked_body(code, artifact)).digest()
+
+
+def _masked_body(code: bytes, artifact: Artifact | None) -> bytes:
+    """The metadata-stripped, immutable-masked bytes a fingerprint hashes."""
     body = bytearray(_strip_metadata(code))
     if artifact is not None:
         for refs in artifact.immutable_references.values():
@@ -150,4 +155,39 @@ def _code_fingerprint(code: bytes, artifact: Artifact | None) -> bytes:
                 start, length = int(ref["start"]), int(ref["length"])
                 if start + length <= len(body):
                     body[start : start + length] = b"\x00" * length
-    return hashlib.sha256(bytes(body)).digest()
+    return bytes(body)
+
+
+def compare_runtime(artifact: Artifact, reference: bytes) -> dict:
+    """Compare a compiled artifact's runtime code against a reference deployment.
+
+    For debugging a *deployed* target, pc parity is only as good as the build:
+    if the compiled body diverges from the on-chain code anywhere before the
+    trailing metadata tail, every breakpoint pc and gadget offset silently
+    describes a different program. This reports the first divergence instead.
+
+    Both sides are metadata-stripped and immutable-masked, matching how
+    `artifact_for_code` identifies running code, so a differing metadata tail or
+    differing immutable values do not count as divergence.
+    """
+    compiled = _masked_body(artifact.deployed_bytecode, artifact)
+    other = _masked_body(reference, artifact)
+    if compiled == other:
+        return {
+            "match": True,
+            "difference": "none",
+            "compiled_size": len(artifact.deployed_bytecode),
+            "reference_size": len(reference),
+            "first_diff_offset": None,
+        }
+    first = next(
+        (i for i, (a, b) in enumerate(zip(compiled, other, strict=False)) if a != b),
+        min(len(compiled), len(other)),
+    )
+    return {
+        "match": False,
+        "difference": "code",
+        "compiled_size": len(artifact.deployed_bytecode),
+        "reference_size": len(reference),
+        "first_diff_offset": first,
+    }

@@ -23,10 +23,33 @@ def live_view(session: Any, frame: EvmFrame, computation: Any) -> dict[str, Any]
 
     Shared by `_build_snapshot` and the `resnapshot` inspect op, so a refresh after a
     write produces the same fields the pause did rather than a second, drifting copy.
+    The instruction itself is included: `jump`, `set $pc` and a checkpoint restore
+    move the program counter, and a refresh that kept the pre-move pc would describe
+    the wrong instruction.
     """
     raw_stack = list(computation._stack.values)
     meter = computation._gas_meter
+    pc = max(0, computation.code.program_counter - 1)
+    raw = getattr(computation.code, "_raw_code_bytes", None)
+    code = bytes(raw) if raw is not None else bytes(computation.code)
+    opcode = code[pc] if 0 <= pc < len(code) else 0
+    opcode_fn = computation.opcodes.get(opcode)
+    if opcode_fn is not None:
+        mnemonic = getattr(opcode_fn, "mnemonic", None) or getattr(
+            getattr(opcode_fn, "__wrapped__", None), "mnemonic", "UNKNOWN"
+        )
+    else:
+        mnemonic = "UNKNOWN"
+    loc = frame.location(pc)
+    source_key = None
+    if loc is not None and not loc.is_generated:
+        src = session.project.source_by_id(loc.file_id)
+        source_key = src.key if src else None
     return {
+        "step": session.step_index,
+        "pc": pc,
+        "opcode": opcode,
+        "mnemonic": mnemonic,
         "stack": tuple(
             StackEntry(index=i, value=stack_int(v), raw=v)
             for i, v in enumerate(reversed(raw_stack))
@@ -40,6 +63,13 @@ def live_view(session: Any, frame: EvmFrame, computation: Any) -> dict[str, Any]
         # `reseat` rewrites the internal call stack, so the backtrace is a mutable field
         # too: a refresh after it must rebuild the CALL STACK, not just the VARIABLES.
         "backtrace": tuple(build_backtrace(session)),
+        "source_key": source_key,
+        "file_id": loc.file_id if loc else -1,
+        "line": loc.line if loc and not loc.is_generated else 0,
+        "col": loc.col if loc and not loc.is_generated else 0,
+        "end_line": loc.end_line if loc and not loc.is_generated else 0,
+        "jump": loc.jump if loc else "-",
+        "function": session.functions.at_location(loc),
     }
 
 
@@ -58,21 +88,15 @@ def build_snapshot(
     live = live_view(session, frame, computation)
     meter = computation._gas_meter
 
-    source_key = None
-    if loc is not None and not loc.is_generated:
-        src = session.project.source_by_id(loc.file_id)
-        source_key = src.key if src else None
-
     static_gas = None
-    opcode_obj = computation.opcodes.get(opcode)
+    opcode_obj = computation.opcodes.get(live["opcode"])
     if opcode_obj is not None:
         static_gas = getattr(opcode_obj, "gas_cost", None)
 
+    # pc/opcode/mnemonic/loc arrive as parameters for the pause-time callers but are
+    # read from the live stream inside `live_view`, so a refresh after a pc-moving
+    # mutation describes the instruction actually about to run.
     return FrameSnapshot(
-        step=session.step_index,
-        pc=pc,
-        opcode=opcode,
-        mnemonic=mnemonic,
         depth=frame.depth,
         gas_limit=meter.start_gas,
         address=frame.address,
@@ -83,13 +107,6 @@ def build_snapshot(
         calldata=frame.calldata,
         is_static=frame.is_static,
         contract_name=frame.artifact_name,
-        source_key=source_key,
-        file_id=loc.file_id if loc else -1,
-        line=loc.line if loc and not loc.is_generated else 0,
-        col=loc.col if loc and not loc.is_generated else 0,
-        end_line=loc.end_line if loc and not loc.is_generated else 0,
-        jump=loc.jump if loc else "-",
-        function=session.functions.at_location(loc),
         stop_reason=reason,
         **live,
         hit_breakpoints=tuple(hits),

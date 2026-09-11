@@ -569,8 +569,12 @@ JUMPDEST, the address an indirect jump can actually reach:
 `sevm mcp` serves the whole debugger over the Model Context Protocol (stdio) — the third
 frontend after the console and the TUI, shaped for a consumer that cannot scroll panes or
 watch them change: windowed reads with explicit truncation, a uniform stop report after
-every navigation, and a diff of what the last step changed. See
-[docs/mcp.md](docs/mcp.md) for the tool list and client configuration.
+every navigation, and a diff of what the last step changed. It also carries the
+AI-oriented machinery end to end: checkpoints (`snap`/`restore`), operand provenance
+(`why N` traces a stack slot to its entry-slot/calldata/memory origins), a batch
+experiment API that branches from one deep stop, bytecode parity checks against deployed
+runtimes, and structLog trace export. See [docs/mcp.md](docs/mcp.md) for the tool list
+and client configuration.
 
 ### Compile a project
 

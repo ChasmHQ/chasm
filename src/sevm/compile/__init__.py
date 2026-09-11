@@ -5,7 +5,8 @@ so a Foundry `out/*.json` importer could be added later by producing the same da
 
 Where things live:
 
-  model.py            `SourceFile`, `Artifact`, `Project`, and bytecode identity
+  model.py            `SourceFile`, `Artifact`, `Project`, bytecode identity,
+                      and `compare_runtime` for deployed-build parity
   solc.py             calling solc, and reading .sol files in
   solcbin.py          finding or downloading a solc binary this machine can run
   wasm.py             solc's WebAssembly build, for machines no binary runs on
@@ -28,7 +29,7 @@ from .foundry_config import (
     resolve_dependencies,
     unresolved_prefixes,
 )
-from .model import Artifact, CompileError, Project, SourceFile
+from .model import Artifact, CompileError, Project, SourceFile, compare_runtime
 from .solc import DEFAULT_SOLC_VERSION, compile_standard, ensure_solc
 from .solcbin import platform_key
 from .versions import resolve_solc_version
@@ -44,6 +45,7 @@ __all__ = [
     "FoundryConfig",
     "Project",
     "SourceFile",
+    "compare_runtime",
     "compile_foundry_project",
     "compile_project",
     "compile_standard",

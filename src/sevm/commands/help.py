@@ -44,6 +44,9 @@ HELP_SUMMARY = """
   [cyan]l[/cyan]ist [LINE]                  source listing
   [cyan]disas[/cyan]semble            disassembly around the pc
   [cyan]find[/cyan] HEX               offsets of a byte pattern in the running code
+  [cyan]parity[/cyan] [Contract] 0x<hex>  prove the build matches the deployed runtime
+  [cyan]provenance[/cyan] on|off      record every opcode (feeds `why`)
+  [cyan]why[/cyan] N                   what produced the value in $stack[N]
   [cyan]sig[/cyan] FUNC               the signature and 4-byte selector: [dim]sig withdraw[/dim]
   [cyan]copy[/cyan] [CMD]                  put a command's output on the system clipboard
   [cyan]i[/cyan]nfo TOPIC             registers, breakpoints, frame, args, locals, storage,

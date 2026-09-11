@@ -45,9 +45,20 @@ class ConsoleFrontend:
             for line in self.commands.describe_stop(event.snapshot):
                 self.console.print(line)
         elif isinstance(event, Finished):
-            self.console.print(
-                "[yellow]the program finished without hitting the debugger[/yellow]"
-            )
+            if event.ok:
+                self.console.print(
+                    "[yellow]the program finished without hitting the debugger[/yellow]"
+                )
+            else:
+                # The script died before any EVM opcode ran; the traceback is the
+                # only diagnosis there is, so it must reach the user. Raw text,
+                # escaped: brackets in a traceback are not style tags.
+                self.console.print(
+                    f"[bold red]the program raised {escape_markup(str(event.error))}"
+                    "[/bold red]"
+                )
+                if event.traceback:
+                    self.console.print(f"[dim]{escape_markup(event.traceback)}[/dim]")
 
     def run(self, first_event=None) -> None:
         """Read-eval-print until the user quits.

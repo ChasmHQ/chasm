@@ -324,6 +324,8 @@ class CommandProcessor:
                 result.add("[green]program finished[/green]")
             else:
                 result.add(f"[red]program raised {event.error}[/red]")
+                if event.traceback:
+                    result.add(f"[dim]{_escape(event.traceback)}[/dim]")
             return result
         if isinstance(event, Paused):
             result.lines.extend(self.describe_stop(event.snapshot))

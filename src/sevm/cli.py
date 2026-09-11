@@ -503,7 +503,7 @@ def _debug(
         for command in startup_commands:
             frontend._emit(frontend.commands.execute(command))
         frontend.run(first_event=first)
-        return 0
+        return 0 if session.exit_error is None else 1
 
     try:
         from .tui.app import SevmApp
@@ -515,16 +515,16 @@ def _debug(
         from .console import ConsoleFrontend
 
         ConsoleFrontend(session, evaluator).run(first_event=first)
-        return 0
+        return 0 if session.exit_error is None else 1
 
     app = SevmApp(
         session, evaluator, first_event=first, startup_commands=startup_commands
     )
     # Mouse on: every pane renders Textual `Content`, which the framework can
-    # select/highlight/copy (drag to select, ctrl+c to copy). `--no-mouse` hands
+    # select, highlight and copy (drag to select, ctrl+c to copy); `--no-mouse` hands
     # selection back to the terminal.
     app.run(mouse=not args.no_mouse)
-    return 0
+    return 0 if session.exit_error is None else 1
 
 
 def main(argv: list[str] | None = None) -> int:

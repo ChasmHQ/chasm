@@ -93,11 +93,26 @@ One debug session is active at a time; starting a new target replaces it.
 | `sevm_get_logs` | events so far, names decoded |
 | `sevm_list_contracts` / `sevm_list_functions` | the compiled surface |
 
-### Search
+### Search, checkpoints, provenance, experiments
 
 | Tool | Meaning |
 |---|---|
 | `sevm_find_bytes` | hex pattern in `code` (gadget hunting: pc, instruction alignment, nearest preceding JUMPDEST), `memory`, or `calldata` |
+| `sevm_save_checkpoint` / `sevm_restore_checkpoint` / `sevm_list_checkpoints` | capture a stop — frame state, storage journal, bookkeeping — experiment freely, roll everything back without re-running the prefix |
+| `sevm_set_provenance` / `sevm_why_stack(index)` | record every opcode and trace any stack slot back to its origins: constants, calldata windows, MSTORE→MLOAD and SSTORE→SLOAD chains, and the frame-entry slots |
+| `sevm_export_trace` | the recording as anvil/geth structLog JSON (to a file, or a windowed inline slice) |
+| `sevm_run_experiments` | branch-search from one deep stop: a list of `{set_stack, set_gas, write_memory, run_until_pc, read_stack}` experiments, each from a saved base checkpoint — 32 variants, one prefix |
+| `sevm_check_parity` | compare a compiled runtime against deployed bytecode; `sevm_start_session(reference_runtime_hex=...)` hard-fails on divergence |
+
+**Checkpoint semantics**: restoring reverts *everything* since the checkpoint
+(storage, balances, memory, stack, gas, cheat state) and discards checkpoints
+saved after the restored one; it only works while the frame stack is the one
+that was saved — finish out of calls made after the checkpoint first. After the
+program finishes, only `restart` remains.
+
+**Provenance semantics**: the slice is concrete, not symbolic — it follows
+recorded values and positions. Hand mutations (`set $stack[i]`) are not
+recorded, so ask `why` before mutating.
 
 ### Breakpoints
 

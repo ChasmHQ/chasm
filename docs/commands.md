@@ -71,6 +71,9 @@ as `reverted: "..."`, `panic 0x11`, or a custom error with its arguments.
 | `display EXPR` | re-evaluate at every stop |
 | `x/NFU ADDR` | examine memory, gdb syntax; a bare `x` continues past the last dump, format reused |
 | `find HEX` | every offset in the running code where the byte pattern occurs, with instruction alignment and the nearest preceding JUMPDEST — gadget hunting |
+| `parity [Contract] 0x<hex>` | prove the compiled runtime matches the deployed bytecode; reports the first divergence, ignoring the metadata tail and immutables |
+| `provenance on\|off\|status` | opt-in per-opcode recording |
+| `why N` | trace $stack[N] back to its origins: constants, calldata, MSTORE/SSTORE chains, frame-entry slots |
 | `bt` / `f N` / `up` / `down` | call stack and frame selection |
 | `l` / `list` / `disas` | source listing / disassembly |
 | `info registers` | pc, gas + refund, depth, stack height, memory and calldata sizes, `msg.*`, `tx.origin`, static flag |
@@ -151,6 +154,7 @@ the dispatcher never tests this selector: a call carrying it lands in the fallba
 | `set var fee = 1 ether` | write a local's stack slot |
 | `set $mem[0x80] = 1` / `set $storage[0] = 0xdead` | raw writes |
 | `jump 0x108` | move the program counter, JUMPDESTs only |
+| `snap [name]` / `restore [name]` | capture a stop (frames, storage journal, bookkeeping) and roll everything back to it later, without re-running the prefix |
 | `mstore(0x80, 1)` / `asm YUL` | run inline assembly, see [assembly.md](assembly.md) |
 | `vm.deal(alice, 10 ether)` | fire a Foundry cheatcode at the current frame |
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import Iterator
 
 import pytest
@@ -262,3 +263,166 @@ def test_client_round_trip_lists_tools_and_returns_error_dicts():
                     await task
 
     asyncio.run(scenario())
+
+
+# ==================================================================
+# checkpoints, provenance, parity, batch — the AI-review package
+# ==================================================================
+
+
+def test_checkpoint_roundtrip_undoes_mutations(lab):
+    driver, script = lab
+    driver.start(script)
+    driver.step_opcodes(10)
+    before_stack = driver.read_stack()["items"]
+    before_mem = driver.read_memory(0x40, 2)["items"]
+    driver.save_checkpoint("base")
+    driver.set_stack_slot(0, 0xDEADBEEF)
+    driver.write_storage(0, 42)
+    driver.write_memory(0x40, "11" * 32)
+    report = driver.restore_checkpoint("base")
+    assert report["restore"]["name"] == "base"
+    assert driver.read_stack()["items"] == before_stack
+    assert driver.read_memory(0x40, 2)["items"] == before_mem
+    assert driver.read_storage(slots=[0])["items"][0]["value"] == "0"
+
+
+def test_checkpoint_survives_steps_and_nested_discard(lab):
+    driver, script = lab
+    driver.start(script)
+    driver.step_opcodes(10)
+    pc0 = driver.status()["pc"]
+    driver.save_checkpoint("base")
+    driver.step_opcodes(2)
+    assert driver.status()["pc"] != pc0
+    driver.restore_checkpoint("base")
+    assert driver.status()["pc"] == pc0
+    driver.save_checkpoint("later")
+    driver.restore_checkpoint("base")
+    names = [c["name"] for c in driver.list_checkpoints()["checkpoints"]]
+    assert names == ["base"]  # journal nesting discards the later one
+    driver.restart()
+    assert driver.list_checkpoints()["checkpoints"] == []
+
+
+def test_restore_refused_after_finish(lab):
+    driver, script = lab
+    driver.start(script)
+    driver.step_opcodes(5)
+    driver.save_checkpoint("base")
+    result = driver.continue_execution()
+    assert result.get("finished")
+    with pytest.raises(Exception, match="finished"):
+        driver.restore_checkpoint("base")
+
+
+def test_provenance_calldata_origin(lab):
+    driver, script = lab
+    driver.start(script, provenance=True)
+    driver.set_breakpoint("inc")
+    driver.continue_execution()
+    # Stop right before a CALLDATALOAD, execute exactly it, then ask why.
+    for _ in range(200):
+        report = driver.step_opcodes(1)
+        if report.get("mnemonic") == "CALLDATALOAD":
+            driver.step_opcodes(1)
+            break
+    else:
+        pytest.fail("no CALLDATALOAD reached inside inc()")
+    why = driver.why_stack(0)
+    kinds = [origin["kind"] for origin in why["origins"]]
+    assert "calldata" in kinds
+    assert any("calldata[" in origin["detail"] for origin in why["origins"])
+
+
+def test_provenance_constant_and_truncate_on_restore(lab):
+    driver, script = lab
+    driver.start(script, provenance=True)
+    driver.step_opcodes(6)
+    records = len(driver._session.provenance.records)
+    assert records >= 6
+    why = driver.why_stack(0)
+    assert why["origins"], "PUSH results always have a constant origin"
+    driver.save_checkpoint("c")
+    driver.step_opcodes(3)
+    assert len(driver._session.provenance.records) > records
+    driver.restore_checkpoint("c")
+    assert len(driver._session.provenance.records) == records
+
+
+def test_export_trace_structlog_shape(lab):
+    driver, script = lab
+    driver.start(script, provenance=True)
+    driver.step_opcodes(10)
+    trace = driver.export_trace(limit=4)
+    assert trace["total"] >= 10
+    assert len(trace["structLogs"]) == 4
+    assert trace["truncated"] is True
+    row = trace["structLogs"][0]
+    assert {"pc", "op", "gas", "gasCost", "depth", "stack", "memSize"} <= set(row)
+    written = driver.export_trace(
+        path=os.path.join(os.path.dirname(script), "trace.json")
+    )
+    assert written["written"] == written["total"]
+
+
+def test_batch_experiments_branch_from_one_stop(lab):
+    driver, script = lab
+    driver.start(script)
+    driver.step_opcodes(10)
+    hit_pc = driver.status()["pc"]
+    batch = driver.run_experiments(
+        [
+            {"set_stack": {"0": "0x11"}, "run_until_pc": hit_pc, "read_stack": 2},
+            {"set_stack": {"0": "0x22"}, "run_until_pc": hit_pc, "read_stack": 2},
+        ]
+    )
+    assert batch["total"] == 2 and batch["base_restored"] is True
+    tops = [item["stack"][0]["hex"] for item in batch["items"]]
+    assert tops[0] != tops[1]  # each experiment saw its own mutation
+    assert driver.status()["pc"] == hit_pc  # base restored after the batch
+
+
+def test_parity_verdicts(lab):
+    from sevm.compile import compare_runtime
+
+    driver, script = lab
+    driver.start(script)
+    session = driver._session
+    art = next(a for a in session.project.artifacts.values() if a.deployed_bytecode)
+    exact = compare_runtime(art, art.deployed_bytecode)
+    assert exact["match"] is True and exact["difference"] == "none"
+    # A different metadata tail is not a divergence: strip the real one and
+    # append another valid `<cbor> <uint16 be length>` tail.
+    from sevm.compile.model import _strip_metadata
+
+    body = _strip_metadata(art.deployed_bytecode)
+    alt_meta = bytes([0xA2, 0x64, 0x69, 0x70, 0x66, 0x73])
+    tail = compare_runtime(art, body + alt_meta + len(alt_meta).to_bytes(2, "big"))
+    assert tail["match"] is True
+    # One flipped byte inside the code is, at its offset.
+    flipped = bytearray(art.deployed_bytecode)
+    flipped[10] ^= 0xFF
+    diverged = compare_runtime(art, bytes(flipped))
+    assert diverged["match"] is False
+    assert diverged["first_diff_offset"] == 10
+    # The MCP wrapper agrees on the running contract.
+    verdict = driver.check_parity("0x" + art.deployed_bytecode.hex())
+    assert verdict["match"] is True
+    assert verdict["contract"]
+
+
+def test_parity_hard_fails_session_start(lab):
+    driver, script = lab
+    session_probe = DebugDriver(timeout=60)
+    session_probe.start(script)
+    art = next(
+        a
+        for a in session_probe._session.project.artifacts.values()
+        if a.deployed_bytecode
+    )
+    flipped = bytearray(art.deployed_bytecode)
+    flipped[4] ^= 0x01
+    with pytest.raises(Exception, match="parity failed"):
+        driver.start(script, reference_runtime_hex="0x" + bytes(flipped).hex())
+    session_probe.stop()

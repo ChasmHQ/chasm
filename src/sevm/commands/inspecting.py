@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from ..frames import FrameSnapshot
@@ -205,6 +206,101 @@ def cmd_find(proc: CommandProcessor, args: list[str], rest: str) -> CommandResul
     return result
 
 
+def cmd_provenance(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`provenance on|off|status` — opt-in per-opcode recording for `why`."""
+    prov = proc.session.provenance
+    if not args or args[0] not in ("on", "off", "status"):
+        return CommandResult(error="usage: provenance on|off|status")
+    if args[0] in ("on", "off"):
+        prov.enabled = args[0] == "on"
+    state = "on" if prov.enabled else "off"
+    return CommandResult().add(
+        f"[yellow]provenance recording {state}[/yellow] "
+        f"[dim]({len(prov.records)} opcode(s) recorded)[/dim]"
+    )
+
+
+def cmd_why(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`why N` — what produced the value in $stack[N] (0 = top).
+
+    Walks the recording newest→oldest: constants, DUP/SWAP copies, consumed
+    operands, MSTORE→MLOAD and SSTORE→SLOAD chains, calldata windows, and the
+    frame-entry slots anything else traces back to.
+    """
+    snap = proc.require_stop()
+    if not args or not args[0].lstrip("-").isdigit():
+        return CommandResult(error="usage: why <stack index, 0 = top>")
+    index = int(args[0])
+    prov = proc.session.provenance
+    if not prov.records:
+        return CommandResult(
+            error="nothing recorded; `provenance on` first, then navigate"
+        )
+    from ..session.provenance import why_stack
+
+    bottom_up = tuple(int(entry.value) for entry in reversed(snap.stack))
+    result = why_stack(prov.records, snap.depth, bottom_up, index)
+    if result.get("error"):
+        return CommandResult(error=result["error"])
+    out = CommandResult().add(
+        f"[dim]why $stack[{index}] ({len(result['origins'])} origin(s)):[/dim]"
+    )
+    for origin in result["origins"]:
+        chain = " <- ".join(f"0x{hop['pc']:04x} {hop['op']}" for hop in origin["via"][:6])
+        more = " …" if len(origin["via"]) > 6 else ""
+        out.add(
+            f"  [{origin['kind']}] {_escape(origin['detail'])}"
+            + (f" = {origin['value'][:18]}…" if origin.get("value") else "")
+            + (f"  [dim]{chain}{more}[/dim]" if chain else "")
+        )
+    return out
+
+
+def cmd_parity(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`parity [Contract] 0x<hex>` — prove the compiled runtime matches a deployment.
+
+    Breakpoint pcs and gadget offsets are only true for the exact bytes on chain:
+    paste the deployed runtime (explorer `cast code` output) and this reports the
+    first divergence, ignoring the metadata tail and immutable values.
+    """
+    snap = proc.require_stop()
+    hex_arg = None
+    contract = None
+    for arg in args:
+        if arg.lower().startswith("0x") and len(arg) > 2:
+            hex_arg = arg[2:]
+        elif re.fullmatch(r"[0-9a-fA-F]+", arg) and len(arg) % 2 == 0:
+            hex_arg = arg
+        else:
+            contract = arg
+    if hex_arg is None:
+        return CommandResult(error="usage: parity [Contract] 0x<deployed runtime hex>")
+    try:
+        reference = bytes.fromhex(hex_arg)
+    except ValueError:
+        return CommandResult(error=f"not hex: {hex_arg[:16]}…")
+    name = contract or snap.contract_name
+    art = proc.project.artifact(name) if name else None
+    if art is None or not art.deployed_bytecode:
+        return CommandResult(error=f"no compiled artifact for {name!r}")
+    from ..compile import compare_runtime
+
+    verdict = compare_runtime(art, reference)
+    if verdict["match"]:
+        return CommandResult().add(
+            f"[green]runtime matches {art.name}[/green] "
+            f"[dim](compiled {verdict['compiled_size']}B, reference "
+            f"{verdict['reference_size']}B; metadata/immutables ignored)[/dim]"
+        )
+    return CommandResult().add(
+        f"[bold red]runtime DIVERGES from {art.name}[/bold red] at "
+        f"0x{verdict['first_diff_offset']:04x} "
+        f"[dim](compiled {verdict['compiled_size']}B, reference "
+        f"{verdict['reference_size']}B; every pc past this point describes a "
+        f"different program — rebuild with the deployed solc/flags)[/dim]"
+    )
+
+
 def cmd_frame(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
     snap = proc.require_stop()
     if not args:
@@ -339,4 +435,7 @@ VERBS = {
     "disassemble": cmd_disassemble,
     "disas": cmd_disassemble,
     "find": cmd_find,
+    "parity": cmd_parity,
+    "provenance": cmd_provenance,
+    "why": cmd_why,
 }

@@ -18,6 +18,8 @@ Where things live:
   code.py         resolving running bytecode back to the source it came from
   patch.py        the `apply_computation` monkeypatch and its opcode loop
   stepping.py     when a step stops; when a watchpoint fires
+  checkpoints.py  named snapshots: capture a stop, experiment, restore
+  provenance.py   the opcode recorder behind `why $stack[n]` and trace export
   snapshots.py    building the `FrameSnapshot` the UI renders
   framelocals.py  recovering Solidity locals from the EVM stack
   inspect_ops.py  the reads and mutations the controller can ask for

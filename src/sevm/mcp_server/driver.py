@@ -54,6 +54,7 @@ class DebugDriver:
         self._target_path: str | None = None
         self._target_kind: str | None = None  # "script" | "foundry"
         self._prev_snapshot: FrameSnapshot | None = None
+        self._provenance_next = False
         self.notices: list[str] = []
 
     # -- lifecycle ---------------------------------------------------------
@@ -79,8 +80,18 @@ class DebugDriver:
         match: str | None = None,
         match_contract: str | None = None,
         timeout: float | None = None,
+        reference_runtime_hex: str | None = None,
+        provenance: bool = False,
     ) -> dict[str, Any]:
-        """Compile and start a debug target; replaces any existing session."""
+        """Compile and start a debug target; replaces any existing session.
+
+        `provenance=true` records every executed opcode from the start, enabling
+        `sevm_why_stack` and `sevm_export_trace` without a second pass.
+        `reference_runtime_hex` (the deployed runtime, as an explorer or
+        `cast code` prints it) hard-fails the start when the compiled contract
+        diverges beyond the metadata tail: pcs and gadget offsets silently
+        describe a different program otherwise.
+        """
         with self._lock:
             self.stop()
             self.notices = []
@@ -89,11 +100,31 @@ class DebugDriver:
             if not os.path.isfile(target):
                 raise DriverError(f"no such file: {target}")
             self._target_path = target
+            self._provenance_next = bool(provenance)
             if target.endswith(".sol"):
                 self._target_kind = "foundry"
-                return self._start_foundry(target, solc, optimize, match, match_contract)
-            self._target_kind = "script"
-            return self._start_script(target, args or [], contracts, solc, optimize)
+                report = self._start_foundry(
+                    target, solc, optimize, match, match_contract
+                )
+            else:
+                self._target_kind = "script"
+                report = self._start_script(target, args or [], contracts, solc, optimize)
+            if reference_runtime_hex:
+                verdict = self.check_parity(reference_runtime_hex)
+                if not verdict["match"]:
+                    detail = (
+                        f"first divergence at 0x{verdict['first_diff_offset']:04x} "
+                        f"(compiled {verdict['compiled_size']}B, reference "
+                        f"{verdict['reference_size']}B)"
+                    )
+                    self.stop()
+                    raise DriverError(
+                        f"bytecode parity failed for {verdict['contract']}: {detail}; "
+                        "rebuild with the deployed solc version and flags — every pc "
+                        "past the divergence describes a different program"
+                    )
+                report["parity"] = verdict
+            return report
 
     def _start_script(
         self,
@@ -217,6 +248,8 @@ class DebugDriver:
                 continue
             if first_contract is None:
                 first_contract, _, first_fn = name.partition(".")
+        if getattr(self, "_provenance_next", False):
+            session.provenance.enabled = True
         session.start(target)
         first = session.wait(timeout=self.timeout)
         if first is None:
@@ -307,6 +340,7 @@ class DebugDriver:
                 finished=True,
                 ok=bool(getattr(event, "ok", False)),
                 exit_error=getattr(event, "error", None),
+                exit_traceback=getattr(event, "traceback", None),
                 last_revert=getattr(session, "last_revert", None) if session else None,
             )
             return report
@@ -650,6 +684,238 @@ class DebugDriver:
                     for sig, sel in sorted(art.method_identifiers.items())
                 ],
             }
+
+    # -- checkpoints ---------------------------------------------------------
+
+    def save_checkpoint(self, name: str = "last") -> dict[str, Any]:
+        with self._lock:
+            session, _ = self._require()
+            self._require_snapshot()
+            info = session.inspect("save_checkpoint", name)
+            return info
+
+    def _restore(self, name: str) -> dict[str, Any]:
+        """Shared restore: roll back, refresh, and square the snapshot's pc.
+
+        Right after a restore the live CodeStream sits pre-read, so a refreshed
+        snapshot reports `program_counter - 1` — one below the opcode that will
+        actually run. The checkpoint's boundary pc is the truth; patch it in.
+        """
+        from dataclasses import replace as dc_replace
+
+        session, _ = self._require()
+        info = session.inspect("restore_checkpoint", name)
+        session.refresh_snapshot()
+        self._prev_snapshot = None
+        snap = session.last_snapshot
+        if snap is not None and info.get("pc") is not None:
+            session.last_snapshot = dc_replace(snap, pc=info["pc"])
+        return info
+
+    def restore_checkpoint(self, name: str = "last") -> dict[str, Any]:
+        """Roll back to a checkpoint; returns the stop report at the restored stop."""
+        with self._lock:
+            session, _ = self._require()
+            if session.finished:
+                raise DriverError(
+                    "cannot restore: the program already finished (its frames are "
+                    "gone); restart the session and re-reach the stop"
+                )
+            self._require_snapshot()
+            info = self._restore(name)
+            report = self._report(session.last_snapshot)
+            report["restore"] = info
+            return report
+
+    def list_checkpoints(self) -> dict[str, Any]:
+        session, _ = self._require()
+        return {"checkpoints": session.checkpoints.listing()}
+
+    # -- provenance & trace ---------------------------------------------------
+
+    def set_provenance(self, enabled: bool) -> dict[str, Any]:
+        """Turn per-opcode recording on/off; the switch applies from now on."""
+        with self._lock:
+            session, _ = self._require()
+            session.provenance.enabled = bool(enabled)
+            return {
+                "enabled": session.provenance.enabled,
+                "records": len(session.provenance.records),
+                "note": "why_stack and export_trace read this recording",
+            }
+
+    def why_stack(self, index_from_top: int) -> dict[str, Any]:
+        """Trace a current stack slot back through the recording to its origins."""
+        with self._lock:
+            session, _ = self._require()
+            snap = self._require_snapshot()
+            prov = session.provenance
+            if not prov.enabled and not prov.records:
+                raise DriverError(
+                    "provenance recording is off; call sevm_set_provenance(True) "
+                    "(or start the session with provenance=true) and navigate"
+                )
+            from ..session.provenance import why_stack as slice_stack
+
+            bottom_up = tuple(int(entry.value) for entry in reversed(snap.stack))
+            result = slice_stack(prov.records, snap.depth, bottom_up, int(index_from_top))
+            result["stack_index"] = int(index_from_top)
+            return result
+
+    def export_trace(
+        self,
+        path: str | None = None,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Export the recording as anvil/geth structLog JSON (windowed, or to a file)."""
+        with self._lock:
+            session, _ = self._require()
+            prov = session.provenance
+            if not prov.records:
+                raise DriverError(
+                    "nothing recorded; enable provenance first and navigate"
+                )
+            import json
+
+            if path:
+                full = prov.structlog(0, len(prov.records))
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(full, fh)
+                return {
+                    "path": path,
+                    "total": full["total"],
+                    "written": len(full["structLogs"]),
+                }
+            window = prov.structlog(max(0, offset), max(1, min(limit, 2000)))
+            return window
+
+    # -- batch experiments -----------------------------------------------------
+
+    def run_experiments(
+        self, experiments: list[dict[str, Any]], base_checkpoint: str = "auto"
+    ) -> dict[str, Any]:
+        """Branch-search from one deep stop: mutate -> run -> read, per experiment.
+
+        Each experiment: {set_stack?: {index: value}, set_gas?: int,
+        write_memory?: {offset: hex}, run_until_pc?: int, continue_to_stop?: bool,
+        read_stack?: int}. The base checkpoint is saved once and restored before
+        every experiment, so 32 variants cost one prefix. An experiment that lets
+        the program finish ends the batch (restore becomes impossible); order
+        risky ones last.
+        """
+        with self._lock:
+            session, _ = self._require()
+            self._require_snapshot()
+            if not experiments:
+                raise DriverError("no experiments given")
+            if len(experiments) > 32:
+                raise DriverError("at most 32 experiments per call")
+            from sevm.session import StepMode
+
+            checkpoint_name = (
+                base_checkpoint if base_checkpoint != "auto" else "batch-base"
+            )
+            session.inspect("save_checkpoint", checkpoint_name)
+            results: list[dict[str, Any]] = []
+            aborted: str | None = None
+            try:
+                for number, experiment in enumerate(experiments):
+                    session.inspect("restore_checkpoint", checkpoint_name)
+                    session.refresh_snapshot()
+                    applied: dict[str, Any] = {}
+                    for index, value in (experiment.get("set_stack") or {}).items():
+                        session.inspect("write_stack", int(index), int(str(value), 0))
+                    if experiment.get("set_gas") is not None:
+                        session.inspect("set_gas", int(str(experiment["set_gas"]), 0))
+                    for offset, hex_data in (
+                        experiment.get("write_memory") or {}
+                    ).items():
+                        cleaned = str(hex_data).lower().removeprefix("0x")
+                        if not cleaned or len(cleaned) % 2:
+                            raise DriverError(f"not hex data: {hex_data!r}")
+                        session.inspect(
+                            "write_memory", int(offset), bytes.fromhex(cleaned)
+                        )
+                    applied = {
+                        "set_stack": experiment.get("set_stack") or {},
+                        "set_gas": experiment.get("set_gas"),
+                        "write_memory": experiment.get("write_memory") or {},
+                    }
+                    if experiment.get("run_until_pc") is not None:
+                        event = session.resume(
+                            StepMode.UNTIL,
+                            target_pc=int(experiment["run_until_pc"]),
+                            timeout=self.timeout,
+                        )
+                    else:
+                        event = session.resume(StepMode.RUN, timeout=self.timeout)
+                    if event is None:
+                        results.append({"experiment": number, "error": "timed out"})
+                        continue
+                    from ..session import Finished
+
+                    if isinstance(event, Finished):
+                        aborted = (
+                            f"experiment {number} let the program finish "
+                            f"({'ok' if event.ok else event.error}); the batch "
+                            "stopped because a finished run cannot be restored — "
+                            "restart and re-reach the stop"
+                        )
+                        break
+                    session.refresh_snapshot()
+                    self._prev_snapshot = None
+                    report = self._report(session.last_snapshot)
+                    report["experiment"] = number
+                    report["applied"] = applied
+                    if experiment.get("read_stack"):
+                        report["stack"] = self.read_stack(
+                            0, int(experiment["read_stack"])
+                        )["items"]
+                    results.append(report)
+            finally:
+                if aborted is None:
+                    try:
+                        self._restore(checkpoint_name)
+                    finally:
+                        session.checkpoints.discard_after(checkpoint_name)
+                        session.checkpoints._by_name.pop(checkpoint_name, None)
+            out: dict[str, Any] = {
+                "items": results,
+                "total": len(results),
+                "truncated": False,
+                "base_restored": aborted is None,
+            }
+            if aborted:
+                out["aborted"] = aborted
+            return out
+
+    # -- parity ------------------------------------------------------------
+
+    def check_parity(
+        self, reference_hex: str, contract: str | None = None
+    ) -> dict[str, Any]:
+        """Compare a compiled runtime against a reference deployment (explorer hex)."""
+        with self._lock:
+            _session, processor = self._require()
+            snap = self._require_snapshot()
+            cleaned = reference_hex.lower().removeprefix("0x")
+            if (
+                not cleaned
+                or len(cleaned) % 2
+                or any(c not in "0123456789abcdef" for c in cleaned)
+            ):
+                raise DriverError(f"not a hex runtime: {reference_hex[:24]!r}")
+            reference = bytes.fromhex(cleaned)
+            name = contract or snap.contract_name
+            art = processor.project.artifact(name) if name else None
+            if art is None or not art.deployed_bytecode:
+                raise DriverError(f"no compiled artifact for {name!r}")
+            from ..compile import compare_runtime
+
+            verdict = compare_runtime(art, reference)
+            verdict["contract"] = art.name
+            return verdict
 
     # -- search ------------------------------------------------------------
 

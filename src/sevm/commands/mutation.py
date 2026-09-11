@@ -29,7 +29,7 @@ def cmd_set(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult
 
     # A bare local name is a stack slot, not storage, and has to be written as one.
     if re.fullmatch(r"[A-Za-z_$][\w$]*", lhs) and proc.is_local(lhs):
-        value = int(proc.evaluate(rhs).value)
+        value = _rhs_value(proc, rhs)
         written = proc.inspect(
             "write_local", lhs, value, internal_index=proc.selected_internal
         )
@@ -51,8 +51,21 @@ def cmd_set(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult
         )
 
 
+def _rhs_value(proc: CommandProcessor, rhs: str) -> int:
+    """A decimal or 0x-hex literal parses without solc; anything else evaluates.
+
+    The fast path is not just cheaper: a bare `0x` literal of address or bytes
+    width is not a valid Solidity expression, so `set $stack[0] = 0x<address>`
+    would fail outright instead of writing the value.
+    """
+    text = rhs.strip()
+    if re.fullmatch(r"0[xX][0-9a-fA-F]+|\d+", text):
+        return _integer(text, "set")
+    return int(proc.evaluate(text).value)
+
+
 def _set_convenience(proc: CommandProcessor, lhs: str, rhs: str) -> CommandResult:
-    value = int(proc.evaluate(rhs).value)
+    value = _rhs_value(proc, rhs)
     name = lhs[1:]
     if name == "pc":
         proc.inspect("set_pc", value)
@@ -165,6 +178,46 @@ def cmd_asm(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult
     return proc.assemble(proc.substitute(source))
 
 
+# ==================================================================
+# checkpoints
+# ==================================================================
+
+
+def cmd_snap(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`snap [name]` — capture this stop: state, frames, journal, bookkeeping.
+
+    Restore later with `restore [name]` (default name: "last") and experiment
+    freely in between: stack/memory/storage writes, jumps, even a `continue`
+    that stops again — restore rolls all of it back without re-running the
+    script prefix.
+    """
+    proc.require_stop()
+    name = args[0] if args else "last"
+    info = proc.inspect("save_checkpoint", name)
+    return CommandResult().add(
+        f"[green]checkpoint {info['name']!r} saved[/green] "
+        f"[dim]({info['frames']} frame(s), {info['note']})[/dim]"
+    )
+
+
+def cmd_restore(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`restore [name]` — roll the live run back to a `snap`.
+
+    Everything since the checkpoint is undone: storage, balances, memory,
+    stack, gas, cheat state. Restoring discards checkpoints saved after the
+    restored one, and only works while the frame stack is the one that was
+    saved — a checkpoint taken before a CALL cannot be restored from inside it.
+    """
+    proc.require_stop()
+    name = args[0] if args else "last"
+    info = proc.inspect("restore_checkpoint", name)
+    dropped = f", dropped {', '.join(info['dropped'])}" if info["dropped"] else ""
+    return CommandResult(mutated=True).add(
+        f"[yellow]restored checkpoint {info['name']!r}[/yellow] "
+        f"[dim]({info['frames']} frame(s), step {info['step']}{dropped})[/dim]"
+    )
+
+
 VERBS = {
     "set": cmd_set,
     "asm": cmd_asm,
@@ -173,4 +226,6 @@ VERBS = {
     "jump": cmd_jump,
     "reseat": cmd_reseat,
     "bind": cmd_bind,
+    "snap": cmd_snap,
+    "restore": cmd_restore,
 }

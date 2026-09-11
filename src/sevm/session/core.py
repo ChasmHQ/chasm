@@ -99,6 +99,17 @@ class DebugSession:
         # Set by `set $gas` while parked on an out-of-gas error; the opcode loop reads
         # it right after the pause lifts and retries the instruction instead of raising.
         self._gas_rescued = False
+        # Named checkpoints for `snap` / `restore`: capture a stop, experiment,
+        # come back without re-running the prefix.
+        from .checkpoints import CheckpointSet
+        from .provenance import Provenance
+
+        self.checkpoints = CheckpointSet()
+        self.provenance = Provenance()
+        # Set when a pc write is serviced during a pause (`jump`, `set $pc`,
+        # restore); the opcode loop reads it right after the pause lifts and
+        # skips the stale iteration for the pre-write pc.
+        self._skip_current_opcode = False
 
         self.armed = False
         self.finished = False
@@ -229,6 +240,10 @@ class DebugSession:
         self.step_index = 0
         self.gas_by_line.clear()
         self.gas_by_opcode.clear()
+        # A fresh chain invalidates every journal checkpoint and frame capture.
+        self.checkpoints.clear()
+        self._skip_current_opcode = False
+        self.provenance.clear()
         # Stop policy back to the opening stop, exactly as a fresh session.
         self._mode = StepMode.STEP if self.skip_to_source else StepMode.STEPI
         self._mode_depth = 0

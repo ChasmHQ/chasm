@@ -279,6 +279,9 @@ class InspectOps:
         if not frame.disassembly.is_valid_jumpdest(value):
             raise ValueError(f"0x{value:x} is not a JUMPDEST; refusing to jump")
         computation.code.program_counter = value
+        # The loop still holds the yielded opcode for the OLD pc; skip it so the
+        # next instruction executed is the one just jumped to.
+        self.session._skip_current_opcode = True
         return value
 
     def _op_reseat_frame(
@@ -412,3 +415,101 @@ class InspectOps:
             keep=keep,
             bindings=self.session.frame_locals(frame, computation, internal_index),
         )
+
+    # -- checkpoints ----------------------------------------------------------
+
+    def _op_save_checkpoint(
+        self, frame: EvmFrame, computation: Any, name: str = "last"
+    ) -> dict:
+        """Capture this stop: frame state, journal checkpoint, session bookkeeping."""
+        from . import checkpoints as ckpt
+
+        session = self.session
+        existing = session.checkpoints.get(name)
+        if existing is not None and not ckpt.frames_match(
+            session._frames, existing.frames
+        ):
+            # Overwriting is fine only while the same frames are live; otherwise the
+            # old journal checkpoint would be orphaned on the stack.
+            return Failure(
+                f"checkpoint {name!r} was taken in a different frame stack; "
+                "save under a new name"
+            )
+        saved = ckpt.Checkpoint(
+            name=name,
+            frames=ckpt.capture_frames(session._frames),
+            journal=computation.state.snapshot(),
+            step_index=session.step_index,
+            gas_by_line=dict(session.gas_by_line),
+            gas_by_opcode=dict(session.gas_by_opcode),
+            cheats=ckpt.capture_cheats(session.cheats),
+            watch_baselines={
+                wp.number: (wp.initialised, wp.old_value)
+                for wp in session.breakpoints.active_watchpoints()
+            },
+            provenance_len=len(session.provenance.records),
+            last_revert=session.last_revert,
+            note=(
+                f"depth {frame.depth}, pc 0x{max(0, computation.code.program_counter - 1):04x}"
+            ),
+        )
+        session.checkpoints.save(saved)
+        return {"name": name, "frames": len(saved.frames), "note": saved.note}
+
+    def _op_restore_checkpoint(
+        self, frame: EvmFrame, computation: Any, name: str = "last"
+    ) -> dict:
+        """Roll the live run back to a checkpoint (VM thread, frames must match)."""
+        from . import checkpoints as ckpt
+
+        session = self.session
+        saved = session.checkpoints.get(name)
+        if saved is None:
+            latest = session.checkpoints.latest()
+            hint = f" (did you mean {latest.name!r}?)" if latest else ""
+            return Failure(f"no checkpoint named {name!r}{hint}")
+        if not ckpt.frames_match(session._frames, saved.frames):
+            return Failure(
+                f"cannot restore {name!r}: the frame stack changed since it was "
+                "taken (a call returned or a new one is live); finish/step out of "
+                "frames created after the checkpoint first, or `restart`"
+            )
+        computation.state.revert(saved.journal)
+        ckpt.restore_frames(session._frames, saved.frames)
+        # The loop is parked inside the yield for the *current* opcode, whose pc
+        # the restore just replaced; skip that stale iteration.
+        session._skip_current_opcode = True
+        # py-evm's revert CONSUMES the journal checkpoint, so a snapshot taken at
+        # the now-restored state re-arms the checkpoint: restoring twice, or
+        # continuing and coming back, keeps working. Frame writes do not journal.
+        saved.journal = computation.state.snapshot()
+        session.step_index = saved.step_index
+        session.gas_by_line.clear()
+        session.gas_by_line.update(saved.gas_by_line)
+        session.gas_by_opcode.clear()
+        session.gas_by_opcode.update(saved.gas_by_opcode)
+        ckpt.restore_cheats(session.cheats, saved.cheats)
+        for wp in session.breakpoints.active_watchpoints():
+            baseline = saved.watch_baselines.get(wp.number)
+            if baseline is not None:
+                wp.initialised, wp.old_value = baseline
+        provenance = getattr(session, "provenance", None)
+        if provenance is not None:
+            provenance.truncate(saved.provenance_len)
+        session.last_revert = saved.last_revert
+        saved.captures += 1
+        dropped = session.checkpoints.discard_after(name)
+        return {
+            "name": name,
+            "frames": len(saved.frames),
+            "dropped": dropped,
+            "step": saved.step_index,
+            # The innermost boundary pc: right after a restore the live stream
+            # sits pre-read, so a snapshot's `program_counter - 1` shows one
+            # less than the opcode that will actually run next.
+            "pc": saved.frames[-1].pc if saved.frames else None,
+            "note": saved.note,
+        }
+
+    def _op_list_checkpoints(self, frame: EvmFrame, computation: Any) -> list[dict]:
+        return self.session.checkpoints.listing()

@@ -66,6 +66,8 @@ def build_server(driver: DebugDriver | None = None) -> MCPServer:
         match: str | None = None,
         match_contract: str | None = None,
         timeout: float | None = None,
+        reference_runtime_hex: str | None = None,
+        provenance: bool = False,
     ) -> dict:
         """Start debugging a target and stop at the first contract instruction.
 
@@ -314,5 +316,77 @@ def build_server(driver: DebugDriver | None = None) -> MCPServer:
         ether)` cheatcodes, Yul like `mstore(0x80, 1)`, `jump 0x108`, `reseat`,
         `watch`, `tbreak`, `x/32xb 0x40`... Returns plain-text lines."""
         return await _run(driver, "command", line)
+
+    # -- checkpoints ---------------------------------------------------------
+
+    @server.tool()
+    async def sevm_save_checkpoint(name: str = "last") -> dict:
+        """Capture the current stop: frame state, storage journal, bookkeeping.
+
+        Experiment freely (mutations, jumps, even continue-and-stop); restore
+        rolls everything back without re-running the script prefix. Restoring
+        discards checkpoints saved after the restored one, and only works while
+        the frame stack is the one saved (finish out of calls made after the
+        checkpoint before restoring)."""
+        return await _run(driver, "save_checkpoint", name)
+
+    @server.tool()
+    async def sevm_restore_checkpoint(name: str = "last") -> dict:
+        """Roll the live run back to a checkpoint; returns the stop report there."""
+        return await _run(driver, "restore_checkpoint", name)
+
+    @server.tool()
+    async def sevm_list_checkpoints() -> dict:
+        """Saved checkpoints with their positions and restore counts."""
+        return await _run(driver, "list_checkpoints")
+
+    # -- provenance & trace ---------------------------------------------------
+
+    @server.tool()
+    async def sevm_set_provenance(enabled: bool) -> dict:
+        """Turn per-opcode recording on/off (feeds why_stack and export_trace)."""
+        return await _run(driver, "set_provenance", enabled)
+
+    @server.tool()
+    async def sevm_why_stack(index: int) -> dict:
+        """Why does $stack[index] hold this value? Traces it backward through the
+        recording to constants, calldata windows, MSTORE/SSTORE chains, and the
+        frame-entry slots — the question behind "which entry slot fed operand N"."""
+        return await _run(driver, "why_stack", index)
+
+    @server.tool()
+    async def sevm_export_trace(
+        path: str | None = None, offset: int = 0, limit: int = 500
+    ) -> dict:
+        """Export the recording as anvil/geth structLog JSON (the
+        debug_traceTransaction shape). `path` writes the whole trace to a file;
+        otherwise returns a windowed slice {items, total, truncated}."""
+        return await _run(driver, "export_trace", path, offset, limit)
+
+    # -- batch experiments -----------------------------------------------------
+
+    @server.tool()
+    async def sevm_run_experiments(
+        experiments: list[dict], base_checkpoint: str = "auto"
+    ) -> dict:
+        """Branch-search from one deep stop without replaying the prefix.
+
+        Saves a base checkpoint, then per experiment (max 32): restore base,
+        apply {set_stack: {index: value}, set_gas, write_memory: {offset: hex}},
+        run (run_until_pc, or continue to the next stop), and report the stop
+        with the requested stack window (read_stack: N). Returns
+        {items, total, base_restored}; order experiments that might finish the
+        program last — a finished run cannot be restored."""
+        return await _run(driver, "run_experiments", experiments, base_checkpoint)
+
+    # -- parity ----------------------------------------------------------------
+
+    @server.tool()
+    async def sevm_check_parity(reference_hex: str, contract: str | None = None) -> dict:
+        """Compare a compiled runtime against the deployed bytecode (explorer
+        hex). Ignores the metadata tail and immutable values; reports the first
+        divergence — past it, every pc and gadget offset describes a different
+        program."""
+        return await _run(driver, "check_parity", reference_hex, contract)
 
     return server

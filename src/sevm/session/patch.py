@@ -106,6 +106,14 @@ def make_apply_patch(session: Any) -> Any:
                         except AttributeError:
                             mnemonic = opcode_fn.__wrapped__.mnemonic  # type: ignore[attr-defined]
                         session._on_opcode(frame, computation, pc, opcode, mnemonic)
+                        # A pc write serviced during that pause (`jump`, `set $pc`,
+                        # a checkpoint restore) repositions the CodeStream, but THIS
+                        # iteration's opcode was already yielded for the old pc —
+                        # executing it would fire a stale instruction on fresh state.
+                        # Skip the iteration; the next reads the restored pc.
+                        if session._skip_current_opcode:
+                            session._skip_current_opcode = False
+                            continue
                         gas_before = computation._gas_meter.gas_remaining
                         # A failing opcode may already have popped its operands
                         # (py-evm charges some costs after the pops), so keep a copy
@@ -117,6 +125,18 @@ def make_apply_patch(session: Any) -> Any:
                         except Halt:
                             session._account_gas(
                                 frame, computation, pc, mnemonic, gas_before
+                            )
+                            session.provenance.record(
+                                session.step_index,
+                                pc,
+                                opcode,
+                                mnemonic,
+                                frame.depth,
+                                gas_before,
+                                computation._gas_meter.gas_remaining,
+                                len(computation._memory),
+                                stack_backup,
+                                list(computation._stack.values),
                             )
                             break
                         except VMError as error:
@@ -140,6 +160,18 @@ def make_apply_patch(session: Any) -> Any:
                                 )
                                 break
                         session._account_gas(frame, computation, pc, mnemonic, gas_before)
+                        session.provenance.record(
+                            session.step_index,
+                            pc,
+                            opcode,
+                            mnemonic,
+                            frame.depth,
+                            gas_before,
+                            computation._gas_meter.gas_remaining,
+                            len(computation._memory),
+                            stack_backup,
+                            list(computation._stack.values),
+                        )
                         session._after_opcode(frame, computation, pc, mnemonic)
                     else:
                         try:
