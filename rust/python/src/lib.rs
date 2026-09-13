@@ -640,6 +640,27 @@ impl RevmChain {
         Ok(output)
     }
 
+    #[pyo3(signature = (opcode, arguments, outputs=1))]
+    fn execute_opcode<'py>(
+        &self,
+        py: Python<'py>,
+        opcode: u8,
+        arguments: &Bound<'_, PyAny>,
+        outputs: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let arguments = arguments
+            .try_iter()?
+            .map(|item| parse_word(&item?))
+            .collect::<PyResult<Vec<_>>>()?;
+        let result = py
+            .detach(|| self.inner.execute_opcode(opcode, arguments, outputs))
+            .map_err(python_error)?;
+        let output = PyDict::new(py);
+        output.set_item("value", result.value.map(word))?;
+        output.set_item("gas_used", result.gas_used)?;
+        Ok(output)
+    }
+
     #[pyo3(signature = (output=None, revert=false))]
     fn respond_host(
         &self,

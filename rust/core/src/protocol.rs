@@ -192,6 +192,12 @@ pub struct Evaluation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpcodeExecution {
+    pub value: Option<U256>,
+    pub gas_used: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostCall {
     pub address: Address,
     pub caller: Address,
@@ -256,6 +262,11 @@ pub enum DebugCommand {
         value: U256,
         gas_limit: u64,
         keep: bool,
+    },
+    ExecuteOpcode {
+        opcode: u8,
+        arguments: Vec<U256>,
+        outputs: usize,
     },
     RespondHost {
         output: Bytes,
@@ -330,6 +341,7 @@ pub enum CommandValue {
     Number(u64),
     Bytes(Bytes),
     Evaluation(Evaluation),
+    OpcodeExecution(OpcodeExecution),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

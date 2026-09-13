@@ -108,6 +108,43 @@ fn mutates_live_stack_memory_storage_gas_and_pc() {
 }
 
 #[test]
+fn executes_opcodes_without_consuming_the_paused_stack_or_gas() {
+    let session = PrototypeSession::start(
+        SessionConfig::new(DEFAULT_TARGET, [opcode::JUMPDEST, opcode::STOP])
+            .with_breakpoint(DEFAULT_TARGET, 0),
+    );
+    let before = paused(&session);
+
+    let stored = session
+        .execute_opcode(
+            opcode::MSTORE,
+            vec![U256::from(32), U256::from(0xdead_beefu64)],
+            0,
+        )
+        .unwrap();
+    assert_eq!(stored.value, None);
+    assert!(stored.gas_used > 0);
+    let loaded = session
+        .execute_opcode(opcode::MLOAD, vec![U256::from(32)], 1)
+        .unwrap();
+    assert_eq!(loaded.value, Some(U256::from(0xdead_beefu64)));
+    session
+        .execute_opcode(opcode::SSTORE, vec![U256::from(7), U256::from(8)], 0)
+        .unwrap();
+    assert_eq!(session.read_storage(U256::from(7)).unwrap(), U256::from(8));
+
+    let after = session.snapshot().unwrap();
+    assert_eq!(after.stack, before.stack);
+    assert_eq!(after.gas_remaining, before.gas_remaining);
+    assert_eq!(
+        U256::from_be_slice(&after.memory[32..64]),
+        U256::from(0xdead_beefu64)
+    );
+    session.resume().unwrap();
+    assert!(finished(&session).success);
+}
+
+#[test]
 fn rewrites_the_operand_before_sstore_consumes_it() {
     let code = Bytes::from_static(&[
         opcode::PUSH1,

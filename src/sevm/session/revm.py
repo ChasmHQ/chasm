@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from eth_abi import encode as abi_encode
 
+from .. import assembly
 from .._revm import RevmChain
 from ..breakpoints import BP_OPCODE, BP_PC, WATCH_WRITE, BreakpointSet
 from ..cheatcodes import (
@@ -816,6 +817,20 @@ class RevmDebugSession:
             keep=keep,
         )
 
+    def execute_opcode(
+        self,
+        opcode: int,
+        arguments: list[int],
+        outputs: int,
+    ) -> dict[str, Any]:
+        result = self._chain.execute_opcode(opcode, arguments, outputs)
+        frame = self.current_frame
+        if frame is not None:
+            frame.computation._memory = _MemoryView(
+                bytes(self._chain.snapshot()["memory"])
+            )
+        return result
+
     def inspect(
         self,
         op: str,
@@ -1046,6 +1061,11 @@ class RevmDebugSession:
                     self._sync_prank()
                 return output
             except CheatError as exc:
+                raise SessionError(str(exc)) from exc
+        if op == "assembly":
+            try:
+                return assembly.run(self, frame.computation, str(args[0]))
+            except assembly.AsmError as exc:
                 raise SessionError(str(exc)) from exc
         if op == "evaluate":
             if self._eval_hook is None:

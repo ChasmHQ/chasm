@@ -298,3 +298,31 @@ fn supports_address_independent_breakpoints() {
     assert_eq!(responses[1]["result"]["snapshot"]["pc"], 0);
     assert_eq!(responses[3]["result"]["type"], "finished");
 }
+
+#[test]
+fn executes_an_opcode_against_the_paused_frame() {
+    let responses = run(&[
+        request(
+            1,
+            "start",
+            json!({
+                "entry": TARGET,
+                "accounts": [{ "address": TARGET, "code": "0x00" }],
+                "breakpoints": [{ "pc": 0 }],
+            }),
+        ),
+        request(2, "wait_event", json!({})),
+        request(
+            3,
+            "execute_opcode",
+            json!({"opcode": 1, "arguments": ["0x28", "0x2"], "outputs": 1}),
+        ),
+        request(4, "resume", json!({})),
+        request(5, "wait_event", json!({})),
+        request(6, "shutdown", json!({})),
+    ]);
+
+    assert_eq!(responses[2]["result"]["value"], "0x2a");
+    assert!(responses[2]["result"]["gas_used"].as_u64().unwrap() > 0);
+    assert_eq!(responses[4]["result"]["type"], "finished");
+}

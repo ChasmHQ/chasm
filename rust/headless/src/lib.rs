@@ -209,6 +209,16 @@ struct EvaluateCallParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ExecuteOpcodeParams {
+    opcode: u8,
+    #[serde(default)]
+    arguments: Vec<String>,
+    #[serde(default = "one_output")]
+    outputs: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HostResponseParams {
     #[serde(default = "empty_bytes")]
     output: String,
@@ -327,6 +337,10 @@ fn default_evaluation_gas_limit() -> u64 {
     1_000_000
 }
 
+fn one_output() -> usize {
+    1
+}
+
 fn empty_bytes() -> String {
     "0x".to_owned()
 }
@@ -399,6 +413,7 @@ impl ProtocolServer {
                         "state",
                         "evaluate",
                         "evaluate_call",
+                        "execute_opcode",
                         "set_prank",
                         "respond_host",
                         "resume",
@@ -486,6 +501,18 @@ impl ProtocolServer {
                         .unwrap_or(U256::ZERO),
                     gas_limit: params.gas_limit,
                     keep: params.keep,
+                })
+            }
+            "execute_opcode" => {
+                let params: ExecuteOpcodeParams = parse_params(params)?;
+                self.execute(DebugCommand::ExecuteOpcode {
+                    opcode: params.opcode,
+                    arguments: params
+                        .arguments
+                        .iter()
+                        .map(|value| parse_word(value))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    outputs: params.outputs,
                 })
             }
             "set_prank" => {
@@ -860,6 +887,10 @@ fn command_value_json(value: CommandValue) -> Value {
         CommandValue::Evaluation(value) => json!({
             "success": value.success,
             "output": hex_bytes(&value.output),
+            "gas_used": value.gas_used,
+        }),
+        CommandValue::OpcodeExecution(value) => json!({
+            "value": value.value.map(word),
             "gas_used": value.gas_used,
         }),
     }

@@ -1,9 +1,8 @@
 """Running parsed Yul against the live frame.
 
-Arguments are evaluated depth-first and pushed onto the frame's real stack in EVM order
-(first arg on top), Py-EVM's own opcode function runs, the result is read off the top, and
-the stack is restored by slice-assignment. Nothing is reimplemented, so `keccak256`,
-`mcopy` and `staticcall` behave exactly as they do mid-execution.
+Arguments are evaluated depth-first and passed to the active engine's opcode implementation
+in EVM order. Nothing is reimplemented, so arithmetic, memory, storage and environment
+operations behave exactly as they do mid-execution.
 
 Two departures from real execution: gas is metered then refunded, since inspection must not
 be able to induce an out-of-gas; memory expansion is kept, since the op genuinely wrote
@@ -76,6 +75,27 @@ def _evaluate(session: Any, computation: Any, node: Call | Literal) -> int | Non
     return _apply(session, computation, BUILTINS[node.name], args)
 
 
+def _evaluate_native(execute: Any, node: Call | Literal) -> tuple[int | None, int]:
+    if isinstance(node, Literal):
+        return node.value, 0
+    args: list[int] = []
+    gas = 0
+    for arg in node.args:
+        value, spent = _evaluate_native(execute, arg)
+        gas += spent
+        if value is None:
+            name = arg.name if isinstance(arg, Call) else "?"
+            raise AsmError(f"`{name}` returns nothing, so it cannot be an argument")
+        args.append(value)
+    builtin = BUILTINS[node.name]
+    try:
+        result = execute(builtin.opcode, args, builtin.outputs)
+    except Exception as exc:
+        raise AsmError(f"`{builtin.name}` failed: {exc}") from exc
+    value = result.get("value")
+    return (int(value, 16) if value is not None else None), gas + int(result["gas_used"])
+
+
 def run(session: Any, computation: Any, source: str) -> list[dict]:
     """Execute `source` against the paused frame and describe what each statement did.
 
@@ -87,6 +107,21 @@ def run(session: Any, computation: Any, source: str) -> list[dict]:
             have already run and are not undone; the EVM has no undo either.
     """
     statements = parse(source)
+    execute = getattr(session, "execute_opcode", None)
+    if execute is not None:
+        rows = []
+        for node in statements:
+            value, spent = _evaluate_native(execute, node)
+            rows.append(
+                {
+                    "text": node.text,
+                    "name": node.name if isinstance(node, Call) else "literal",
+                    "value": value,
+                    "gas": spent,
+                }
+            )
+        return rows
+
     meter = computation._gas_meter
     rows: list[dict] = []
     for node in statements:

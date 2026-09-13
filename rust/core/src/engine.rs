@@ -1,7 +1,7 @@
 use crate::protocol::{
     ChainConfig, CommandValue, DebugCommand, DebugEvent, Evaluation, Finished, FrameContext,
-    FrameKind, HostCall, PauseReason, PrankConfig, SessionConfig, SessionError, Snapshot,
-    StateCommand, StorageSlot, TransactionKind, TransactionRequest,
+    FrameKind, HostCall, OpcodeExecution, PauseReason, PrankConfig, SessionConfig, SessionError,
+    Snapshot, StateCommand, StorageSlot, TransactionKind, TransactionRequest,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use revm::{
@@ -13,8 +13,8 @@ use revm::{
     database::InMemoryDB,
     handler::instructions::EthInstructions,
     interpreter::{
-        CallInput, CallInputs, CallOutcome, CallScheme, FrameInput, Gas, InstructionResult,
-        Interpreter, InterpreterAction, InterpreterResult,
+        CallInput, CallInputs, CallOutcome, CallScheme, FrameInput, Gas, InstructionContext,
+        InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
         interpreter::{EthInterpreter, ExtBytecode, InputsImpl, SharedMemory},
         interpreter_types::{InputsTr, Jumps, LegacyBytecode, LoopControl},
     },
@@ -260,6 +260,12 @@ impl SevmInspector {
                     keep,
                 )
                 .map(CommandValue::Evaluation),
+                EngineCommand::Debug(DebugCommand::ExecuteOpcode {
+                    opcode,
+                    arguments,
+                    outputs,
+                }) => execute_opcode(context, interpreter, opcode, arguments, outputs)
+                    .map(CommandValue::OpcodeExecution),
                 EngineCommand::Debug(DebugCommand::RespondHost { .. }) => {
                     Err(SessionError::InvalidCommand(
                         "no host call is waiting for a response".to_owned(),
@@ -599,6 +605,87 @@ fn execute_evaluation(
         context.journal_mut().checkpoint_revert(checkpoint);
     }
     evaluation
+}
+
+fn execute_opcode(
+    context: &mut SevmContext,
+    interpreter: &mut Interpreter<EthInterpreter>,
+    opcode: u8,
+    arguments: Vec<U256>,
+    outputs: usize,
+) -> Result<OpcodeExecution, SessionError> {
+    if outputs > 1 {
+        return Err(SessionError::InvalidCommand(
+            "opcode execution supports at most one output".to_owned(),
+        ));
+    }
+    let input = Bytes::copy_from_slice(interpreter.input.input().as_bytes(context).as_ref());
+    let live_memory = interpreter.memory.context_memory().to_vec();
+    let mut memory = SharedMemory::new();
+    memory.resize(live_memory.len());
+    memory.set(0, &live_memory);
+    let mut nested = Interpreter::new(
+        memory,
+        ExtBytecode::new(Bytecode::new_raw(Bytes::copy_from_slice(
+            interpreter.bytecode.bytecode_slice(),
+        ))),
+        InputsImpl {
+            target_address: interpreter.input.target_address(),
+            bytecode_address: interpreter.input.bytecode_address().copied(),
+            caller_address: interpreter.input.caller_address(),
+            input: CallInput::Bytes(input),
+            call_value: interpreter.input.call_value(),
+            depth: interpreter.input.depth(),
+        },
+        interpreter.runtime_flag.is_static,
+        SpecId::CANCUN,
+        interpreter.gas.remaining(),
+    );
+    nested.return_data = interpreter.return_data.clone();
+    nested.stack.data_mut().extend(arguments.into_iter().rev());
+
+    let checkpoint = context.journal_mut().checkpoint();
+    let instructions =
+        EthInstructions::<EthInterpreter, SevmContext>::new_mainnet_with_spec(SpecId::CANCUN);
+    let result = (|| {
+        let static_gas = instructions.gas_table()[opcode as usize] as u64;
+        if !nested.gas.record_regular_cost(static_gas) {
+            return Err(SessionError::InvalidCommand(
+                "opcode execution ran out of gas".to_owned(),
+            ));
+        }
+        instructions.instruction_table()[opcode as usize]
+            .execute(InstructionContext {
+                interpreter: &mut nested,
+                host: context,
+            })
+            .map_err(|error| SessionError::InvalidCommand(format!("{error:?}")))?;
+        if nested.bytecode.action().is_some() {
+            return Err(SessionError::InvalidCommand(
+                "opcode execution cannot enter or end a frame".to_owned(),
+            ));
+        }
+        let value = if outputs == 0 {
+            None
+        } else {
+            Some(*nested.stack.data().last().ok_or_else(|| {
+                SessionError::InvalidCommand("opcode produced no result".to_owned())
+            })?)
+        };
+        Ok(OpcodeExecution {
+            value,
+            gas_used: nested.gas.total_gas_spent(),
+        })
+    })();
+    if result.is_ok() {
+        context.journal_mut().checkpoint_commit();
+        let memory = nested.memory.context_memory().to_vec();
+        interpreter.memory.resize(memory.len());
+        interpreter.memory.set(0, &memory);
+    } else {
+        context.journal_mut().checkpoint_revert(checkpoint);
+    }
+    result
 }
 
 impl Inspector<SevmContext> for SevmInspector {
@@ -941,6 +1028,22 @@ impl DebugEngine {
             keep,
         })? {
             CommandValue::Evaluation(value) => Ok(value),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn execute_opcode(
+        &self,
+        opcode: u8,
+        arguments: Vec<U256>,
+        outputs: usize,
+    ) -> Result<OpcodeExecution, SessionError> {
+        match self.execute(DebugCommand::ExecuteOpcode {
+            opcode,
+            arguments,
+            outputs,
+        })? {
+            CommandValue::OpcodeExecution(value) => Ok(value),
             _ => unreachable!(),
         }
     }

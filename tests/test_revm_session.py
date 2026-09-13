@@ -109,6 +109,37 @@ def test_revm_foundry_session_rewrites_a_live_local(solo_project):
         session.detach(timeout=TIMEOUT)
 
 
+def test_revm_foundry_session_runs_yul_on_the_live_frame(token_project):
+    session = RevmDebugSession(token_project)
+    session.break_at_function("TokenTest.testMintAsOwner")
+    session.start(_driver(token_project, "TokenTest", "testMintAsOwner"))
+    try:
+        event = session.wait(timeout=TIMEOUT)
+        assert isinstance(event, Paused)
+        before_stack = event.snapshot.stack
+        before_gas = event.snapshot.gas_remaining
+
+        rows = session.inspect(
+            "assembly",
+            "mstore(0x80, 0xdeadbeef); sstore(99, add(40, 2)); mload(0x80)",
+        )
+        assert rows[-1]["value"] == 0xDEADBEEF
+        assert session.inspect("read_storage", 99) == 42
+        assert (
+            int.from_bytes(session.inspect("read_memory", 0x80, 32), "big") == 0xDEADBEEF
+        )
+        snapshot = session.refresh_snapshot()
+        assert snapshot is not None
+        assert snapshot.stack == before_stack
+        assert snapshot.gas_remaining == before_gas
+
+        event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        assert isinstance(event, Finished)
+        assert event.ok
+    finally:
+        session.detach(timeout=TIMEOUT)
+
+
 def test_revm_foundry_session_applies_prank(token_project):
     session = RevmDebugSession(token_project)
     session.start(_driver(token_project, "TokenTest", "testMintPrankRevertsForNonOwner"))
