@@ -16,7 +16,7 @@ complete request stream that pauses before `SSTORE`, changes its value operand f
 to `9`, resumes, and reads the committed storage from the finish event:
 
 ```bash
-$ cargo run --quiet -p sevm-revm-headless < examples/headless-session.jsonl
+$ uv run sevm-engine < examples/headless-session.jsonl
 {"id":1,"jsonrpc":"2.0","result":{"methods":["hello","start","wait_event","snapshot","set_stack","write_memory","set_gas","set_pc","read_storage","write_storage","evaluate","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
 {"id":2,"jsonrpc":"2.0","result":{"started":true}}
 {"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","depth":1,"gas_remaining":78994,"memory":"0x","opcode":85,"pc":4,"reason":"breakpoint","stack":["0x0","0x1"]},"type":"paused"}}
@@ -26,13 +26,10 @@ $ cargo run --quiet -p sevm-revm-headless < examples/headless-session.jsonl
 {"id":7,"jsonrpc":"2.0","result":null}
 ```
 
-For a long-running connection, launch `target/debug/sevm-revm-headless` after building it
-and keep both pipes open:
-
-```bash
-cargo build -p sevm-revm-headless
-target/debug/sevm-revm-headless
-```
+An installed package exposes the same process as `sevm-engine`. A frontend launches that
+command and keeps its standard input and standard output pipes open. A Rust application
+can instead depend on `sevm-revm-headless` and call `serve` with any buffered reader and
+writer.
 
 Call `hello` first and require `sevm-debugger/1`. A client should stop if it receives a
 protocol version it does not support.
