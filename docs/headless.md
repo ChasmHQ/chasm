@@ -17,12 +17,12 @@ to `9`, resumes, and reads the committed storage from the finish event:
 
 ```bash
 $ uv run sevm-engine < examples/headless-session.jsonl
-{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","start","wait_event","snapshot","set_stack","write_memory","set_gas","set_pc","read_storage","write_storage","evaluate","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
+{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_stack","write_memory","set_gas","set_pc","read_storage","write_storage","evaluate","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
 {"id":2,"jsonrpc":"2.0","result":{"started":true}}
 {"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","depth":0,"gas_remaining":78994,"memory":"0x","opcode":85,"pc":4,"reason":"breakpoint","stack":["0x0","0x1"]},"type":"paused"}}
 {"id":4,"jsonrpc":"2.0","result":"0x9"}
 {"id":5,"jsonrpc":"2.0","result":null}
-{"id":6,"jsonrpc":"2.0","result":{"gas_used":43106,"output":"0x","storage":[{"address":"0x1000000000000000000000000000000000000001","key":"0x0","value":"0x9"}],"success":true,"type":"finished"}}
+{"id":6,"jsonrpc":"2.0","result":{"created_address":null,"gas_used":43106,"output":"0x","storage":[{"address":"0x1000000000000000000000000000000000000001","key":"0x0","value":"0x9"}],"success":true,"type":"finished"}}
 {"id":7,"jsonrpc":"2.0","result":null}
 ```
 
@@ -43,15 +43,18 @@ of named parameters:
 {"jsonrpc":"2.0","id":1,"method":"hello","params":{}}
 ```
 
-The process owns one session at a time. `start` creates it, `wait_event` waits for its next
-pause or terminal event, and `close` discards it. A terminal `finished` or `failed` event
-also closes the session. `shutdown` closes the session and exits the process after sending
-its response.
+The process owns one session at a time. `start` creates a compatible one-transaction
+session. `open` creates a persistent chain and `transact` submits CALL or CREATE
+transactions against its committed state. `wait_event` waits for the next pause or
+terminal event, and `close` discards the chain. `shutdown` closes it and exits the process
+after sending its response.
 
 | Method | Parameters | Result |
 |---|---|---|
 | `hello` | `{}` | Protocol version, transport, and method names |
+| `open` | Initial `accounts` and `breakpoints` | `{"opened":true}` |
 | `start` | Session configuration below | `{"started":true}` |
+| `transact` | `caller`, optional `to`, `data`, `value`, and `gas_limit` | `{"started":true}` |
 | `wait_event` | `{"timeout_ms":5000}` | A paused, finished, or failed event |
 | `snapshot` | `{}` | The current paused frame |
 | `set_stack` | `{"index":1,"value":"0x9"}` | Written word |
@@ -64,6 +67,10 @@ its response.
 | `resume` | `{}` | `null` |
 | `close` | `{}` | `null` |
 | `shutdown` | `{}` | `null`, followed by process exit |
+
+Omitting `to` from `transact` executes a CREATE transaction and reports the new address as
+`created_address` in the finish event. Supplying `to` executes a CALL. Persistent chains
+retain account and storage changes between transactions.
 
 `wait_event` is a bounded long poll, not an unsolicited server message. Its default
 timeout is 5 seconds. A graphical frontend can use a shorter timeout when it needs to
