@@ -103,11 +103,17 @@ def test_persistent_chain_deploys_and_reuses_state():
     assert deployment["success"] and address
     assert chain.set_breakpoints([(address, 22)]) == 1
 
-    for expected in ("0x1", "0x2"):
+    for before, expected in (("0x0", "0x1"), ("0x1", "0x2")):
         chain.call(address)
         paused = chain.wait()
         assert paused["type"] == "paused"
         assert paused["pc"] == 22
+        assert chain.read_storage(0) == before
+        if before == "0x0":
+            assert chain.write_memory(3, b"\xaa\xbb") == 2
+            assert chain.snapshot()["memory"][3:5] == b"\xaa\xbb"
+            assert chain.write_storage(7, 8) == "0x8"
+            assert chain.evaluate(bytes.fromhex("602a5f5260205ff3"))[-1] == 42
         chain.resume()
         finished = chain.wait()
         storage = {(addr, key): value for addr, key, value in finished["storage"]}

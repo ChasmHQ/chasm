@@ -250,6 +250,65 @@ impl RevmChain {
             .map_err(python_error)
     }
 
+    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let snapshot = py.detach(|| self.inner.snapshot()).map_err(python_error)?;
+        snapshot_dict(py, snapshot)
+    }
+
+    fn write_memory(
+        &self,
+        py: Python<'_>,
+        offset: usize,
+        data: &Bound<'_, PyBytes>,
+    ) -> PyResult<usize> {
+        let data = Bytes::copy_from_slice(data.as_bytes());
+        py.detach(|| self.inner.write_memory(offset, data))
+            .map_err(python_error)
+    }
+
+    fn set_gas(&self, py: Python<'_>, value: u64) -> PyResult<u64> {
+        py.detach(|| self.inner.set_gas(value))
+            .map_err(python_error)
+    }
+
+    fn set_pc(&self, py: Python<'_>, value: usize) -> PyResult<usize> {
+        py.detach(|| self.inner.set_pc(value)).map_err(python_error)
+    }
+
+    fn read_storage(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<String> {
+        let key = parse_word(key)?;
+        py.detach(|| self.inner.read_storage(key))
+            .map(word)
+            .map_err(python_error)
+    }
+
+    fn write_storage(
+        &self,
+        py: Python<'_>,
+        key: &Bound<'_, PyAny>,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        let key = parse_word(key)?;
+        let value = parse_word(value)?;
+        py.detach(|| self.inner.write_storage(key, value))
+            .map(word)
+            .map_err(python_error)
+    }
+
+    #[pyo3(signature = (bytecode, keep=false))]
+    fn evaluate<'py>(
+        &self,
+        py: Python<'py>,
+        bytecode: &Bound<'_, PyBytes>,
+        keep: bool,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let bytecode = Bytes::copy_from_slice(bytecode.as_bytes());
+        let output = py
+            .detach(|| self.inner.evaluate(bytecode, keep))
+            .map_err(python_error)?;
+        Ok(PyBytes::new(py, &output))
+    }
+
     fn resume(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.inner.resume()).map_err(python_error)
     }
