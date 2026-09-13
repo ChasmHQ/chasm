@@ -10,11 +10,12 @@ import os
 from typing import Any
 
 from eth_account import Account
-from web3 import EthereumTesterProvider, Web3
+from web3 import Web3
 
 from sevm.commands import CommandProcessor
 from sevm.compile import DEFAULT_SOLC_VERSION, Project, compile_project
 from sevm.evaluate import Evaluator, make_eval_hook
+from sevm.provider import RevmProvider
 from sevm.session import DebugSession, StepMode
 from sevm.srcmap import build_line_indexes
 
@@ -40,8 +41,9 @@ def project() -> Project:
     return _project_cache["p"]
 
 
-def make_web3() -> Web3:
-    w3 = Web3(EthereumTesterProvider())
+def make_web3(proj: Project) -> Web3:
+    session = DebugSession(proj, stop_at_start=False)
+    w3 = Web3(RevmProvider(session))
     w3.eth.default_account = w3.eth.accounts[0]
     return w3
 
@@ -74,7 +76,7 @@ def funded_account(w3: Web3, ether: int = 10) -> Any:
 def bank_fixture(value_ether: int = 1) -> tuple[Web3, Project, Any, Any, Any]:
     """A deployed Bank plus Callee and a funded second account."""
     proj = project()
-    w3 = make_web3()
+    w3 = make_web3(proj)
     bank = deploy(
         w3, proj, "Bank", "sevm-bank", value_wei=w3.to_wei(value_ether, "ether")
     )
@@ -87,7 +89,10 @@ class Debugger:
     """A started session plus the command processor, torn down cleanly."""
 
     def __init__(self, proj, txfn, **session_kwargs):
-        self.session = DebugSession(proj, **session_kwargs)
+        self.session = _session_from_target(txfn) or DebugSession(proj, **session_kwargs)
+        self.session.stop_at_start = session_kwargs.get("stop_at_start", True)
+        self.session.skip_to_source = session_kwargs.get("skip_to_source", True)
+        self.session._opening_stop_pending = self.session.stop_at_start
         self.evaluator = Evaluator(proj)
         self.session.set_eval_hook(make_eval_hook(self.evaluator))
         self.commands = CommandProcessor(self.session, self.evaluator)
@@ -111,6 +116,21 @@ class Debugger:
             self.session.detach(timeout=TIMEOUT)
         except Exception:
             self.session.uninstall()
+
+
+def _session_from_target(target: Any) -> DebugSession | None:
+    for cell in target.__closure__ or ():
+        try:
+            value = cell.cell_contents
+        except ValueError:
+            continue
+        provider = getattr(value, "provider", None)
+        if provider is None:
+            provider = getattr(getattr(value, "w3", None), "provider", None)
+        session = getattr(provider, "session", None)
+        if isinstance(session, DebugSession):
+            return session
+    return None
 
 
 def line_indexes(proj):

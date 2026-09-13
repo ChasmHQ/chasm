@@ -116,6 +116,7 @@ fn snapshot_dict<'py>(py: Python<'py>, snapshot: Snapshot) -> PyResult<Bound<'py
         match snapshot.reason {
             PauseReason::Breakpoint => "breakpoint",
             PauseReason::OutOfGas => "out_of_gas",
+            PauseReason::Revert => "revert",
             PauseReason::Step => "step",
         },
     )?;

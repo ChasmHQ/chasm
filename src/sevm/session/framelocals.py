@@ -85,7 +85,13 @@ def read_frame_locals(
         base = positions.get(var.ast_id)
         width = var.slots
         if base is None:
-            out.append(_unavailable(var, "not allocated yet at this instruction"))
+            declaration = frame.decl_pcs.get(pc_here) if frame.decl_pcs else None
+            reason = (
+                "this instruction allocates it; step once to see it"
+                if declaration is not None and declaration.ast_id == var.ast_id
+                else "not allocated yet at this instruction"
+            )
+            out.append(_unavailable(var, reason))
             continue
         if width is None:
             out.append(_unavailable(var, f"unknown stack width for {var.display_type}"))

@@ -73,6 +73,7 @@ class RevmProvider(BaseProvider):
         if method == "eth_getTransactionCount":
             return _quantity(self.session._chain.read_nonce(params[0]))
         if method == "eth_estimateGas":
+            self.session.estimations += 1
             return _quantity(_int(params[0].get("gas", 30_000_000)))
         if method == "eth_sendTransaction":
             return self._send_transaction(params[0])

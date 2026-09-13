@@ -188,8 +188,7 @@ def test_session_opens_at_test_function(solo_project):
     session.break_at_function("AllCheatsTest.testEnv", temporary=True)
     target = select_test(discover_tests(project), match="testEnv")
     session.start(make_test_driver(project, target))
-    session.wait(timeout=TIMEOUT)
-    event = session.resume(StepMode.RUN, count=1, timeout=TIMEOUT)
+    event = session.wait(timeout=TIMEOUT)
     try:
         assert isinstance(event, Paused)
         assert event.snapshot.stop_reason == "breakpoint"

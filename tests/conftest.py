@@ -216,7 +216,7 @@ def forward_debugger(bank):
 @pytest.fixture
 def locals_contract(proj):
     """A fresh chain with `Locals` deployed, for the hard shapes."""
-    w3 = make_web3()
+    w3 = make_web3(proj)
     return w3, proj, deploy(w3, proj, "Locals")
 
 

@@ -702,9 +702,11 @@ fn execute_opcode(
     })();
     if result.is_ok() {
         context.journal_mut().checkpoint_commit();
-        let memory = nested.memory.context_memory().to_vec();
-        interpreter.memory.resize(memory.len());
-        interpreter.memory.set(0, &memory);
+        let nested_memory = nested.memory.context_memory();
+        let memory_len = live_memory.len().max(nested_memory.len());
+        interpreter.memory.resize(memory_len);
+        interpreter.memory.set(0, &live_memory);
+        interpreter.memory.set(0, &nested_memory);
     } else {
         context.journal_mut().checkpoint_revert(checkpoint);
     }
@@ -803,6 +805,10 @@ impl Inspector<SevmContext> for SevmInspector {
             self.pause(interpreter, context, PauseReason::Breakpoint);
             paused_here = true;
         }
+        if !paused_here && interpreter.bytecode.opcode() == revm::bytecode::opcode::REVERT {
+            self.pause(interpreter, context, PauseReason::Revert);
+            paused_here = true;
+        }
         if !paused_here && let Some(remaining) = self.steps_until_pause {
             if remaining <= 1 {
                 self.steps_until_pause = None;
@@ -841,7 +847,11 @@ impl Inspector<SevmContext> for SevmInspector {
                 .backup
                 .take()
                 .expect("step must capture interpreter state");
-            *interpreter.stack.data_mut() = backup.stack;
+            interpreter.stack.data_mut().clear();
+            interpreter
+                .stack
+                .data_mut()
+                .extend_from_slice(&backup.stack);
             interpreter.memory.resize(backup.memory.len());
             interpreter.memory.set(0, &backup.memory);
             interpreter.gas = backup.gas;

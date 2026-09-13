@@ -16,7 +16,6 @@ from tui_harness import run_tui, screen_text, stop_at_credit, tui_app
 
 from sevm.commands import CommandResult
 from sevm.evaluate import Evaluator, make_eval_hook
-from sevm.session import DebugSession
 
 
 def test_tui_renders_every_pane(bank):
@@ -30,7 +29,9 @@ def test_tui_renders_every_pane(bank):
 
     from sevm.tui.app import SevmApp
 
-    session = DebugSession(proj_)
+    session = w3.provider.session
+    session.stop_at_start = True
+    session._opening_stop_pending = True
     evaluator = Evaluator(proj_)
     session.set_eval_hook(make_eval_hook(evaluator))
     session.start(txfn)
@@ -97,7 +98,9 @@ def test_tui_startup_commands_run_in_sequence(bank):
 
     from sevm.tui.app import SevmApp
 
-    session = DebugSession(proj_)
+    session = w3.provider.session
+    session.stop_at_start = True
+    session._opening_stop_pending = True
     evaluator = Evaluator(proj_)
     session.set_eval_hook(make_eval_hook(evaluator))
     session.start(txfn)

@@ -290,6 +290,7 @@ class RevmDebugSession:
         self._pending_count = 1
         self._pending_watches: dict[int, int | None] = {}
         self._opening_stop_pending = stop_at_start
+        self._restart_opening = False
         self._detached = False
 
         self.armed = False
@@ -420,6 +421,10 @@ class RevmDebugSession:
         self._pending_count = 1
         self._pending_watches.clear()
         self._opening_stop_pending = self.stop_at_start
+        self._restart_opening = self.stop_at_start
+        self._frames.clear()
+        self._last_raw = None
+        self._raw_snapshot = None
         for watchpoint in self.breakpoints.active_watchpoints():
             watchpoint.initialised = False
             watchpoint.old_value = None
@@ -521,7 +526,10 @@ class RevmDebugSession:
             if not self._should_surface(event, snapshot, hits):
                 self._continue_raw()
                 continue
+            if snapshot.stop_reason == "step" and self._mode is StepMode.FINISH:
+                snapshot = replace(snapshot, stop_reason="finish")
             self._opening_stop_pending = False
+            self._restart_opening = False
             self.last_snapshot = snapshot
             self._event_q.put(Paused(snapshot))
             command = self._cmd_q.get()
@@ -574,8 +582,6 @@ class RevmDebugSession:
             ),
             delegate=prank.delegate,
         )
-        if not prank.persistent:
-            self.cheats.prank = None
 
     def _set_mode(self, command: Resume, snapshot: FrameSnapshot) -> None:
         self._mode = command.mode
@@ -717,7 +723,7 @@ class RevmDebugSession:
             return True
         if (
             self._opening_stop_pending
-            and not self.breakpoints.breakpoints
+            and (not self.breakpoints.breakpoints or self._restart_opening)
             and snapshot.has_source
             and not self._is_dispatcher(snapshot)
         ):
@@ -725,9 +731,14 @@ class RevmDebugSession:
             return True
         reason = raw["reason"]
         if reason == "out_of_gas":
-            return True
+            return self.armed
+        if reason == "revert":
+            return self.armed and self.stop_on_revert
         if reason == "breakpoint":
-            return bool(hits)
+            if hits:
+                return True
+            if not self.armed or self._mode is StepMode.RUN:
+                return False
         if self._mode is StepMode.STEPI:
             return self._consume_count(snapshot)
         if self._mode is StepMode.NEXTI:
@@ -743,8 +754,12 @@ class RevmDebugSession:
             )
         if not snapshot.has_source or self._is_dispatcher(snapshot):
             return False
-        if self._mode is StepMode.NEXT and snapshot.depth > self._mode_depth:
-            return False
+        if self._mode is StepMode.NEXT:
+            internal = len(self.current_frame.internal) if self.current_frame else 0
+            if snapshot.depth > self._mode_depth or (
+                snapshot.depth == self._mode_depth and internal > self._mode_internal
+            ):
+                return False
         if (
             snapshot.depth != self._mode_depth
             or (
@@ -786,11 +801,13 @@ class RevmDebugSession:
         hits: tuple[int, ...] | None = None,
         annotation: str = "",
     ) -> tuple[FrameSnapshot, tuple[int, ...]]:
+        self._record_gas(raw)
         self._advance_internal(raw)
         self._sync_frames(raw)
         frame = self.current_frame
         if frame is None:
             raise SessionError("REVM paused without a frame")
+        self._reconcile_internal(frame, int(raw["pc"]))
         loc = frame.location(int(raw["pc"]))
         actual_hits = self._breakpoint_hits(frame, raw, loc) if hits is None else hits
         source = (
@@ -801,11 +818,21 @@ class RevmDebugSession:
         function = self.functions.at_location(loc)
         computation = frame.computation
         self.step_index = int(raw["step"])
-        stop_reason = reason or (
-            "error" if raw["reason"] == "out_of_gas" else raw["reason"]
-        )
+        failed = raw["reason"] in {"out_of_gas", "revert"}
+        stop_reason = reason or ("error" if failed else raw["reason"])
         if raw["reason"] == "out_of_gas" and not annotation:
-            annotation = "out of gas; `set $gas = N` then `c` retries this instruction"
+            annotation = (
+                "OutOfGas: out of gas; `set $gas = N` then `c` retries this instruction"
+            )
+        elif raw["reason"] == "revert" and not annotation:
+            offset = int(raw["stack"][0], 16) if raw["stack"] else 0
+            size = int(raw["stack"][1], 16) if len(raw["stack"]) > 1 else 0
+            output = bytes(raw["memory"])[offset : offset + size]
+            self.last_revert = decode_revert(
+                output,
+                frame.artifact.abi if frame.artifact is not None else None,
+            )
+            annotation = self.last_revert
         snapshot = FrameSnapshot(
             step=self.step_index,
             pc=int(raw["pc"]),
@@ -844,6 +871,27 @@ class RevmDebugSession:
             annotation=annotation,
         )
         return snapshot, actual_hits
+
+    def _record_gas(self, raw: dict[str, Any]) -> None:
+        previous = self._last_raw
+        frame = self.current_frame
+        if previous is None or frame is None:
+            return
+        if (
+            int(previous["depth"]) != int(raw["depth"])
+            or previous["address"] != raw["address"]
+        ):
+            return
+        spent = int(raw["gas_used"]) - int(previous["gas_used"])
+        if spent <= 0:
+            return
+        self.gas_by_opcode[str(previous["mnemonic"])] = (
+            self.gas_by_opcode.get(str(previous["mnemonic"]), 0) + spent
+        )
+        location = frame.location(int(previous["pc"]))
+        if location is not None and not location.is_generated:
+            key = (location.file_id, location.line)
+            self.gas_by_line[key] = self.gas_by_line.get(key, 0) + spent
 
     def _sync_frames(self, raw: dict[str, Any]) -> None:
         old = self._frames
@@ -931,12 +979,13 @@ class RevmDebugSession:
         ):
             return
         pc = int(previous["pc"])
+        self._reconcile_internal(frame, pc)
         if frame.decl_pcs and pc in frame.decl_pcs and frame.internal:
             var = cast(Any, frame.decl_pcs[pc])
             internal = frame.internal[-1]
-            if (
-                internal.function is not None
-                and internal.function.ast_id == var.function_id
+            if internal.function is not None and (
+                internal.function.ast_id == var.function_id
+                or self.locals.owned_by_modifier(var)
             ):
                 internal.slots[var.ast_id] = len(frame.computation._stack.values)
         if previous["mnemonic"] not in _JUMP_MNEMONICS:
@@ -950,6 +999,17 @@ class RevmDebugSession:
             return
         destination = int(raw["pc"])
         function = self.functions.at_location(frame.location(destination))
+        if (
+            function is not None
+            and frame.internal
+            and frame.internal[-1].function is not None
+            and function.ast_id == frame.internal[-1].function.ast_id
+            and loc.entry.start == function.start
+            and loc.entry.length == function.length
+        ):
+            frame.internal[-1].entry_pc = destination
+            frame.internal[-1].entry_sp = len(raw["stack"])
+            return
         frame.internal.append(
             InternalFrame(
                 function=function,
@@ -958,6 +1018,16 @@ class RevmDebugSession:
                 entry_sp=len(raw["stack"]),
             )
         )
+
+    def _reconcile_internal(self, frame: EvmFrame, pc: int) -> None:
+        function = self.functions.at_location(frame.location(pc))
+        if function is None:
+            return
+        for index in range(len(frame.internal) - 1, -1, -1):
+            candidate = frame.internal[index].function
+            if candidate is not None and candidate.ast_id == function.ast_id:
+                del frame.internal[index + 1 :]
+                return
 
     def _breakpoint_hits(
         self, frame: EvmFrame, raw: dict[str, Any], loc: Any
@@ -1020,9 +1090,15 @@ class RevmDebugSession:
                     (_ANY_ADDRESS, pc)
                     for pc in self.code.declpcs_for(code, pc_map, is_create)
                 )
+                if pc_map is not None:
+                    points.update(
+                        (_ANY_ADDRESS, pc)
+                        for pc in pc_map.pcs
+                        if (loc := pc_map.at(pc)) is not None and loc.jump in {"i", "o"}
+                    )
                 if (
                     self._opening_stop_pending
-                    and not self.breakpoints.breakpoints
+                    and (not self.breakpoints.breakpoints or self._restart_opening)
                     and pc_map is not None
                 ):
                     points.update(
@@ -1238,11 +1314,25 @@ class RevmDebugSession:
             values[len(values) - 1 - index] = written
             return written
         if op == "write_memory":
-            return self._chain.write_memory(int(args[0]), bytes(args[1]))
+            offset, data = int(args[0]), bytes(args[1])
+            written = self._chain.write_memory(offset, data)
+            memory = frame.computation._memory._bytes
+            end = offset + len(data)
+            if end > len(memory):
+                memory.extend(bytes(end - len(memory)))
+            memory[offset:end] = data
+            return written
         if op == "set_gas":
-            return self._chain.set_gas(int(args[0]))
+            value = self._chain.set_gas(int(args[0]))
+            frame.computation._gas_meter.gas_remaining = value
+            return value
         if op == "set_pc":
-            return self._chain.set_pc(int(args[0]))
+            try:
+                value = self._chain.set_pc(int(args[0]))
+            except RuntimeError as exc:
+                raise SessionError(str(exc)) from exc
+            frame.computation.code.program_counter = value + 1
+            return value
         if op == "reseat_frame":
             pc = max(0, frame.computation.code.program_counter - 1)
             function = self.functions.at_location(frame.location(pc))
@@ -1354,18 +1444,21 @@ class RevmDebugSession:
         if op == "evaluate":
             if self._eval_hook is None:
                 raise SessionError("no evaluator installed")
-            return self._eval_hook(
-                self,
-                frame,
-                frame.computation,
-                str(args[0]),
-                keep=bool(kwargs.get("keep", False)),
-                bindings=self.frame_locals(
+            try:
+                return self._eval_hook(
+                    self,
                     frame,
                     frame.computation,
-                    kwargs.get("internal_index"),
-                ),
-            )
+                    str(args[0]),
+                    keep=bool(kwargs.get("keep", False)),
+                    bindings=self.frame_locals(
+                        frame,
+                        frame.computation,
+                        kwargs.get("internal_index"),
+                    ),
+                )
+            except Exception as exc:
+                raise SessionError(str(exc)) from exc
         raise SessionError(f"inspect {op!r} is not available on REVM yet")
 
     def refresh_snapshot(self) -> FrameSnapshot | None:

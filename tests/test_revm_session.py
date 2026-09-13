@@ -150,6 +150,7 @@ def test_revm_foundry_session_runs_yul_on_the_live_frame(token_project):
 
 def test_revm_foundry_session_applies_prank(token_project):
     session = RevmDebugSession(token_project, stop_at_start=False)
+    session.stop_on_revert = False
     session.start(_driver(token_project, "TokenTest", "testMintPrankRevertsForNonOwner"))
     event = session.wait(timeout=TIMEOUT)
     assert isinstance(event, Finished)
@@ -239,6 +240,7 @@ def test_revm_foundry_session_watches_memory(token_project):
 
 def test_revm_foundry_session_returns_assertion_reverts(failing_project):
     session = RevmDebugSession(failing_project, stop_at_start=False)
+    session.stop_on_revert = False
     session.start(_driver(failing_project, "DemoTest", "testFails"))
     event = session.wait(timeout=TIMEOUT)
     assert isinstance(event, Finished)

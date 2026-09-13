@@ -227,6 +227,28 @@ fn steps_by_opcode_without_preconfigured_breakpoints() {
 }
 
 #[test]
+fn pauses_before_revert_with_output_memory_intact() {
+    let code = Bytes::from_static(&[
+        opcode::PUSH1,
+        0x2a,
+        opcode::PUSH0,
+        opcode::MSTORE,
+        opcode::PUSH1,
+        32,
+        opcode::PUSH0,
+        opcode::REVERT,
+    ]);
+    let session = PrototypeSession::start(SessionConfig::new(DEFAULT_TARGET, code));
+    let snapshot = paused(&session);
+    assert_eq!(snapshot.reason, PauseReason::Revert);
+    assert_eq!(snapshot.pc, 7);
+    assert_eq!(snapshot.stack, vec![U256::ZERO, U256::from(32)]);
+    assert_eq!(U256::from_be_slice(&snapshot.memory), U256::from(0x2a));
+    session.resume().unwrap();
+    assert!(!finished(&session).success);
+}
+
+#[test]
 fn rescues_out_of_gas_and_retries_the_failed_opcode() {
     let code = Bytes::from_static(&[
         opcode::PUSH1,

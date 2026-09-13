@@ -965,6 +965,7 @@ fn snapshot_json(snapshot: Snapshot) -> Value {
         "reason": match snapshot.reason {
             PauseReason::Breakpoint => "breakpoint",
             PauseReason::OutOfGas => "out_of_gas",
+            PauseReason::Revert => "revert",
             PauseReason::Step => "step",
         },
         "step": snapshot.step,

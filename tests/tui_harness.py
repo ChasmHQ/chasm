@@ -13,7 +13,6 @@ import re
 from harness import TIMEOUT, line_of
 
 from sevm.evaluate import Evaluator, make_eval_hook
-from sevm.session import DebugSession
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -42,7 +41,9 @@ def tui_app(bank, size=(150, 46)):
 
     from sevm.tui.app import SevmApp
 
-    session = DebugSession(proj_)
+    session = w3.provider.session
+    session.stop_at_start = True
+    session._opening_stop_pending = True
     evaluator = Evaluator(proj_)
     session.set_eval_hook(make_eval_hook(evaluator))
     session.start(txfn)

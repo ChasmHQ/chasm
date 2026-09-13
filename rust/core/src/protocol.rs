@@ -116,6 +116,7 @@ impl SessionConfig {
 pub enum PauseReason {
     Breakpoint,
     OutOfGas,
+    Revert,
     Step,
 }
 

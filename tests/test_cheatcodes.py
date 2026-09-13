@@ -424,12 +424,11 @@ def test_sign_compact_packs_the_parity_into_s():
 
 
 @pytest.fixture
-def state():
-    """A live Py-EVM state, so the block-environment and account cheats are proven against
-    the real object rather than a stand-in that would accept any attribute name."""
-    from harness import make_web3
+def state(proj):
+    """The live REVM state adapter used by the cheatcode dispatcher."""
+    from sevm.session import DebugSession
 
-    return make_web3().provider.ethereum_tester.backend.chain.get_vm().state
+    return DebugSession(proj, stop_at_start=False)._state
 
 
 def test_block_environment_cheats(state):

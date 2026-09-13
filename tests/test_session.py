@@ -1,4 +1,4 @@
-"""Session lifecycle: install/uninstall, detach, and what survives a run."""
+"""Session lifecycle: provider integration, detach, and what survives a run."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from harness import (
     TIMEOUT,
     Debugger,
     line_of,
+    make_web3,
 )
 
 from sevm.session import DebugSession, Finished, Paused, SessionError, StepMode
@@ -15,10 +16,8 @@ from sevm.session import DebugSession, Finished, Paused, SessionError, StepMode
 def test_gas_estimation_is_not_debugged(bank):
     """A transaction without an explicit `gas=` must still stop exactly once.
 
-    web3 calls eth_estimateGas, which binary-searches by RUNNING the transaction from the
-    intrinsic gas upward, so the early probes fail with OutOfGas by design. Those passes
-    run with the hook suspended; without that, the user sees a bogus out-of-gas inside a
-    transaction that actually succeeds.
+    The REVM provider answers eth_estimateGas without executing the transaction. Counting
+    that request proves Web3 took the estimate path without creating a duplicate stop.
     """
     w3, proj_, contract, _callee, alice = bank
 
@@ -43,20 +42,16 @@ def test_gas_estimation_is_not_debugged(bank):
         dbg.close()
 
 
-def test_estimate_gas_patch_is_restored(bank):
-    from eth.chains.base import Chain
-
+def test_provider_remains_usable_after_detach(bank):
     w3, proj_, contract, _callee, _alice = bank
-    original = Chain.__dict__["estimate_gas"]
 
     def txfn():
         tx = contract.functions.deposit().transact({"value": 1, "gas": 300_000})
         w3.eth.wait_for_transaction_receipt(tx)
 
     dbg = Debugger(proj_, txfn)
-    assert Chain.__dict__["estimate_gas"] is not original
     dbg.close()
-    assert Chain.__dict__["estimate_gas"] is original
+    assert contract.functions.totalDeposits().call() > 0
 
 
 def test_ether_hint_only_for_plausible_wei(deposit_debugger):
@@ -75,7 +70,6 @@ def test_debugs_inline_assembly_in_the_original_vault():
     import os as _os
 
     from eth_account import Account
-    from web3 import EthereumTesterProvider, Web3
 
     from sevm.compile import DEFAULT_SOLC_VERSION
     from sevm.compile import compile_project as _compile
@@ -87,8 +81,7 @@ def test_debugs_inline_assembly_in_the_original_vault():
     art = vault_project.artifact("Vault")
     assert art is not None
 
-    w3 = Web3(EthereumTesterProvider())
-    w3.eth.default_account = w3.eth.accounts[0]
+    w3 = make_web3(vault_project)
     factory = w3.eth.contract(abi=art.abi, bytecode=art.bytecode.hex())
     tx = factory.constructor().transact(
         {"value": w3.to_wei(1, "ether"), "gas": 3_000_000}
@@ -131,21 +124,15 @@ def test_debugs_inline_assembly_in_the_original_vault():
         dbg.close()
 
 
-def test_patch_is_restored_after_detach(bank):
-    from eth.vm.computation import BaseComputation
-
+def test_detach_finishes_the_transaction(bank):
     w3, proj_, contract, _callee, _alice = bank
-    original = BaseComputation.__dict__["apply_computation"]
 
     def txfn():
         tx = contract.functions.deposit().transact({"value": 1, "gas": 300_000})
         w3.eth.wait_for_transaction_receipt(tx)
 
     dbg = Debugger(proj_, txfn)
-    assert BaseComputation.__dict__["apply_computation"] is not original
     dbg.close()
-    assert BaseComputation.__dict__["apply_computation"] is original
-    # And the chain still works untraced.
     assert contract.functions.totalDeposits().call() > 0
 
 
