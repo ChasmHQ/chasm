@@ -9,9 +9,9 @@ import threading
 import time
 
 from eth_utils import function_signature_to_4byte_selector
-
 from sevm._revm import RevmChain, RevmSession, revm_version
-from sevm.cheatcodes import CheatState, VM_ADDRESS, apply_cheat
+
+from sevm.cheatcodes import VM_ADDRESS, CheatState, apply_cheat
 
 
 def test_live_mutation_crosses_the_python_bridge():
@@ -136,7 +136,15 @@ def test_persistent_chain_deploys_and_reuses_state():
             assert chain.read_storage_at(address, 9) == "0xa"
             assert chain.write_transient(address, 11, 12) == "0xc"
             assert chain.read_transient(address, 11) == "0xc"
+            assert not chain.is_storage_warm(address, 13)
             chain.warm_storage(address, 13)
+            assert chain.is_storage_warm(address, 13)
+            chain.execute_opcode(0x52, [32, 0xDEADBEEF], 0)
+            chain.execute_opcode(0xA1, [32, 32, 0xABC], 0)
+            logs = chain.read_logs()
+            assert logs[0]["address"] == address
+            assert logs[0]["topics"] == ["0xabc"]
+            assert int.from_bytes(logs[0]["data"], "big") == 0xDEADBEEF
             assert chain.write_block_number(100) == "0x64"
             assert chain.read_block_number() == "0x64"
             assert chain.write_timestamp(200) == "0xc8"

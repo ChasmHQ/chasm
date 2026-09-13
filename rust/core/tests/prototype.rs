@@ -114,6 +114,16 @@ fn executes_opcodes_without_consuming_the_paused_stack_or_gas() {
             .with_breakpoint(DEFAULT_TARGET, 0),
     );
     let before = paused(&session);
+    let cold_key = U256::from(123);
+    assert_eq!(
+        session
+            .state(StateCommand::IsStorageWarm {
+                address: DEFAULT_TARGET,
+                key: cold_key,
+            })
+            .unwrap(),
+        CommandValue::Bool(false)
+    );
 
     let stored = session
         .execute_opcode(
@@ -132,6 +142,32 @@ fn executes_opcodes_without_consuming_the_paused_stack_or_gas() {
         .execute_opcode(opcode::SSTORE, vec![U256::from(7), U256::from(8)], 0)
         .unwrap();
     assert_eq!(session.read_storage(U256::from(7)).unwrap(), U256::from(8));
+    session
+        .execute_opcode(opcode::SLOAD, vec![cold_key], 1)
+        .unwrap();
+    assert_eq!(
+        session
+            .state(StateCommand::IsStorageWarm {
+                address: DEFAULT_TARGET,
+                key: cold_key,
+            })
+            .unwrap(),
+        CommandValue::Bool(true)
+    );
+    let topic = U256::from(0xabcu64);
+    session
+        .execute_opcode(opcode::LOG1, vec![U256::from(32), U256::from(32), topic], 0)
+        .unwrap();
+    let CommandValue::Logs(logs) = session.state(StateCommand::Logs).unwrap() else {
+        panic!("expected logs")
+    };
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].address, DEFAULT_TARGET);
+    assert_eq!(logs[0].topics, vec![B256::from(topic)]);
+    assert_eq!(
+        U256::from_be_slice(&logs[0].data),
+        U256::from(0xdead_beefu64)
+    );
 
     let after = session.snapshot().unwrap();
     assert_eq!(after.stack, before.stack);

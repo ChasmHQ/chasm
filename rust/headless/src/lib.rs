@@ -287,6 +287,11 @@ enum StateParams {
         address: String,
         key: String,
     },
+    IsStorageWarm {
+        address: String,
+        key: String,
+    },
+    Logs,
     ReadBlockNumber,
     WriteBlockNumber {
         value: String,
@@ -777,6 +782,11 @@ fn state_command(params: StateParams) -> Result<StateCommand, ProtocolError> {
             address: parse_address(&address)?,
             key: parse_word(&key)?,
         },
+        StateParams::IsStorageWarm { address, key } => StateCommand::IsStorageWarm {
+            address: parse_address(&address)?,
+            key: parse_word(&key)?,
+        },
+        StateParams::Logs => StateCommand::Logs,
         StateParams::ReadBlockNumber => StateCommand::ReadBlockNumber,
         StateParams::WriteBlockNumber { value } => {
             StateCommand::WriteBlockNumber(parse_word(&value)?)
@@ -893,6 +903,16 @@ fn command_value_json(value: CommandValue) -> Value {
             "value": value.value.map(word),
             "gas_used": value.gas_used,
         }),
+        CommandValue::Bool(value) => Value::Bool(value),
+        CommandValue::Logs(logs) => Value::Array(
+            logs.into_iter()
+                .map(|log| json!({
+                    "address": format!("{:#x}", log.address),
+                    "topics": log.topics.into_iter().map(|topic| hex_bytes(topic.as_slice())).collect::<Vec<_>>(),
+                    "data": hex_bytes(&log.data),
+                }))
+                .collect(),
+        ),
     }
 }
 

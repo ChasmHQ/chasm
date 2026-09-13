@@ -121,10 +121,16 @@ def test_revm_foundry_session_runs_yul_on_the_live_frame(token_project):
 
         rows = session.inspect(
             "assembly",
-            "mstore(0x80, 0xdeadbeef); sstore(99, add(40, 2)); mload(0x80)",
+            "mstore(0x80, 0xdeadbeef); sstore(99, add(40, 2)); "
+            "sload(123); log1(0x80, 32, 0xabc); mload(0x80)",
         )
         assert rows[-1]["value"] == 0xDEADBEEF
         assert session.inspect("read_storage", 99) == 42
+        assert session.inspect("is_warm", 123)
+        logs = session.inspect("logs")
+        assert logs[-1][0] == event.snapshot.address
+        assert logs[-1][1] == (0xABC,)
+        assert int.from_bytes(logs[-1][2], "big") == 0xDEADBEEF
         assert (
             int.from_bytes(session.inspect("read_memory", 0x80, 32), "big") == 0xDEADBEEF
         )

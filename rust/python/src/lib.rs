@@ -69,6 +69,13 @@ fn state_bytes(engine: &DebugEngine, py: Python<'_>, command: StateCommand) -> P
     }
 }
 
+fn state_bool(engine: &DebugEngine, py: Python<'_>, command: StateCommand) -> PyResult<bool> {
+    match state_value(engine, py, command)? {
+        CommandValue::Bool(value) => Ok(value),
+        _ => unreachable!(),
+    }
+}
+
 fn frame_kind(kind: FrameKind) -> &'static str {
     match kind {
         FrameKind::Call => "call",
@@ -492,6 +499,43 @@ impl RevmChain {
             },
         )?;
         Ok(())
+    }
+
+    fn is_storage_warm(
+        &self,
+        py: Python<'_>,
+        address: &str,
+        key: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        state_bool(
+            &self.inner,
+            py,
+            StateCommand::IsStorageWarm {
+                address: parse_address(address)?,
+                key: parse_word(key)?,
+            },
+        )
+    }
+
+    fn read_logs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let CommandValue::Logs(logs) = state_value(&self.inner, py, StateCommand::Logs)? else {
+            unreachable!()
+        };
+        let output = PyList::empty(py);
+        for log in logs {
+            let item = PyDict::new(py);
+            item.set_item("address", format!("{:#x}", log.address))?;
+            item.set_item(
+                "topics",
+                log.topics
+                    .into_iter()
+                    .map(|topic| word(U256::from_be_slice(topic.as_slice())))
+                    .collect::<Vec<_>>(),
+            )?;
+            item.set_item("data", PyBytes::new(py, &log.data))?;
+            output.append(item)?;
+        }
+        Ok(output)
     }
 
     fn read_block_number(&self, py: Python<'_>) -> PyResult<String> {

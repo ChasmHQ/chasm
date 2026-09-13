@@ -317,12 +317,49 @@ fn executes_an_opcode_against_the_paused_frame() {
             "execute_opcode",
             json!({"opcode": 1, "arguments": ["0x28", "0x2"], "outputs": 1}),
         ),
-        request(4, "resume", json!({})),
-        request(5, "wait_event", json!({})),
-        request(6, "shutdown", json!({})),
+        request(
+            4,
+            "state",
+            json!({"op": "is_storage_warm", "address": TARGET, "key": "0x7b"}),
+        ),
+        request(
+            5,
+            "execute_opcode",
+            json!({"opcode": 84, "arguments": ["0x7b"], "outputs": 1}),
+        ),
+        request(
+            6,
+            "state",
+            json!({"op": "is_storage_warm", "address": TARGET, "key": "0x7b"}),
+        ),
+        request(
+            7,
+            "execute_opcode",
+            json!({"opcode": 82, "arguments": ["0x20", "0xdeadbeef"], "outputs": 0}),
+        ),
+        request(
+            8,
+            "execute_opcode",
+            json!({"opcode": 161, "arguments": ["0x20", "0x20", "0xabc"], "outputs": 0}),
+        ),
+        request(9, "state", json!({"op": "logs"})),
+        request(10, "resume", json!({})),
+        request(11, "wait_event", json!({})),
+        request(12, "shutdown", json!({})),
     ]);
 
     assert_eq!(responses[2]["result"]["value"], "0x2a");
     assert!(responses[2]["result"]["gas_used"].as_u64().unwrap() > 0);
-    assert_eq!(responses[4]["result"]["type"], "finished");
+    assert_eq!(responses[3]["result"], false);
+    assert_eq!(responses[5]["result"], true);
+    assert_eq!(responses[8]["result"][0]["address"], TARGET);
+    assert_eq!(
+        responses[8]["result"][0]["topics"],
+        json!([format!("0x{}0abc", "00".repeat(30))])
+    );
+    assert_eq!(
+        responses[8]["result"][0]["data"],
+        format!("0x{}deadbeef", "00".repeat(28))
+    );
+    assert_eq!(responses[10]["result"]["type"], "finished");
 }

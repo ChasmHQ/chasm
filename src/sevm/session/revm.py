@@ -898,9 +898,17 @@ class RevmDebugSession:
         if op == "read_nonce":
             return self._state.get_nonce(bytes(args[0]))
         if op == "logs":
-            return []
+            return [
+                (
+                    _address_bytes(item["address"]),
+                    tuple(int(topic, 16) for topic in item["topics"]),
+                    bytes(item["data"]),
+                )
+                for item in self._chain.read_logs()
+            ]
         if op == "is_warm":
-            return False
+            address = bytes(args[1]) if len(args) > 1 and args[1] else frame.address
+            return self._chain.is_storage_warm(_address_hex(address), int(args[0]))
         if not current:
             raise SessionError(f"inspect {op!r} requires the innermost REVM frame")
         if op == "read_storage":

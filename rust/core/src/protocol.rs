@@ -176,6 +176,13 @@ pub struct StorageSlot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogEntry {
+    pub address: Address,
+    pub topics: Vec<B256>,
+    pub data: Bytes,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finished {
     pub success: bool,
     pub gas_used: u64,
@@ -317,6 +324,11 @@ pub enum StateCommand {
         address: Address,
         key: U256,
     },
+    IsStorageWarm {
+        address: Address,
+        key: U256,
+    },
+    Logs,
     ReadBlockNumber,
     WriteBlockNumber(U256),
     ReadTimestamp,
@@ -342,6 +354,8 @@ pub enum CommandValue {
     Bytes(Bytes),
     Evaluation(Evaluation),
     OpcodeExecution(OpcodeExecution),
+    Bool(bool),
+    Logs(Vec<LogEntry>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

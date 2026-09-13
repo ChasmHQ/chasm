@@ -1,7 +1,7 @@
 use crate::protocol::{
     ChainConfig, CommandValue, DebugCommand, DebugEvent, Evaluation, Finished, FrameContext,
-    FrameKind, HostCall, OpcodeExecution, PauseReason, PrankConfig, SessionConfig, SessionError,
-    Snapshot, StateCommand, StorageSlot, TransactionKind, TransactionRequest,
+    FrameKind, HostCall, LogEntry, OpcodeExecution, PauseReason, PrankConfig, SessionConfig,
+    SessionError, Snapshot, StateCommand, StorageSlot, TransactionKind, TransactionRequest,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use revm::{
@@ -511,6 +511,29 @@ fn execute_state_command(
                 .map(|_| CommandValue::None)
                 .map_err(invalid)
         }
+        StateCommand::IsStorageWarm { address, key } => {
+            let journal = context.journal();
+            let loaded_warm = journal
+                .state
+                .get(&address)
+                .and_then(|account| account.storage.get(&key))
+                .is_some_and(|slot| !slot.is_cold_transaction_id(journal.transaction_id));
+            Ok(CommandValue::Bool(
+                loaded_warm || journal.warm_addresses.is_storage_warm(&address, &key),
+            ))
+        }
+        StateCommand::Logs => Ok(CommandValue::Logs(
+            context
+                .journal()
+                .logs()
+                .iter()
+                .map(|log| LogEntry {
+                    address: log.address,
+                    topics: log.topics().to_vec(),
+                    data: log.data.data.clone(),
+                })
+                .collect(),
+        )),
         StateCommand::ReadBlockNumber => Ok(CommandValue::Word(context.block.number)),
         StateCommand::WriteBlockNumber(value) => {
             context.block.number = value;
