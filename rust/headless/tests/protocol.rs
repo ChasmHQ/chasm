@@ -3,9 +3,11 @@ use sevm_revm_headless::{PROTOCOL_VERSION, serve};
 use std::{
     io::{Cursor, Read, Write},
     process::{Command, Stdio},
+    str::FromStr,
 };
 
 const TARGET: &str = "0x1000000000000000000000000000000000000001";
+const CALLER: &str = "0x2000000000000000000000000000000000000002";
 
 fn request(id: u64, method: &str, params: Value) -> String {
     json!({
@@ -108,4 +110,37 @@ fn binary_serves_the_protocol_on_stdio() {
     assert_eq!(responses.len(), 2);
     assert_eq!(responses[0]["result"]["protocol"], PROTOCOL_VERSION);
     assert_eq!(responses[1]["result"], Value::Null);
+}
+
+#[test]
+fn persistent_protocol_deploys_then_calls_the_created_contract() {
+    let caller = revm::primitives::Address::from_str(CALLER).unwrap();
+    let created = format!("{:#x}", caller.create(0));
+    let init_code = format!("0x6018600a5f3960185ff3{}5f546001015f5500", "5b".repeat(16));
+    let responses = run(&[
+        request(
+            1,
+            "open",
+            json!({ "breakpoints": [{ "address": created.clone(), "pc": 22 }] }),
+        ),
+        request(2, "transact", json!({ "data": init_code })),
+        request(3, "wait_event", json!({})),
+        request(4, "transact", json!({ "to": created.clone() })),
+        request(5, "wait_event", json!({})),
+        request(6, "resume", json!({})),
+        request(7, "wait_event", json!({})),
+        request(8, "transact", json!({ "to": created.clone() })),
+        request(9, "wait_event", json!({})),
+        request(10, "resume", json!({})),
+        request(11, "wait_event", json!({})),
+        request(12, "shutdown", json!({})),
+    ]);
+
+    assert_eq!(responses.len(), 12);
+    assert_eq!(responses[0]["result"]["opened"], true);
+    assert_eq!(responses[2]["result"]["created_address"], created);
+    assert_eq!(responses[4]["result"]["snapshot"]["pc"], 22);
+    assert_eq!(responses[6]["result"]["storage"][0]["value"], "0x1");
+    assert_eq!(responses[8]["result"]["snapshot"]["pc"], 22);
+    assert_eq!(responses[10]["result"]["storage"][0]["value"], "0x2");
 }

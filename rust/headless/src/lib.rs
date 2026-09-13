@@ -2,8 +2,9 @@ use revm::primitives::{Address, Bytes, U256};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sevm_revm_core::{
-    AccountSpec, Breakpoint, CommandValue, DEFAULT_CALLER, DebugCommand, DebugEngine, DebugEvent,
-    PauseReason, SessionConfig, SessionError, Snapshot,
+    AccountSpec, Breakpoint, ChainConfig, CommandValue, DEFAULT_CALLER, DebugCommand, DebugEngine,
+    DebugEvent, PauseReason, SessionConfig, SessionError, Snapshot, TransactionKind,
+    TransactionRequest,
 };
 use std::{
     fmt,
@@ -72,6 +73,30 @@ struct StartParams {
     accounts: Vec<AccountParams>,
     #[serde(default)]
     breakpoints: Vec<BreakpointParams>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenParams {
+    #[serde(default)]
+    accounts: Vec<AccountParams>,
+    #[serde(default)]
+    breakpoints: Vec<BreakpointParams>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransactParams {
+    #[serde(default)]
+    caller: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default = "empty_bytes")]
+    data: String,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default = "default_transaction_gas_limit")]
+    gas_limit: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,8 +186,17 @@ fn default_timeout_ms() -> u64 {
     5_000
 }
 
+fn default_transaction_gas_limit() -> u64 {
+    30_000_000
+}
+
+fn empty_bytes() -> String {
+    "0x".to_owned()
+}
+
 pub struct ProtocolServer {
     engine: Option<DebugEngine>,
+    persistent: bool,
     shutdown: bool,
 }
 
@@ -176,6 +210,7 @@ impl ProtocolServer {
     pub fn new() -> Self {
         Self {
             engine: None,
+            persistent: false,
             shutdown: false,
         }
     }
@@ -211,7 +246,9 @@ impl ProtocolServer {
                     "transport": "jsonl-stdio",
                     "methods": [
                         "hello",
+                        "open",
                         "start",
+                        "transact",
                         "wait_event",
                         "snapshot",
                         "set_stack",
@@ -227,7 +264,9 @@ impl ProtocolServer {
                     ]
                 }))
             }
+            "open" => self.open(parse_params(params)?),
             "start" => self.start(parse_params(params)?),
+            "transact" => self.transact(parse_params(params)?),
             "wait_event" => self.wait_event(parse_params(params)?),
             "snapshot" => {
                 empty_params(params)?;
@@ -280,11 +319,13 @@ impl ProtocolServer {
             "close" => {
                 empty_params(params)?;
                 self.engine.take();
+                self.persistent = false;
                 Ok(Value::Null)
             }
             "shutdown" => {
                 empty_params(params)?;
                 self.engine.take();
+                self.persistent = false;
                 self.shutdown = true;
                 Ok(Value::Null)
             }
@@ -319,16 +360,7 @@ impl ProtocolServer {
                 "entry must identify one of the configured accounts",
             ));
         }
-        let breakpoints = params
-            .breakpoints
-            .into_iter()
-            .map(|point| {
-                Ok(Breakpoint {
-                    address: parse_address(&point.address)?,
-                    pc: point.pc,
-                })
-            })
-            .collect::<Result<Vec<_>, ProtocolError>>()?;
+        let breakpoints = breakpoint_specs(params.breakpoints)?;
         self.engine = Some(DebugEngine::start(SessionConfig {
             entry,
             caller,
@@ -336,6 +368,61 @@ impl ProtocolServer {
             accounts,
             breakpoints,
         }));
+        self.persistent = false;
+        Ok(json!({ "started": true }))
+    }
+
+    fn open(&mut self, params: OpenParams) -> Result<Value, ProtocolError> {
+        if self.engine.is_some() {
+            return Err(ProtocolError::new(
+                SESSION_STATE_ERROR,
+                "a debug session is already active",
+            ));
+        }
+        self.engine = Some(DebugEngine::new(ChainConfig {
+            accounts: params
+                .accounts
+                .into_iter()
+                .map(account_spec)
+                .collect::<Result<Vec<_>, _>>()?,
+            breakpoints: breakpoint_specs(params.breakpoints)?,
+        }));
+        self.persistent = true;
+        Ok(json!({ "opened": true }))
+    }
+
+    fn transact(&self, params: TransactParams) -> Result<Value, ProtocolError> {
+        if !self.persistent {
+            return Err(ProtocolError::new(
+                SESSION_STATE_ERROR,
+                "transact requires a persistent session created by open",
+            ));
+        }
+        let kind = params
+            .to
+            .as_deref()
+            .map(parse_address)
+            .transpose()?
+            .map_or(TransactionKind::Create, TransactionKind::Call);
+        self.engine()?
+            .transact(TransactionRequest {
+                caller: params
+                    .caller
+                    .as_deref()
+                    .map(parse_address)
+                    .transpose()?
+                    .unwrap_or(DEFAULT_CALLER),
+                kind,
+                gas_limit: params.gas_limit,
+                value: params
+                    .value
+                    .as_deref()
+                    .map(parse_word)
+                    .transpose()?
+                    .unwrap_or(U256::ZERO),
+                data: decode_bytes(&params.data)?,
+            })
+            .map_err(engine_error)?;
         Ok(json!({ "started": true }))
     }
 
@@ -346,7 +433,7 @@ impl ProtocolServer {
             .map_err(engine_error)?;
         let terminal = matches!(event, DebugEvent::Finished(_) | DebugEvent::Failed(_));
         let value = event_json(event);
-        if terminal {
+        if terminal && !self.persistent {
             self.engine.take();
         }
         Ok(value)
@@ -396,6 +483,18 @@ fn empty_params(params: Value) -> Result<(), ProtocolError> {
             "this method does not accept parameters",
         ))
     }
+}
+
+fn breakpoint_specs(params: Vec<BreakpointParams>) -> Result<Vec<Breakpoint>, ProtocolError> {
+    params
+        .into_iter()
+        .map(|point| {
+            Ok(Breakpoint {
+                address: parse_address(&point.address)?,
+                pc: point.pc,
+            })
+        })
+        .collect()
 }
 
 fn account_spec(params: AccountParams) -> Result<AccountSpec, ProtocolError> {
@@ -485,6 +584,7 @@ fn event_json(event: DebugEvent) -> Value {
             "success": finished.success,
             "gas_used": finished.gas_used,
             "output": hex_bytes(&finished.output),
+            "created_address": finished.created_address.map(|address| format!("{address:#x}")),
             "storage": finished.storage.into_iter().map(|slot| json!({
                 "address": format!("{:#x}", slot.address),
                 "key": word(slot.key),
