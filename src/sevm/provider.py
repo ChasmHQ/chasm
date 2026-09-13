@@ -225,6 +225,7 @@ def replace_tester_provider(session: Any):
 @dataclass(frozen=True)
 class RevmWeb3Driver:
     target: Callable[[], None]
+    fresh_chain = True
 
     def run_revm(self, session: Any) -> None:
         with replace_tester_provider(session):

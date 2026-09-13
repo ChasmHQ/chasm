@@ -1,12 +1,4 @@
-"""pyproject.toml says what sevm actually needs.
-
-Two rules, both of which used to be true only by accident. Nothing may ask for the
-`tester` extra: `web3[tester]` reaches `eth-hash[pysha3]` -> safe-pysha3, whose wheels
-are x86_64-only, so on arm64 Linux, Apple silicon or Windows it builds a C extension
-from source and `uv sync` fails on a machine without a toolchain. And every third-party
-package `src/sevm` imports must be declared, rather than arriving under some other
-package's dependency tree, where a release that drops it takes sevm with it.
-"""
+"""pyproject.toml names every runtime dependency and excludes legacy EVM stacks."""
 
 from __future__ import annotations
 
@@ -44,9 +36,13 @@ def test_no_dependency_asks_for_the_tester_extra():
     for dep in _dependencies():
         requirement = Requirement(dep)
         assert "tester" not in requirement.extras, (
-            f"{requirement.name}[tester] pulls eth-hash[pysha3]; name eth-tester and "
-            "py-evm directly instead"
+            f"{requirement.name}[tester] would restore the Py-EVM tester stack"
         )
+
+
+def test_runtime_has_no_legacy_python_evm():
+    names = {_canonical(Requirement(dep).name) for dep in _dependencies()}
+    assert names.isdisjoint({"py-evm", "eth-tester"})
 
 
 def test_the_lock_holds_no_safe_pysha3():
@@ -98,8 +94,7 @@ def _canonical(name: str) -> str:
 
 def test_every_imported_package_is_declared():
     declared = {_canonical(Requirement(dep).name) for dep in _dependencies()}
-    # `eth` ships in py-evm and `solcx` in py-solc-x, so the import name is not the
-    # distribution name; the installed metadata is what maps one to the other.
+    # Import names and distribution names can differ, so use installed metadata.
     provided_by = importlib.metadata.packages_distributions()
     for module, files in sorted(_third_party_imports().items()):
         distributions = {_canonical(name) for name in provided_by.get(module, [])}

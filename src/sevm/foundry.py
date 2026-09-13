@@ -1,13 +1,4 @@
-"""Foundry test entry point for `sevm run <Test.t.sol>`.
-
-`forge test` is a Rust test runner. This is a minimal Python equivalent, just enough to
-drop the debugger inside a test: resolve the project, then for each selected test do a fresh
-deploy + `setUp()` + call to `testXxx()` as a transaction so sevm stops inside it. With a
-breakpoint on every test body, the debugger opens at the first and `continue` steps to each
-in turn. The transactions run on the same in-process Py-EVM chain the example scripts use,
-so the existing session machinery attaches unchanged. Cheatcode calls originate from the
-deployed test contract and are intercepted in the patched opcode loop (see `cheatcodes/`).
-"""
+"""Foundry-compatible test discovery and execution on the REVM session."""
 
 from __future__ import annotations
 
@@ -265,33 +256,7 @@ def _selector(art: Any, name: str) -> bytes:
     return bytes.fromhex(encoded)
 
 
-def _receipt(w3: object, tx: object, what: str) -> Any:
-    """Wait for a receipt and refuse a failed one.
-
-    eth-tester reports a reverted transaction as `status = 0` rather than raising, so
-    without this check a test whose assertion fails looks like a test that passed.
-    """
-    receipt = w3.eth.wait_for_transaction_receipt(tx)  # type: ignore[attr-defined]
-    if receipt.get("status") == 0:
-        raise TestFailed(f"{what} reverted")
-    return receipt
-
-
-def _run_one_test(w3: object, art: object, target: TestTarget) -> None:
-    """Fresh deploy + setUp + the test call, as forge isolates each test."""
-    name = f"{target.contract}.{target.function}"
-    factory = w3.eth.contract(abi=art.abi, bytecode=art.bytecode.hex())  # type: ignore[attr-defined]
-    tx = factory.constructor().transact({"gas": 30_000_000})
-    address = _receipt(w3, tx, f"{target.contract} deployment")["contractAddress"]
-    instance = w3.eth.contract(address=address, abi=art.abi)  # type: ignore[attr-defined]
-    if target.has_setup:
-        tx = instance.functions.setUp().transact({"gas": 30_000_000})
-        _receipt(w3, tx, f"{target.contract}.setUp()")
-    tx = instance.functions[target.function]().transact({"gas": 30_000_000})
-    _receipt(w3, tx, name)
-
-
-def make_test_driver(project: Project, target: TestTarget) -> Callable[[], None]:
+def make_test_driver(project: Project, target: TestTarget) -> RevmTestsDriver:
     """Driver for a single test: deploy, setUp, then the test call."""
     return make_tests_driver(project, [target])
 
@@ -303,22 +268,6 @@ def make_revm_tests_driver(
     return RevmTestsDriver(project, tuple(targets))
 
 
-def make_tests_driver(
-    project: Project, targets: Sequence[TestTarget]
-) -> Callable[[], None]:
-    """Driver that runs each test in turn (fresh deploy + setUp before each), so the
-    debugger, with a breakpoint on every test body, stops at each one in sequence."""
-    arts = [(project.artifact(t.contract), t) for t in targets]
-    for art, t in arts:
-        if art is None:
-            raise ValueError(f"no artifact for test contract {t.contract!r}")
-
-    def driver() -> None:
-        from web3 import EthereumTesterProvider, Web3
-
-        w3 = Web3(EthereumTesterProvider())
-        w3.eth.default_account = w3.eth.accounts[0]
-        for art, target in arts:
-            _run_one_test(w3, art, target)
-
-    return driver
+def make_tests_driver(project: Project, targets: Sequence[TestTarget]) -> RevmTestsDriver:
+    """Build the isolated REVM sequence for every selected test."""
+    return make_revm_tests_driver(project, targets)

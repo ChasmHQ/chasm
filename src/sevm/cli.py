@@ -22,7 +22,7 @@ from typing import Any
 from .commands.parsing import expand_file_args
 from .compile import CompileError, compile_foundry_project, find_foundry_root, solcbin
 from .evaluate import Evaluator, make_eval_hook
-from .session import DebugSession, Finished, RevmDebugSession, StepMode
+from .session import DebugSession, Finished, StepMode
 
 
 def _find_contracts_dir(script_path: str, explicit: str | None) -> str:
@@ -139,9 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--engine",
-        choices=("revm", "pyevm"),
-        default=None,
-        help="execution engine; defaults to REVM (Py-EVM is a temporary fallback)",
+        choices=("revm",),
+        default="revm",
+        help="execution engine (REVM)",
     )
 
     compile_cmd = sub.add_parser(
@@ -367,11 +367,9 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
     if isinstance(expanded, str):
         console.print(f"[bold red]{expanded}[/bold red]", highlight=False)
         return 1
-    use_revm = args.engine != "pyevm"
 
     def restart_factory(argv: list[str]) -> Any:
-        target = _run_script(script, argv)
-        return RevmWeb3Driver(target) if use_revm else target
+        return RevmWeb3Driver(_run_script(script, argv))
 
     target = restart_factory(expanded)
     return _debug(
@@ -382,7 +380,7 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
         foundry_mode=True,
         restart_factory=restart_factory,
         restart_argv=expanded,
-        session_class=RevmDebugSession if use_revm else DebugSession,
+        session_class=DebugSession,
     )
 
 
@@ -391,7 +389,6 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
         compile_test,
         discover_tests,
         make_revm_tests_driver,
-        make_tests_driver,
         prepare_project,
         select_tests,
     )
@@ -437,12 +434,7 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
     console.print(
         f"[dim]debugging {len(selected)} test(s): {names}[/dim]", highlight=False
     )
-    use_revm = args.engine != "pyevm"
-    driver = (
-        make_revm_tests_driver(project, selected)
-        if use_revm
-        else make_tests_driver(project, selected)
-    )
+    driver = make_revm_tests_driver(project, selected)
     return _debug(
         console,
         project,
@@ -450,7 +442,7 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
         args,
         foundry_mode=True,
         stop_functions=[f"{t.contract}.{t.function}" for t in selected],
-        session_class=RevmDebugSession if use_revm else DebugSession,
+        session_class=DebugSession,
     )
 
 

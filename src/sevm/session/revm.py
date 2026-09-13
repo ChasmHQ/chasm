@@ -244,6 +244,9 @@ class _RevmState:
     def mark_storage_warm(self, address: bytes, slot: int) -> None:
         self._session._chain.warm_storage(_address_hex(address), slot)
 
+    def is_storage_warm(self, address: bytes, slot: int) -> bool:
+        return self._session._chain.is_storage_warm(_address_hex(address), slot)
+
 
 class RevmDebugSession:
     """Drive REVM through the session interface shared by the console and TUI."""
@@ -313,13 +316,16 @@ class RevmDebugSession:
     def start(self, target: Any) -> None:
         if self._thread is not None:
             raise SessionError("session already started")
-        if not hasattr(target, "run_revm"):
-            raise SessionError("the REVM session requires a REVM-compatible driver")
+        if not hasattr(target, "run_revm") and not callable(target):
+            raise SessionError("the REVM session target is not callable")
         self.armed = True
 
         def runner() -> None:
             try:
-                target.run_revm(self)
+                if hasattr(target, "run_revm"):
+                    target.run_revm(self)
+                else:
+                    target()
                 self._event_q.put(Finished(ok=True))
             except BaseException as exc:
                 self.exit_error = f"{type(exc).__name__}: {exc}"
@@ -370,6 +376,9 @@ class RevmDebugSession:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
 
+    def uninstall(self) -> None:
+        pass
+
     def restart(self, argv: list[str] | None = None, timeout: float = 120.0) -> Any:
         if self._restart_factory is None:
             raise SessionError(
@@ -416,8 +425,10 @@ class RevmDebugSession:
             watchpoint.old_value = None
         if argv is not None:
             self._restart_argv = list(argv)
-        self.reset_chain()
-        self.start(self._restart_factory(self._restart_argv))
+        target = self._restart_factory(self._restart_argv)
+        if getattr(target, "fresh_chain", False):
+            self.reset_chain()
+        self.start(target)
         return self.wait(timeout=timeout)
 
     def reset_chain(self) -> None:

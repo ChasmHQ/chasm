@@ -327,43 +327,18 @@ class Evaluator:
         code, return_type = self._compiled(artifact, compiled, parameters, bound)
         compile_ms = (time.time() - started) * 1000.0
 
-        execute = getattr(session, "evaluate_code", None)
-        if execute is not None:
-            outcome = execute(
-                frame,
-                computation,
-                code,
-                _call_data(bound),
-                keep,
-            )
-            gas_before = int(outcome["gas_used"])
-            raw = bytes(outcome["output"])
-            if not outcome["success"]:
-                reason = decode_revert(raw, artifact.abi)
-                raise EvalError(f"expression {reason}")
-        else:
-            state = computation.state
-            address = frame.address
-            original_code = state.get_code(address)
-            snapshot = state.snapshot()
-            gas_before = 0
-            try:
-                state.set_code(address, code)
-                message = _build_message(frame, computation, code, _call_data(bound))
-                txctx = computation.transaction_context
-                with session.suspended():
-                    sub = state.computation_class.apply_message(state, message, txctx)
-                gas_before = message.gas - sub.get_gas_remaining()
-                if sub.is_error:
-                    reason = decode_revert(bytes(sub.output or b""), artifact.abi)
-                    raise EvalError(f"expression {reason}")
-                raw = bytes(sub.output)
-            finally:
-                if keep:
-                    state.set_code(address, original_code)
-                    state.commit(snapshot)
-                else:
-                    state.revert(snapshot)
+        outcome = session.evaluate_code(
+            frame,
+            computation,
+            code,
+            _call_data(bound),
+            keep,
+        )
+        gas_before = int(outcome["gas_used"])
+        raw = bytes(outcome["output"])
+        if not outcome["success"]:
+            reason = decode_revert(raw, artifact.abi)
+            raise EvalError(f"expression {reason}")
 
         if return_type is None:
             result = EvalResult(
@@ -427,29 +402,6 @@ class Evaluator:
         return (
             self._infer_type(artifact, compiled, _parameter_list(bound), bound) or "void"
         )
-
-
-def _build_message(
-    frame: Any, computation: Any, code: bytes, data: bytes = EVAL_SELECTOR
-) -> Any:
-    """A message that mirrors the paused frame so `msg.*` reads truthfully.
-
-    `should_transfer_value` is off so `msg.value` reports the paused frame's value
-    without moving ether a second time.
-    """
-    from eth.vm.message import Message
-
-    return Message(
-        gas=max(computation.get_gas_remaining(), 1_000_000),
-        to=frame.address,
-        sender=frame.sender,
-        value=frame.value,
-        data=data,
-        code=code,
-        depth=min(frame.depth + 1, 1023),
-        should_transfer_value=False,
-        is_static=False,
-    )
 
 
 def _clean_solc_error(text: str, expression: str) -> str:

@@ -5,12 +5,12 @@ build-backend = "maturin"
 [project]
 name = "sevm"
 version = "0.1.0"
-description = "sevm is an interactive, gdb-style Solidity/EVM debugger on Py-EVM, built for red-team dynamic analysis."
+description = "sevm is an interactive, gdb-style Solidity/EVM debugger on REVM, built for red-team dynamic analysis."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "sevm authors" }]
-keywords = ["solidity", "evm", "ethereum", "debugger", "py-evm", "web3"]
+keywords = ["solidity", "evm", "ethereum", "debugger", "revm", "web3"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -25,16 +25,11 @@ classifiers = [
 # `eth_utils` and `eth_account` all arrive with web3, but sevm imports them directly,
 # so they are named explicitly.
 #
-# The eth-tester stack is spelled out rather than taken as `web3[tester]`, whose
-# `eth-tester[py-evm]` extra requires `eth-hash[pysha3]` -> safe-pysha3, a C extension
-# with x86_64-only wheels: on any other machine it builds from source and needs a
-# compiler. web3 itself already requires `eth-hash[pycryptodome]`, so that backend is
-# there either way; it is named here so the one keccak implementation sevm relies on is
-# not left to a transitive extra. The eth-tester range mirrors web3's own.
+# Do not use `web3[tester]`: sevm supplies its own REVM provider, and the tester extra
+# would restore the archived Py-EVM stack. The pycryptodome backend is named directly so
+# the keccak implementation sevm relies on is not left to a transitive dependency.
 dependencies = [
     "web3>=7.0",
-    "eth-tester>=0.13.0b1,<0.14.0b1",
-    "py-evm>=0.12.0b2",
     "eth-hash[pycryptodome]>=0.5.1",
     "py-solc-x>=2.0",
     "textual>=8.0",
@@ -109,7 +104,7 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.10"
-# Pragmatic, not strict: this wraps an untyped EVM stack (py-evm, web3) where full
+# Pragmatic, not strict: this wraps an untyped Web3 boundary where full
 # strictness would drown real signal in third-party Any-noise. Tighten over time.
 warn_redundant_casts = true
 warn_unused_ignores = true
