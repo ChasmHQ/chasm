@@ -6,13 +6,22 @@ import queue
 import threading
 import traceback
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any, cast
 
 from eth_abi import encode as abi_encode
 
 from .. import assembly
 from .._revm import RevmChain
-from ..breakpoints import BP_OPCODE, BP_PC, WATCH_WRITE, BreakpointSet
+from ..breakpoints import (
+    BP_OPCODE,
+    BP_PC,
+    WATCH_ACCESS,
+    WATCH_READ,
+    WATCH_WRITE,
+    BreakpointSet,
+    Watchpoint,
+)
 from ..cheatcodes import (
     CONSOLE_ADDRESS,
     VM_ADDRESS,
@@ -40,6 +49,17 @@ from .events import Finished, Paused, Resume, SessionError, StepMode
 _ERROR_SELECTOR = bytes.fromhex("08c379a0")
 _ANY_ADDRESS = "0x" + "00" * 20
 _JUMP_MNEMONICS = frozenset({"JUMP", "JUMPI"})
+_MEMORY_WRITE_MNEMONICS = frozenset(
+    {
+        "MSTORE",
+        "MSTORE8",
+        "CALLDATACOPY",
+        "CODECOPY",
+        "EXTCODECOPY",
+        "RETURNDATACOPY",
+        "MCOPY",
+    }
+)
 
 
 class _StackView:
@@ -251,6 +271,7 @@ class RevmDebugSession:
         self._deployed: dict[str, Any] = {}
         self._frames: list[EvmFrame] = []
         self._last_raw: dict[str, Any] | None = None
+        self._raw_snapshot: FrameSnapshot | None = None
         self._event_q: queue.Queue[Any] = queue.Queue()
         self._cmd_q: queue.Queue[Resume] = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -261,6 +282,7 @@ class RevmDebugSession:
         self._mode_key: tuple[int, int] | None = None
         self._mode_target_pc: int | None = None
         self._pending_count = 1
+        self._pending_watches: dict[int, int | None] = {}
         self._detached = False
 
         self.armed = False
@@ -341,6 +363,7 @@ class RevmDebugSession:
         self._deployed.clear()
         self._frames.clear()
         self._last_raw = None
+        self._raw_snapshot = None
 
     def deploy(self, artifact: Any, what: str) -> str:
         self._chain.create(artifact.bytecode, gas_limit=30_000_000)
@@ -385,9 +408,14 @@ class RevmDebugSession:
                 raise SessionError(f"unknown REVM event: {kind!r}")
             snapshot, hits = self._snapshot_from_raw(event)
             self._last_raw = event
+            self._raw_snapshot = snapshot
             if self._detached:
                 self._chain.resume()
                 continue
+            watched = self._watchpoint_stop(snapshot, hits)
+            if watched is not None:
+                snapshot = watched
+                hits = watched.hit_breakpoints
             if not self._should_surface(event, snapshot, hits):
                 self._continue_raw()
                 continue
@@ -459,11 +487,122 @@ class RevmDebugSession:
         self._pending_count = command.count
 
     def _continue_raw(self) -> None:
-        if self._mode is StepMode.RUN:
+        if self._prepare_write_watch():
+            self._chain.step()
+        elif self._mode is StepMode.RUN:
             self._sync_breakpoints()
             self._chain.resume()
         else:
             self._chain.step()
+
+    def _watchpoint_stop(
+        self,
+        snapshot: FrameSnapshot,
+        breakpoint_hits: tuple[int, ...],
+    ) -> FrameSnapshot | None:
+        if self._pending_watches:
+            pending, self._pending_watches = self._pending_watches, {}
+            triggered: list[int] = []
+            annotations: list[str] = []
+            for number, old in pending.items():
+                watchpoint = self.breakpoints.watchpoints.get(number)
+                if watchpoint is None or not watchpoint.enabled:
+                    continue
+                current = self._read_watch_value(watchpoint, snapshot)
+                watchpoint.old_value = current
+                watchpoint.initialised = True
+                if current == old:
+                    continue
+                watchpoint.hit_count += 1
+                triggered.append(number)
+                annotations.append(
+                    f"{watchpoint.expression}: {_format_watch_value(old)} -> "
+                    f"{_format_watch_value(current)}"
+                )
+            if triggered:
+                return replace(
+                    snapshot,
+                    stop_reason="watchpoint",
+                    hit_breakpoints=tuple(triggered),
+                    annotation="; ".join(annotations),
+                )
+
+        if breakpoint_hits or snapshot.mnemonic != "SLOAD" or not snapshot.stack:
+            return None
+        slot = snapshot.stack[0].value
+        triggered = []
+        annotations = []
+        for watchpoint in self.breakpoints.active_watchpoints():
+            if watchpoint.kind != "storage" or watchpoint.mode not in {
+                WATCH_READ,
+                WATCH_ACCESS,
+            }:
+                continue
+            if watchpoint.slot != slot or (
+                watchpoint.address is not None and watchpoint.address != snapshot.address
+            ):
+                continue
+            current = self._state.get_storage(snapshot.address, slot)
+            watchpoint.hit_count += 1
+            triggered.append(watchpoint.number)
+            annotations.append(f"{watchpoint.expression}: read 0x{current:x}")
+        if not triggered:
+            return None
+        return replace(
+            snapshot,
+            stop_reason="watchpoint",
+            hit_breakpoints=tuple(triggered),
+            annotation="; ".join(annotations),
+        )
+
+    def _prepare_write_watch(self) -> bool:
+        snapshot = self._raw_snapshot
+        if self._last_raw is None or snapshot is None or self._pending_watches:
+            return False
+        candidates: list[Watchpoint] = []
+        if snapshot.mnemonic == "SSTORE" and snapshot.stack:
+            slot = snapshot.stack[0].value
+            candidates = [
+                watchpoint
+                for watchpoint in self.breakpoints.active_watchpoints()
+                if watchpoint.kind == "storage"
+                and watchpoint.mode in {WATCH_WRITE, WATCH_ACCESS}
+                and watchpoint.slot == slot
+                and (watchpoint.address is None or watchpoint.address == snapshot.address)
+            ]
+        elif snapshot.mnemonic in _MEMORY_WRITE_MNEMONICS:
+            written = _memory_write_range(snapshot)
+            if written is not None:
+                start, end = written
+                candidates = [
+                    watchpoint
+                    for watchpoint in self.breakpoints.active_watchpoints()
+                    if watchpoint.kind == "memory"
+                    and watchpoint.offset is not None
+                    and start < watchpoint.offset + watchpoint.size
+                    and watchpoint.offset < end
+                ]
+        for watchpoint in candidates:
+            self._pending_watches[watchpoint.number] = self._read_watch_value(
+                watchpoint, snapshot
+            )
+        return bool(self._pending_watches)
+
+    def _read_watch_value(
+        self,
+        watchpoint: Watchpoint,
+        snapshot: FrameSnapshot,
+    ) -> int | None:
+        if watchpoint.kind == "storage" and watchpoint.slot is not None:
+            return self._state.get_storage(
+                watchpoint.address or snapshot.address,
+                watchpoint.slot,
+            )
+        if watchpoint.kind == "memory" and watchpoint.offset is not None:
+            start = watchpoint.offset
+            data = snapshot.memory[start : start + watchpoint.size]
+            return int.from_bytes(data.ljust(watchpoint.size, b"\x00"), "big")
+        return None
 
     def _should_surface(
         self,
@@ -471,6 +610,8 @@ class RevmDebugSession:
         snapshot: FrameSnapshot,
         hits: tuple[int, ...],
     ) -> bool:
+        if snapshot.stop_reason == "watchpoint":
+            return True
         reason = raw["reason"]
         if reason == "out_of_gas":
             return True
@@ -746,6 +887,15 @@ class RevmDebugSession:
 
     def _sync_breakpoints(self) -> None:
         points: set[tuple[str, int]] = set()
+        watched_mnemonics: set[str] = set()
+        for watchpoint in self.breakpoints.active_watchpoints():
+            if watchpoint.kind == "storage":
+                if watchpoint.mode in {WATCH_READ, WATCH_ACCESS}:
+                    watched_mnemonics.add("SLOAD")
+                if watchpoint.mode in {WATCH_WRITE, WATCH_ACCESS}:
+                    watched_mnemonics.add("SSTORE")
+            elif watchpoint.kind == "memory":
+                watched_mnemonics.update(_MEMORY_WRITE_MNEMONICS)
         for artifact in self.project.artifacts.values():
             for code, is_create in (
                 (artifact.deployed_bytecode, False),
@@ -758,6 +908,11 @@ class RevmDebugSession:
                 points.update(
                     (_ANY_ADDRESS, pc)
                     for pc in self.code.declpcs_for(code, pc_map, is_create)
+                )
+                points.update(
+                    (_ANY_ADDRESS, instruction.pc)
+                    for instruction in disassembly.instructions
+                    if instruction.mnemonic in watched_mnemonics
                 )
                 for breakpoint in self.breakpoints.breakpoints.values():
                     if not breakpoint.enabled:
@@ -1208,6 +1363,29 @@ class RevmDebugSession:
     @contextmanager
     def suspended(self):
         yield
+
+
+def _memory_write_range(snapshot: FrameSnapshot) -> tuple[int, int] | None:
+    stack = snapshot.stack
+    mnemonic = snapshot.mnemonic
+    if mnemonic == "MSTORE" and stack:
+        start, size = stack[0].value, 32
+    elif mnemonic == "MSTORE8" and stack:
+        start, size = stack[0].value, 1
+    elif mnemonic == "EXTCODECOPY" and len(stack) >= 4:
+        start, size = stack[1].value, stack[3].value
+    elif (
+        mnemonic in {"CALLDATACOPY", "CODECOPY", "RETURNDATACOPY", "MCOPY"}
+        and len(stack) >= 3
+    ):
+        start, size = stack[0].value, stack[2].value
+    else:
+        return None
+    return start, start + size
+
+
+def _format_watch_value(value: int | None) -> str:
+    return "<unset>" if value is None else f"0x{value:x}"
 
 
 def _address_bytes(value: str) -> bytes:

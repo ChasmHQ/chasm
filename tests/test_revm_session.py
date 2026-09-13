@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from eth_utils import keccak
 
+from sevm.breakpoints import WATCH_ACCESS, WATCH_READ, WATCH_WRITE
 from sevm.evaluate import Evaluator, make_eval_hook
 from sevm.foundry import RevmTestsDriver, discover_tests, select_test
 from sevm.session import Finished, Paused, RevmDebugSession, StepMode
@@ -166,6 +168,69 @@ def test_revm_foundry_session_breaks_in_a_contract_created_during_setup(token_pr
         assert event.snapshot.function.name == "mint"
 
         event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        assert isinstance(event, Finished)
+        assert event.ok
+    finally:
+        session.detach(timeout=TIMEOUT)
+
+
+@pytest.mark.parametrize(
+    ("mode", "mnemonic"),
+    [(WATCH_READ, "SLOAD"), (WATCH_WRITE, None), (WATCH_ACCESS, "SLOAD")],
+)
+def test_revm_foundry_session_watches_storage(token_project, mode, mnemonic):
+    session = RevmDebugSession(token_project)
+    session.break_at_function("Token.mint")
+    session.start(_driver(token_project, "TokenTest", "testMintAsOwner"))
+    try:
+        event = session.wait(timeout=TIMEOUT)
+        assert isinstance(event, Paused)
+        bob = 0xB0B
+        slot = int.from_bytes(keccak(bob.to_bytes(32, "big") + bytes(32)), "big")
+        watchpoint = session.watch_storage(
+            "balanceOf[bob]",
+            slot,
+            address=event.snapshot.address,
+            mode=mode,
+        )
+
+        event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        assert isinstance(event, Paused)
+        assert event.snapshot.stop_reason == "watchpoint"
+        assert event.snapshot.hit_breakpoints == (watchpoint.number,)
+        assert mnemonic is None or event.snapshot.mnemonic == mnemonic
+        if mode in {WATCH_READ, WATCH_ACCESS}:
+            assert "read 0x0" in event.snapshot.annotation
+        else:
+            assert "0x0 -> 0x64" in event.snapshot.annotation
+
+        event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        while isinstance(event, Paused):
+            event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        assert isinstance(event, Finished)
+        assert event.ok
+    finally:
+        session.detach(timeout=TIMEOUT)
+
+
+def test_revm_foundry_session_watches_memory(token_project):
+    session = RevmDebugSession(token_project)
+    session.break_at_function("Token.mint")
+    session.start(_driver(token_project, "TokenTest", "testMintAsOwner"))
+    try:
+        event = session.wait(timeout=TIMEOUT)
+        assert isinstance(event, Paused)
+        watchpoint = session.watch_memory("*0x0", 0, size=64)
+
+        event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        assert isinstance(event, Paused)
+        assert event.snapshot.stop_reason == "watchpoint"
+        assert event.snapshot.hit_breakpoints == (watchpoint.number,)
+        assert "->" in event.snapshot.annotation
+
+        event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        while isinstance(event, Paused):
+            event = session.resume(StepMode.RUN, timeout=TIMEOUT)
         assert isinstance(event, Finished)
         assert event.ok
     finally:
