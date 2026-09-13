@@ -8,5 +8,5 @@ pub use engine::{
 pub use protocol::{
     AccountSpec, Breakpoint, ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished,
     FrameContext, FrameKind, HostCall, PauseReason, SessionConfig, SessionError, Snapshot,
-    StorageSlot, TransactionKind, TransactionRequest,
+    StateCommand, StorageSlot, TransactionKind, TransactionRequest,
 };

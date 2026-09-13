@@ -1,13 +1,15 @@
 use crate::protocol::{
     ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished, FrameContext, FrameKind,
-    HostCall, PauseReason, SessionConfig, SessionError, Snapshot, StorageSlot, TransactionKind,
-    TransactionRequest,
+    HostCall, PauseReason, SessionConfig, SessionError, Snapshot, StateCommand, StorageSlot,
+    TransactionKind, TransactionRequest,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use revm::{
     Context, ExecuteCommitEvm, InspectEvm, Inspector, MainBuilder, MainContext,
-    context::{ContextTr, TxEnv},
-    context_interface::{CreateScheme, JournalTr},
+    context::{BlockEnv, CfgEnv, TxEnv},
+    context_interface::{
+        ContextTr, CreateScheme, JournalTr, journaled_state::account::JournaledAccountTr,
+    },
     database::InMemoryDB,
     handler::instructions::EthInstructions,
     interpreter::{
@@ -39,6 +41,8 @@ const STATE_IDLE: u8 = 0;
 const STATE_RUNNING: u8 = 1;
 const STATE_PAUSED: u8 = 2;
 const STATE_STOPPED: u8 = 3;
+
+type SevmContext = Context<BlockEnv, TxEnv, CfgEnv, InMemoryDB>;
 
 enum EngineCommand {
     Transact(TransactionRequest),
@@ -137,17 +141,12 @@ impl SevmInspector {
         frame.code = Bytes::copy_from_slice(interpreter.bytecode.bytecode_slice());
     }
 
-    fn pause<CTX>(
+    fn pause(
         &mut self,
         interpreter: &mut Interpreter<EthInterpreter>,
-        context: &mut CTX,
+        context: &mut SevmContext,
         reason: PauseReason,
-    ) -> bool
-    where
-        CTX: ContextTr + revm::interpreter::Host,
-        CTX::Journal: JournalTr,
-        <CTX::Journal as JournalTr>::Database: revm::Database,
-    {
+    ) -> bool {
         self.state.store(STATE_PAUSED, Ordering::Release);
         if self
             .events
@@ -216,6 +215,9 @@ impl SevmInspector {
                     .sstore(interpreter.input.target_address(), key, value)
                     .map(|_| CommandValue::Word(value))
                     .map_err(|error| SessionError::InvalidCommand(format!("{error:?}"))),
+                EngineCommand::Debug(DebugCommand::State(command)) => {
+                    execute_state_command(context, command)
+                }
                 EngineCommand::Debug(DebugCommand::Evaluate { code, keep }) => {
                     let checkpoint = context.journal_mut().checkpoint();
                     let mut nested = Interpreter::new(
@@ -234,7 +236,7 @@ impl SevmInspector {
                         100_000,
                     );
                     let instructions =
-                        EthInstructions::<EthInterpreter, CTX>::new_mainnet_with_spec(
+                        EthInstructions::<EthInterpreter, SevmContext>::new_mainnet_with_spec(
                             SpecId::CANCUN,
                         );
                     let action = nested.run_plain(
@@ -317,12 +319,7 @@ impl SevmInspector {
         )
     }
 
-    fn host_call<CTX>(&mut self, context: &mut CTX, inputs: &CallInputs) -> CallOutcome
-    where
-        CTX: ContextTr + revm::interpreter::Host,
-        CTX::Journal: JournalTr,
-        <CTX::Journal as JournalTr>::Database: revm::Database,
-    {
+    fn host_call(&mut self, context: &mut SevmContext, inputs: &CallInputs) -> CallOutcome {
         self.state.store(STATE_PAUSED, Ordering::Release);
         let event = HostCall {
             address: inputs.bytecode_address,
@@ -351,6 +348,9 @@ impl SevmInspector {
                         .map(|point| (point.address, point.pc))
                         .collect();
                     Ok(CommandValue::Number(self.breakpoints.len() as u64))
+                }
+                EngineCommand::Debug(DebugCommand::State(command)) => {
+                    execute_state_command(context, command)
                 }
                 EngineCommand::Debug(_) => Err(SessionError::InvalidCommand(
                     "the engine is waiting for a host-call response".to_owned(),
@@ -386,15 +386,134 @@ fn call_result(inputs: &CallInputs, output: Bytes, revert: bool) -> CallOutcome 
     )
 }
 
-impl<CTX> Inspector<CTX> for SevmInspector
-where
-    CTX: ContextTr + revm::interpreter::Host,
-    CTX::Journal: JournalTr,
-    <CTX::Journal as JournalTr>::Database: revm::Database,
-{
+fn execute_state_command(
+    context: &mut SevmContext,
+    command: StateCommand,
+) -> Result<CommandValue, SessionError> {
+    let invalid = |error| SessionError::InvalidCommand(format!("{error:?}"));
+    match command {
+        StateCommand::ReadBalance(address) => context
+            .journal_mut()
+            .load_account(address)
+            .map(|account| CommandValue::Word(account.info.balance))
+            .map_err(invalid),
+        StateCommand::WriteBalance { address, value } => {
+            let mut account = context
+                .journal_mut()
+                .load_account_mut(address)
+                .map_err(invalid)?
+                .data;
+            account.set_balance(value);
+            Ok(CommandValue::Word(value))
+        }
+        StateCommand::ReadCode(address) => context
+            .journal_mut()
+            .code(address)
+            .map(|code| CommandValue::Bytes(code.data))
+            .map_err(invalid),
+        StateCommand::WriteCode { address, code } => {
+            let mut account = context
+                .journal_mut()
+                .load_account_with_code_mut(address)
+                .map_err(invalid)?
+                .data;
+            account.set_code_and_hash_slow(Bytecode::new_raw(code));
+            Ok(CommandValue::None)
+        }
+        StateCommand::ReadNonce(address) => context
+            .journal_mut()
+            .load_account(address)
+            .map(|account| CommandValue::Number(account.info.nonce))
+            .map_err(invalid),
+        StateCommand::WriteNonce { address, value } => {
+            let mut account = context
+                .journal_mut()
+                .load_account_mut(address)
+                .map_err(invalid)?
+                .data;
+            account.set_nonce(value);
+            Ok(CommandValue::Number(value))
+        }
+        StateCommand::ReadStorage { address, key } => context
+            .journal_mut()
+            .sload(address, key)
+            .map(|value| CommandValue::Word(value.data))
+            .map_err(invalid),
+        StateCommand::WriteStorage {
+            address,
+            key,
+            value,
+        } => context
+            .journal_mut()
+            .sstore(address, key, value)
+            .map(|_| CommandValue::Word(value))
+            .map_err(invalid),
+        StateCommand::ReadTransient { address, key } => Ok(CommandValue::Word(
+            context.journal_mut().tload(address, key),
+        )),
+        StateCommand::WriteTransient {
+            address,
+            key,
+            value,
+        } => {
+            context.journal_mut().tstore(address, key, value);
+            Ok(CommandValue::Word(value))
+        }
+        StateCommand::WarmStorage { address, key } => context
+            .journal_mut()
+            .sload(address, key)
+            .map(|_| CommandValue::None)
+            .map_err(invalid),
+        StateCommand::ReadBlockNumber => Ok(CommandValue::Word(context.block.number)),
+        StateCommand::WriteBlockNumber(value) => {
+            context.block.number = value;
+            Ok(CommandValue::Word(value))
+        }
+        StateCommand::ReadTimestamp => Ok(CommandValue::Word(context.block.timestamp)),
+        StateCommand::WriteTimestamp(value) => {
+            context.block.timestamp = value;
+            Ok(CommandValue::Word(value))
+        }
+        StateCommand::ReadBaseFee => Ok(CommandValue::Number(context.block.basefee)),
+        StateCommand::WriteBaseFee(value) => {
+            context.block.basefee = value;
+            Ok(CommandValue::Number(value))
+        }
+        StateCommand::ReadChainId => Ok(CommandValue::Number(context.cfg.chain_id)),
+        StateCommand::WriteChainId(value) => {
+            context.cfg.chain_id = value;
+            Ok(CommandValue::Number(value))
+        }
+        StateCommand::ReadCoinbase => Ok(CommandValue::Bytes(Bytes::copy_from_slice(
+            context.block.beneficiary.as_slice(),
+        ))),
+        StateCommand::WriteCoinbase(value) => {
+            context.block.beneficiary = value;
+            Ok(CommandValue::Bytes(Bytes::copy_from_slice(
+                value.as_slice(),
+            )))
+        }
+        StateCommand::ReadPrevrandao => Ok(CommandValue::Bytes(Bytes::copy_from_slice(
+            context.block.prevrandao.unwrap_or_default().as_slice(),
+        ))),
+        StateCommand::WritePrevrandao(value) => {
+            context.block.prevrandao = Some(value);
+            Ok(CommandValue::Bytes(Bytes::copy_from_slice(
+                value.as_slice(),
+            )))
+        }
+        StateCommand::ReadDifficulty => Ok(CommandValue::Word(context.block.difficulty)),
+        StateCommand::WriteDifficulty(value) => {
+            context.block.difficulty = value;
+            Ok(CommandValue::Word(value))
+        }
+    }
+}
+
+impl Inspector<SevmContext> for SevmInspector {
     fn frame_start(
         &mut self,
-        context: &mut CTX,
+        context: &mut SevmContext,
         frame_input: &mut FrameInput,
     ) -> Option<revm::handler::FrameResult> {
         let depth = self.frames.len();
@@ -446,7 +565,7 @@ where
     fn initialize_interp(
         &mut self,
         interpreter: &mut Interpreter<EthInterpreter>,
-        _context: &mut CTX,
+        _context: &mut SevmContext,
     ) {
         if let Some(frame) = self.frames.last_mut() {
             Self::update_frame(frame, interpreter);
@@ -455,14 +574,14 @@ where
 
     fn frame_end(
         &mut self,
-        _context: &mut CTX,
+        _context: &mut SevmContext,
         _frame_input: &FrameInput,
         _frame_result: &mut revm::handler::FrameResult,
     ) {
         self.frames.pop();
     }
 
-    fn step(&mut self, interpreter: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
+    fn step(&mut self, interpreter: &mut Interpreter<EthInterpreter>, context: &mut SevmContext) {
         self.step_index = self.step_index.saturating_add(1);
         if let Some(frame) = self.frames.last_mut() {
             Self::update_frame(frame, interpreter);
@@ -494,7 +613,11 @@ where
         self.instruction_checkpoint = Some(context.journal_mut().checkpoint());
     }
 
-    fn step_end(&mut self, interpreter: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
+    fn step_end(
+        &mut self,
+        interpreter: &mut Interpreter<EthInterpreter>,
+        context: &mut SevmContext,
+    ) {
         let result = interpreter
             .bytecode
             .action
@@ -532,7 +655,7 @@ where
         self.backup = None;
     }
 
-    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+    fn call(&mut self, context: &mut SevmContext, inputs: &mut CallInputs) -> Option<CallOutcome> {
         if inputs.bytecode_address == CHEATCODE_ADDRESS {
             let data = inputs.input.bytes(context);
             let selector = &keccak256("prank(address)")[..4];
@@ -700,6 +823,10 @@ impl DebugEngine {
             CommandValue::Word(value) => Ok(value),
             _ => unreachable!(),
         }
+    }
+
+    pub fn state(&self, command: StateCommand) -> Result<CommandValue, SessionError> {
+        self.execute(DebugCommand::State(command))
     }
 
     pub fn evaluate(&self, code: Bytes, keep: bool) -> Result<Bytes, SessionError> {

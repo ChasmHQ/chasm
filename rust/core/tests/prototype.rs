@@ -1,11 +1,11 @@
 use revm::{
     bytecode::opcode,
-    primitives::{Address, Bytes, U256, address, keccak256},
+    primitives::{Address, B256, Bytes, U256, address, keccak256},
 };
 use sevm_revm_core::{
-    AccountSpec, Breakpoint, CHEATCODE_ADDRESS, ChainConfig, DEFAULT_CALLER, DEFAULT_TARGET,
-    DebugEngine, DebugEvent, FrameKind, PauseReason, PrototypeSession, SessionConfig,
-    TransactionRequest,
+    AccountSpec, Breakpoint, CHEATCODE_ADDRESS, ChainConfig, CommandValue, DEFAULT_CALLER,
+    DEFAULT_TARGET, DebugEngine, DebugEvent, FrameKind, PauseReason, PrototypeSession,
+    SessionConfig, StateCommand, TransactionRequest,
 };
 use std::time::Duration;
 
@@ -387,6 +387,129 @@ fn yields_foundry_host_calls_to_the_controller() {
     assert_eq!(call.caller, DEFAULT_TARGET);
     assert_eq!(&call.data[..4], selector);
     assert_eq!(U256::from_be_slice(&call.data[4..]), U256::from(1));
+
+    let account = address!("4000000000000000000000000000000000000004");
+    assert_eq!(
+        session
+            .state(StateCommand::WriteBalance {
+                address: account,
+                value: U256::from(99),
+            })
+            .unwrap(),
+        CommandValue::Word(U256::from(99))
+    );
+    assert_eq!(
+        session.state(StateCommand::ReadBalance(account)).unwrap(),
+        CommandValue::Word(U256::from(99))
+    );
+    assert_eq!(
+        session
+            .state(StateCommand::WriteStorage {
+                address: account,
+                key: U256::from(7),
+                value: U256::from(8),
+            })
+            .unwrap(),
+        CommandValue::Word(U256::from(8))
+    );
+    assert_eq!(
+        session
+            .state(StateCommand::ReadStorage {
+                address: account,
+                key: U256::from(7),
+            })
+            .unwrap(),
+        CommandValue::Word(U256::from(8))
+    );
+    session
+        .state(StateCommand::WriteCode {
+            address: account,
+            code: Bytes::from_static(&[opcode::STOP]),
+        })
+        .unwrap();
+    assert_eq!(
+        session.state(StateCommand::ReadCode(account)).unwrap(),
+        CommandValue::Bytes(Bytes::from_static(&[opcode::STOP]))
+    );
+    session
+        .state(StateCommand::WriteNonce {
+            address: account,
+            value: 12,
+        })
+        .unwrap();
+    assert_eq!(
+        session.state(StateCommand::ReadNonce(account)).unwrap(),
+        CommandValue::Number(12)
+    );
+    session
+        .state(StateCommand::WriteTransient {
+            address: account,
+            key: U256::from(3),
+            value: U256::from(4),
+        })
+        .unwrap();
+    assert_eq!(
+        session
+            .state(StateCommand::ReadTransient {
+                address: account,
+                key: U256::from(3),
+            })
+            .unwrap(),
+        CommandValue::Word(U256::from(4))
+    );
+    session
+        .state(StateCommand::WarmStorage {
+            address: account,
+            key: U256::from(9),
+        })
+        .unwrap();
+
+    let randao = B256::repeat_byte(0x44);
+    let environment = [
+        (
+            StateCommand::WriteBlockNumber(U256::from(100)),
+            StateCommand::ReadBlockNumber,
+            CommandValue::Word(U256::from(100)),
+        ),
+        (
+            StateCommand::WriteTimestamp(U256::from(200)),
+            StateCommand::ReadTimestamp,
+            CommandValue::Word(U256::from(200)),
+        ),
+        (
+            StateCommand::WriteDifficulty(U256::from(300)),
+            StateCommand::ReadDifficulty,
+            CommandValue::Word(U256::from(300)),
+        ),
+    ];
+    for (write, read, expected) in environment {
+        session.state(write).unwrap();
+        assert_eq!(session.state(read).unwrap(), expected);
+    }
+    session.state(StateCommand::WriteBaseFee(400)).unwrap();
+    assert_eq!(
+        session.state(StateCommand::ReadBaseFee).unwrap(),
+        CommandValue::Number(400)
+    );
+    session.state(StateCommand::WriteChainId(500)).unwrap();
+    assert_eq!(
+        session.state(StateCommand::ReadChainId).unwrap(),
+        CommandValue::Number(500)
+    );
+    session.state(StateCommand::WriteCoinbase(account)).unwrap();
+    assert_eq!(
+        session.state(StateCommand::ReadCoinbase).unwrap(),
+        CommandValue::Bytes(Bytes::copy_from_slice(account.as_slice()))
+    );
+    session
+        .state(StateCommand::WritePrevrandao(randao))
+        .unwrap();
+    assert_eq!(
+        session.state(StateCommand::ReadPrevrandao).unwrap(),
+        CommandValue::Bytes(Bytes::copy_from_slice(randao.as_slice()))
+    );
     session.respond_host(Bytes::new(), false).unwrap();
-    assert!(finished(&session).success);
+    let result = finished(&session);
+    assert!(result.success);
+    assert_eq!(result.storage_at(account, U256::from(7)), U256::from(8));
 }

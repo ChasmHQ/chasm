@@ -1,4 +1,4 @@
-use revm::primitives::{Address, Bytes, U256};
+use revm::primitives::{Address, B256, Bytes, U256};
 use std::{fmt, time::Duration};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -209,10 +209,66 @@ pub enum DebugCommand {
     SetPc(usize),
     ReadStorage(U256),
     WriteStorage { key: U256, value: U256 },
+    State(StateCommand),
     Evaluate { code: Bytes, keep: bool },
     RespondHost { output: Bytes, revert: bool },
     Step { count: usize },
     Resume,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StateCommand {
+    ReadBalance(Address),
+    WriteBalance {
+        address: Address,
+        value: U256,
+    },
+    ReadCode(Address),
+    WriteCode {
+        address: Address,
+        code: Bytes,
+    },
+    ReadNonce(Address),
+    WriteNonce {
+        address: Address,
+        value: u64,
+    },
+    ReadStorage {
+        address: Address,
+        key: U256,
+    },
+    WriteStorage {
+        address: Address,
+        key: U256,
+        value: U256,
+    },
+    ReadTransient {
+        address: Address,
+        key: U256,
+    },
+    WriteTransient {
+        address: Address,
+        key: U256,
+        value: U256,
+    },
+    WarmStorage {
+        address: Address,
+        key: U256,
+    },
+    ReadBlockNumber,
+    WriteBlockNumber(U256),
+    ReadTimestamp,
+    WriteTimestamp(U256),
+    ReadBaseFee,
+    WriteBaseFee(u64),
+    ReadChainId,
+    WriteChainId(u64),
+    ReadCoinbase,
+    WriteCoinbase(Address),
+    ReadPrevrandao,
+    WritePrevrandao(B256),
+    ReadDifficulty,
+    WriteDifficulty(U256),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
