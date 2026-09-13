@@ -75,6 +75,7 @@ fn mutates_live_stack_memory_storage_gas_and_pc() {
 
     let snapshot = paused(&session);
     assert_eq!(snapshot.reason, PauseReason::Breakpoint);
+    assert_eq!(snapshot.step, 1);
     assert_eq!(snapshot.pc, 0);
     assert_eq!(snapshot.mnemonic, "JUMPDEST");
     assert_eq!(snapshot.address, DEFAULT_TARGET);
@@ -143,6 +144,7 @@ fn steps_by_opcode_without_preconfigured_breakpoints() {
     session.step(1).unwrap();
     let snapshot = paused(&session);
     assert_eq!(snapshot.reason, PauseReason::Step);
+    assert_eq!(snapshot.step, 2);
     assert_eq!(snapshot.pc, 1);
 
     session.step(1).unwrap();

@@ -661,6 +661,7 @@ fn snapshot_json(snapshot: Snapshot) -> Value {
             PauseReason::OutOfGas => "out_of_gas",
             PauseReason::Step => "step",
         },
+        "step": snapshot.step,
         "address": format!("{:#x}", snapshot.address),
         "code_address": format!("{:#x}", snapshot.code_address),
         "caller": format!("{:#x}", snapshot.caller),

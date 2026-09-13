@@ -73,6 +73,7 @@ fn snapshot_dict<'py>(py: Python<'py>, snapshot: Snapshot) -> PyResult<Bound<'py
             PauseReason::Step => "step",
         },
     )?;
+    result.set_item("step", snapshot.step)?;
     result.set_item("address", format!("{:#x}", snapshot.address))?;
     result.set_item("code_address", format!("{:#x}", snapshot.code_address))?;
     result.set_item("caller", format!("{:#x}", snapshot.caller))?;

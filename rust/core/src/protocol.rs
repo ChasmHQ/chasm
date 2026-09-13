@@ -137,6 +137,7 @@ pub struct FrameContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub reason: PauseReason,
+    pub step: u64,
     pub address: Address,
     pub code_address: Address,
     pub caller: Address,

@@ -66,6 +66,7 @@ struct SevmInspector {
     breakpoints: HashSet<(Address, usize)>,
     frames: Vec<FrameContext>,
     origin: Address,
+    step_index: u64,
     backup: Option<StepBackup>,
     instruction_checkpoint: Option<revm::context_interface::journaled_state::JournalCheckpoint>,
     skip_breakpoint_once: bool,
@@ -96,6 +97,7 @@ impl SevmInspector {
         }
         Snapshot {
             reason,
+            step: self.step_index,
             address,
             code_address,
             caller: interpreter.input.caller_address(),
@@ -461,6 +463,7 @@ where
     }
 
     fn step(&mut self, interpreter: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
+        self.step_index = self.step_index.saturating_add(1);
         if let Some(frame) = self.frames.last_mut() {
             Self::update_frame(frame, interpreter);
         }
@@ -788,6 +791,7 @@ fn run_worker(
             .collect(),
         frames: Vec::new(),
         origin: Address::ZERO,
+        step_index: 0,
         backup: None,
         instruction_checkpoint: None,
         skip_breakpoint_once: false,

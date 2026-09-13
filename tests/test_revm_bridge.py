@@ -19,6 +19,7 @@ def test_live_mutation_crosses_the_python_bridge():
     paused = session.wait()
     assert paused["type"] == "paused"
     assert paused["reason"] == "breakpoint"
+    assert paused["step"] == 3
     assert paused["stack"] == ["0x0", "0x1"]
     assert paused["mnemonic"] == "SSTORE"
     assert paused["code_address"] == paused["address"]
@@ -51,6 +52,7 @@ def test_live_mutation_crosses_the_python_bridge():
     stepped = session.wait()
     assert stepped["type"] == "paused"
     assert stepped["reason"] == "step"
+    assert stepped["step"] == 4
     assert stepped["pc"] == 4
     session.resume()
 
