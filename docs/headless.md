@@ -17,7 +17,7 @@ to `9`, resumes, and reads the committed storage from the finish event:
 
 ```bash
 $ uv run sevm-engine < examples/headless-session.jsonl
-{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_stack","write_memory","set_gas","set_pc","read_storage","write_storage","evaluate","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
+{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","read_storage","write_storage","evaluate","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
 {"id":2,"jsonrpc":"2.0","result":{"started":true}}
 {"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","depth":0,"gas_remaining":78994,"memory":"0x","opcode":85,"pc":4,"reason":"breakpoint","stack":["0x0","0x1"]},"type":"paused"}}
 {"id":4,"jsonrpc":"2.0","result":"0x9"}
@@ -57,6 +57,7 @@ after sending its response.
 | `transact` | `caller`, optional `to`, `data`, `value`, and `gas_limit` | `{"started":true}` |
 | `wait_event` | `{"timeout_ms":5000}` | A paused, finished, or failed event |
 | `snapshot` | `{}` | The current paused frame |
+| `set_breakpoints` | `{"breakpoints":[{"address":"0x...","pc":4}]}` | Number installed |
 | `set_stack` | `{"index":1,"value":"0x9"}` | Written word |
 | `write_memory` | `{"offset":64,"data":"0x1234"}` | Bytes written |
 | `set_gas` | `{"gas":50000}` | New remaining gas |
