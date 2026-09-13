@@ -212,10 +212,7 @@ fn persists_state_across_create_and_call_transactions() {
             balance: U256::MAX,
             storage: Vec::new(),
         }],
-        breakpoints: vec![Breakpoint {
-            address: created,
-            pc: 22,
-        }],
+        breakpoints: Vec::new(),
     });
 
     engine
@@ -224,6 +221,15 @@ fn persists_state_across_create_and_call_transactions() {
     let deployment = finished(&engine);
     assert!(deployment.success);
     assert_eq!(deployment.created_address, Some(created));
+    assert_eq!(
+        engine
+            .set_breakpoints(vec![Breakpoint {
+                address: created,
+                pc: 22,
+            }])
+            .unwrap(),
+        1
+    );
 
     for expected in [U256::from(1), U256::from(2)] {
         engine

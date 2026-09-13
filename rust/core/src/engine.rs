@@ -40,6 +40,7 @@ const STATE_STOPPED: u8 = 3;
 
 enum EngineCommand {
     Transact(TransactionRequest),
+    SetBreakpoints(Vec<crate::Breakpoint>),
     Debug(DebugCommand),
     Abort,
 }
@@ -212,6 +213,13 @@ impl SevmInspector {
                 EngineCommand::Debug(DebugCommand::Resume) => {
                     resume = true;
                     Ok(CommandValue::None)
+                }
+                EngineCommand::SetBreakpoints(breakpoints) => {
+                    self.breakpoints = breakpoints
+                        .into_iter()
+                        .map(|point| (point.address, point.pc))
+                        .collect();
+                    Ok(CommandValue::Number(self.breakpoints.len() as u64))
                 }
                 EngineCommand::Transact(_) => Err(SessionError::InvalidCommand(
                     "a transaction is already running".to_owned(),
@@ -416,6 +424,25 @@ impl DebugEngine {
         }
     }
 
+    pub fn set_breakpoints(
+        &self,
+        breakpoints: Vec<crate::Breakpoint>,
+    ) -> Result<usize, SessionError> {
+        match self.state.load(Ordering::Acquire) {
+            STATE_IDLE | STATE_PAUSED => {}
+            STATE_RUNNING => {
+                return Err(SessionError::InvalidCommand(
+                    "cannot change breakpoints while a transaction is running".to_owned(),
+                ));
+            }
+            _ => return Err(SessionError::EngineStopped),
+        }
+        match self.command(EngineCommand::SetBreakpoints(breakpoints))? {
+            CommandValue::Number(value) => Ok(value as usize),
+            _ => unreachable!(),
+        }
+    }
+
     pub fn wait(&self, timeout: Duration) -> Result<DebugEvent, SessionError> {
         match self.events.recv_timeout(timeout) {
             Ok(event) => Ok(event),
@@ -600,6 +627,15 @@ fn run_worker(
             }
             EngineCommand::Debug(_) => {
                 let _ = command.reply.send(Err(SessionError::NotPaused));
+            }
+            EngineCommand::SetBreakpoints(breakpoints) => {
+                evm.inspector.breakpoints = breakpoints
+                    .into_iter()
+                    .map(|point| (point.address, point.pc))
+                    .collect();
+                let _ = command.reply.send(Ok(CommandValue::Number(
+                    evm.inspector.breakpoints.len() as u64,
+                )));
             }
             EngineCommand::Abort => {
                 let _ = command.reply.send(Ok(CommandValue::None));
