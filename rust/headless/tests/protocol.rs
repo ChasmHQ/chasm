@@ -1,3 +1,4 @@
+use revm::primitives::keccak256;
 use serde_json::{Value, json};
 use sevm_revm_headless::{PROTOCOL_VERSION, serve};
 use std::{
@@ -8,6 +9,7 @@ use std::{
 
 const TARGET: &str = "0x1000000000000000000000000000000000000001";
 const CALLER: &str = "0x2000000000000000000000000000000000000002";
+const CHEATCODE: &str = "7109709ecfa91a80626ff3989d68f67f5b1dd12d";
 
 fn request(id: u64, method: &str, params: Value) -> String {
     json!({
@@ -160,4 +162,40 @@ fn persistent_protocol_deploys_then_calls_the_created_contract() {
     assert_eq!(responses[7]["result"]["storage"][0]["value"], "0x1");
     assert_eq!(responses[9]["result"]["snapshot"]["pc"], 22);
     assert_eq!(responses[11]["result"]["storage"][0]["value"], "0x2");
+}
+
+#[test]
+fn delegates_foundry_host_calls_over_json_rpc() {
+    let selector = keccak256("assertTrue(bool)");
+    let selector = selector[..4]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let code = format!(
+        "0x7f{selector}{}5f5260016004525f5f60245f5f73{CHEATCODE}61c350f15000",
+        "00".repeat(28)
+    );
+    let responses = run(&[
+        request(
+            1,
+            "start",
+            json!({
+                "entry": TARGET,
+                "accounts": [{ "address": TARGET, "code": code }],
+                "breakpoints": [{ "address": TARGET, "pc": 0 }],
+            }),
+        ),
+        request(2, "wait_event", json!({})),
+        request(3, "resume", json!({})),
+        request(4, "wait_event", json!({})),
+        request(5, "respond_host", json!({})),
+        request(6, "wait_event", json!({})),
+        request(7, "shutdown", json!({})),
+    ]);
+
+    assert_eq!(responses[3]["result"]["type"], "host_call");
+    assert_eq!(responses[3]["result"]["address"], format!("0x{CHEATCODE}"));
+    assert_eq!(responses[3]["result"]["caller"], TARGET);
+    assert_eq!(responses[5]["result"]["type"], "finished");
+    assert_eq!(responses[5]["result"]["success"], true);
 }

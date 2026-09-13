@@ -8,7 +8,10 @@ import sys
 import threading
 import time
 
+from eth_utils import function_signature_to_4byte_selector
+
 from sevm._revm import RevmChain, RevmSession, revm_version
+from sevm.cheatcodes import CheatState, VM_ADDRESS, apply_cheat
 
 
 def test_live_mutation_crosses_the_python_bridge():
@@ -118,3 +121,25 @@ def test_persistent_chain_deploys_and_reuses_state():
         finished = chain.wait()
         storage = {(addr, key): value for addr, key, value in finished["storage"]}
         assert storage[(address, "0x0")] == expected
+
+
+def test_foundry_host_call_crosses_the_python_bridge():
+    selector = function_signature_to_4byte_selector("assertTrue(bool)")
+    selector_word = selector + bytes(28)
+    code = (
+        b"\x7f"
+        + selector_word
+        + bytes.fromhex("5f5260016004525f5f60245f5f73")
+        + VM_ADDRESS
+        + bytes.fromhex("61c350f15000")
+    )
+    session = RevmSession(code, stop_pc=0)
+    assert session.wait()["type"] == "paused"
+    session.resume()
+
+    host_call = session.wait()
+    assert host_call["type"] == "host_call"
+    assert bytes.fromhex(host_call["address"][2:]) == VM_ADDRESS
+    output = apply_cheat(CheatState(), None, host_call["data"], host_call["caller"])
+    session.respond_host(output)
+    assert session.wait()["success"]

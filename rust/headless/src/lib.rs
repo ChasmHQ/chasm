@@ -191,6 +191,15 @@ struct EvaluateParams {
     keep: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostResponseParams {
+    #[serde(default = "empty_bytes")]
+    output: String,
+    #[serde(default)]
+    revert: bool,
+}
+
 fn default_gas_limit() -> u64 {
     100_000
 }
@@ -277,6 +286,7 @@ impl ProtocolServer {
                         "read_storage",
                         "write_storage",
                         "evaluate",
+                        "respond_host",
                         "resume",
                         "close",
                         "shutdown"
@@ -342,6 +352,13 @@ impl ProtocolServer {
                 self.execute(DebugCommand::Evaluate {
                     code: decode_bytes(&params.bytecode)?,
                     keep: params.keep,
+                })
+            }
+            "respond_host" => {
+                let params: HostResponseParams = parse_params(params)?;
+                self.execute(DebugCommand::RespondHost {
+                    output: decode_bytes(&params.output)?,
+                    revert: params.revert,
                 })
             }
             "resume" => {
@@ -610,6 +627,13 @@ fn event_json(event: DebugEvent) -> Value {
         DebugEvent::Paused(snapshot) => json!({
             "type": "paused",
             "snapshot": snapshot_json(*snapshot),
+        }),
+        DebugEvent::HostCall(call) => json!({
+            "type": "host_call",
+            "address": format!("{:#x}", call.address),
+            "caller": format!("{:#x}", call.caller),
+            "data": hex_bytes(&call.data),
+            "gas_limit": call.gas_limit,
         }),
         DebugEvent::Finished(finished) => json!({
             "type": "finished",

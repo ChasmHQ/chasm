@@ -1,6 +1,6 @@
 use crate::protocol::{
     ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished, FrameContext, FrameKind,
-    PauseReason, SessionConfig, SessionError, Snapshot, StorageSlot, TransactionKind,
+    HostCall, PauseReason, SessionConfig, SessionError, Snapshot, StorageSlot, TransactionKind,
     TransactionRequest,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
@@ -32,6 +32,7 @@ use std::{
 pub const DEFAULT_TARGET: Address = address!("1000000000000000000000000000000000000001");
 pub const DEFAULT_CALLER: Address = address!("2000000000000000000000000000000000000002");
 pub const CHEATCODE_ADDRESS: Address = address!("7109709ECfa91a80626fF3989D68f67F5b1DD12D");
+pub const CONSOLE_ADDRESS: Address = address!("000000000000000000636F6e736F6c652e6c6f67");
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const STATE_IDLE: u8 = 0;
@@ -261,6 +262,11 @@ impl SevmInspector {
                     }
                     result
                 }
+                EngineCommand::Debug(DebugCommand::RespondHost { .. }) => {
+                    Err(SessionError::InvalidCommand(
+                        "no host call is waiting for a response".to_owned(),
+                    ))
+                }
                 EngineCommand::Debug(DebugCommand::Step { count }) => {
                     self.steps_until_pause = Some(count.max(1));
                     resume = true;
@@ -308,6 +314,74 @@ impl SevmInspector {
                 | InstructionResult::ReentrancySentryOOG
         )
     }
+
+    fn host_call<CTX>(&mut self, context: &mut CTX, inputs: &CallInputs) -> CallOutcome
+    where
+        CTX: ContextTr + revm::interpreter::Host,
+        CTX::Journal: JournalTr,
+        <CTX::Journal as JournalTr>::Database: revm::Database,
+    {
+        self.state.store(STATE_PAUSED, Ordering::Release);
+        let event = HostCall {
+            address: inputs.bytecode_address,
+            caller: inputs.caller,
+            data: inputs.input.bytes(context),
+            gas_limit: inputs.gas_limit,
+        };
+        if self
+            .events
+            .send(DebugEvent::HostCall(Box::new(event)))
+            .is_err()
+        {
+            return call_result(inputs, Bytes::new(), true);
+        }
+
+        while let Ok(command) = self.commands.recv() {
+            let response = match command.action {
+                EngineCommand::Debug(DebugCommand::RespondHost { output, revert }) => {
+                    let _ = command.reply.send(Ok(CommandValue::None));
+                    self.state.store(STATE_RUNNING, Ordering::Release);
+                    return call_result(inputs, output, revert);
+                }
+                EngineCommand::SetBreakpoints(breakpoints) => {
+                    self.breakpoints = breakpoints
+                        .into_iter()
+                        .map(|point| (point.address, point.pc))
+                        .collect();
+                    Ok(CommandValue::Number(self.breakpoints.len() as u64))
+                }
+                EngineCommand::Debug(_) => Err(SessionError::InvalidCommand(
+                    "the engine is waiting for a host-call response".to_owned(),
+                )),
+                EngineCommand::Transact(_) => Err(SessionError::InvalidCommand(
+                    "a transaction is already running".to_owned(),
+                )),
+                EngineCommand::Abort => {
+                    self.abort_requested = true;
+                    let _ = command.reply.send(Ok(CommandValue::None));
+                    self.state.store(STATE_RUNNING, Ordering::Release);
+                    return call_result(inputs, Bytes::new(), true);
+                }
+            };
+            let _ = command.reply.send(response);
+        }
+        call_result(inputs, Bytes::new(), true)
+    }
+}
+
+fn call_result(inputs: &CallInputs, output: Bytes, revert: bool) -> CallOutcome {
+    CallOutcome::new(
+        InterpreterResult::new(
+            if revert {
+                InstructionResult::Revert
+            } else {
+                InstructionResult::Return
+            },
+            output,
+            Gas::new(inputs.gas_limit),
+        ),
+        inputs.return_memory_offset.clone(),
+    )
 }
 
 impl<CTX> Inspector<CTX> for SevmInspector
@@ -470,6 +544,9 @@ where
                     inputs.return_memory_offset.clone(),
                 ));
             }
+            return Some(self.host_call(context, inputs));
+        } else if inputs.bytecode_address == CONSOLE_ADDRESS {
+            return Some(self.host_call(context, inputs));
         } else if let Some(caller) = self.next_prank.take() {
             inputs.caller = caller;
         }
@@ -635,6 +712,11 @@ impl DebugEngine {
 
     pub fn step(&self, count: usize) -> Result<(), SessionError> {
         self.execute(DebugCommand::Step { count }).map(|_| ())
+    }
+
+    pub fn respond_host(&self, output: Bytes, revert: bool) -> Result<(), SessionError> {
+        self.execute(DebugCommand::RespondHost { output, revert })
+            .map(|_| ())
     }
 
     pub fn execute(&self, command: DebugCommand) -> Result<CommandValue, SessionError> {

@@ -174,6 +174,14 @@ pub struct Finished {
     pub storage: Vec<StorageSlot>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostCall {
+    pub address: Address,
+    pub caller: Address,
+    pub data: Bytes,
+    pub gas_limit: u64,
+}
+
 impl Finished {
     pub fn storage_at(&self, address: Address, key: U256) -> U256 {
         self.storage
@@ -186,6 +194,7 @@ impl Finished {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DebugEvent {
     Paused(Box<Snapshot>),
+    HostCall(Box<HostCall>),
     Finished(Finished),
     Failed(String),
 }
@@ -200,6 +209,7 @@ pub enum DebugCommand {
     ReadStorage(U256),
     WriteStorage { key: U256, value: U256 },
     Evaluate { code: Bytes, keep: bool },
+    RespondHost { output: Bytes, revert: bool },
     Step { count: usize },
     Resume,
 }

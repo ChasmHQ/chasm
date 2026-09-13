@@ -2,10 +2,11 @@ mod engine;
 mod protocol;
 
 pub use engine::{
-    CHEATCODE_ADDRESS, DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine, PrototypeSession,
+    CHEATCODE_ADDRESS, CONSOLE_ADDRESS, DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine,
+    PrototypeSession,
 };
 pub use protocol::{
     AccountSpec, Breakpoint, ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished,
-    FrameContext, FrameKind, PauseReason, SessionConfig, SessionError, Snapshot, StorageSlot,
-    TransactionKind, TransactionRequest,
+    FrameContext, FrameKind, HostCall, PauseReason, SessionConfig, SessionError, Snapshot,
+    StorageSlot, TransactionKind, TransactionRequest,
 };

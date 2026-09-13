@@ -360,3 +360,31 @@ fn foundry_style_prank_changes_the_next_nested_caller() {
         U256::from_be_slice(pranked.as_slice())
     );
 }
+
+#[test]
+fn yields_foundry_host_calls_to_the_controller() {
+    let selector = &keccak256("assertTrue(bool)")[..4];
+    let mut code = Vec::new();
+    let mut selector_word = [0u8; 32];
+    selector_word[..4].copy_from_slice(selector);
+    push(&mut code, &selector_word);
+    push_u64(&mut code, 0);
+    code.push(opcode::MSTORE);
+    push_u64(&mut code, 1);
+    push_u64(&mut code, 4);
+    code.push(opcode::MSTORE);
+    emit_call(&mut code, CHEATCODE_ADDRESS, 0, 36);
+    code.push(opcode::STOP);
+    let session = PrototypeSession::start(SessionConfig::new(DEFAULT_TARGET, code));
+
+    let call = match session.wait(TIMEOUT).unwrap() {
+        DebugEvent::HostCall(call) => call,
+        event => panic!("expected host call, got {event:?}"),
+    };
+    assert_eq!(call.address, CHEATCODE_ADDRESS);
+    assert_eq!(call.caller, DEFAULT_TARGET);
+    assert_eq!(&call.data[..4], selector);
+    assert_eq!(U256::from_be_slice(&call.data[4..]), U256::from(1));
+    session.respond_host(Bytes::new(), false).unwrap();
+    assert!(finished(&session).success);
+}

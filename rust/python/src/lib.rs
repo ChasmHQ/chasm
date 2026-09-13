@@ -5,9 +5,9 @@ use pyo3::{
 };
 use revm::primitives::{Address, Bytes, U256};
 use sevm_revm_core::{
-    AccountSpec, Breakpoint, ChainConfig, DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine, DebugEvent,
-    FrameContext, FrameKind, PauseReason, SessionConfig, SessionError, Snapshot,
-    TransactionRequest,
+    AccountSpec, Breakpoint, CHEATCODE_ADDRESS, CONSOLE_ADDRESS, ChainConfig, DEFAULT_CALLER,
+    DEFAULT_TARGET, DebugEngine, DebugEvent, FrameContext, FrameKind, PauseReason, SessionConfig,
+    SessionError, Snapshot, TransactionRequest,
 };
 use std::{io, str::FromStr, time::Duration};
 
@@ -105,6 +105,15 @@ fn snapshot_dict<'py>(py: Python<'py>, snapshot: Snapshot) -> PyResult<Bound<'py
 fn event_dict<'py>(py: Python<'py>, event: DebugEvent) -> PyResult<Bound<'py, PyDict>> {
     match event {
         DebugEvent::Paused(snapshot) => snapshot_dict(py, *snapshot),
+        DebugEvent::HostCall(call) => {
+            let result = PyDict::new(py);
+            result.set_item("type", "host_call")?;
+            result.set_item("address", format!("{:#x}", call.address))?;
+            result.set_item("caller", format!("{:#x}", call.caller))?;
+            result.set_item("data", PyBytes::new(py, &call.data))?;
+            result.set_item("gas_limit", call.gas_limit)?;
+            Ok(result)
+        }
         DebugEvent::Finished(finished) => {
             let result = PyDict::new(py);
             result.set_item("type", "finished")?;
@@ -153,7 +162,11 @@ impl RevmChain {
         caller.balance = U256::MAX;
         Self {
             inner: DebugEngine::new(ChainConfig {
-                accounts: vec![caller],
+                accounts: vec![
+                    caller,
+                    AccountSpec::new(CHEATCODE_ADDRESS, Bytes::from_static(&[0x00])),
+                    AccountSpec::new(CONSOLE_ADDRESS, Bytes::from_static(&[0x00])),
+                ],
                 breakpoints: Vec::new(),
             }),
         }
@@ -309,6 +322,20 @@ impl RevmChain {
         Ok(PyBytes::new(py, &output))
     }
 
+    #[pyo3(signature = (output=None, revert=false))]
+    fn respond_host(
+        &self,
+        py: Python<'_>,
+        output: Option<&Bound<'_, PyBytes>>,
+        revert: bool,
+    ) -> PyResult<()> {
+        let output = output
+            .map(|data| Bytes::copy_from_slice(data.as_bytes()))
+            .unwrap_or_default();
+        py.detach(|| self.inner.respond_host(output, revert))
+            .map_err(python_error)
+    }
+
     fn resume(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.inner.resume()).map_err(python_error)
     }
@@ -420,6 +447,20 @@ impl RevmSession {
             .detach(|| self.inner.evaluate(bytecode, keep))
             .map_err(python_error)?;
         Ok(PyBytes::new(py, &output))
+    }
+
+    #[pyo3(signature = (output=None, revert=false))]
+    fn respond_host(
+        &self,
+        py: Python<'_>,
+        output: Option<&Bound<'_, PyBytes>>,
+        revert: bool,
+    ) -> PyResult<()> {
+        let output = output
+            .map(|data| Bytes::copy_from_slice(data.as_bytes()))
+            .unwrap_or_default();
+        py.detach(|| self.inner.respond_host(output, revert))
+            .map_err(python_error)
     }
 
     fn resume(&self, py: Python<'_>) -> PyResult<()> {
