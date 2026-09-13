@@ -6,7 +6,7 @@ pub use engine::{
     PrototypeSession,
 };
 pub use protocol::{
-    AccountSpec, Breakpoint, ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished,
-    FrameContext, FrameKind, HostCall, PauseReason, PrankConfig, SessionConfig, SessionError,
-    Snapshot, StateCommand, StorageSlot, TransactionKind, TransactionRequest,
+    AccountSpec, Breakpoint, ChainConfig, CommandValue, DebugCommand, DebugEvent, Evaluation,
+    Finished, FrameContext, FrameKind, HostCall, PauseReason, PrankConfig, SessionConfig,
+    SessionError, Snapshot, StateCommand, StorageSlot, TransactionKind, TransactionRequest,
 };

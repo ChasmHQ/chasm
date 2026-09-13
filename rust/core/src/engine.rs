@@ -1,7 +1,7 @@
 use crate::protocol::{
-    ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished, FrameContext, FrameKind,
-    HostCall, PauseReason, PrankConfig, SessionConfig, SessionError, Snapshot, StateCommand,
-    StorageSlot, TransactionKind, TransactionRequest,
+    ChainConfig, CommandValue, DebugCommand, DebugEvent, Evaluation, Finished, FrameContext,
+    FrameKind, HostCall, PauseReason, PrankConfig, SessionConfig, SessionError, Snapshot,
+    StateCommand, StorageSlot, TransactionKind, TransactionRequest,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use revm::{
@@ -223,54 +223,43 @@ impl SevmInspector {
                     self.prank = prank;
                     Ok(CommandValue::None)
                 }
-                EngineCommand::Debug(DebugCommand::Evaluate { code, keep }) => {
-                    let checkpoint = context.journal_mut().checkpoint();
-                    let mut nested = Interpreter::new(
-                        SharedMemory::new(),
-                        ExtBytecode::new(Bytecode::new_raw(code)),
-                        InputsImpl {
-                            target_address: interpreter.input.target_address(),
-                            bytecode_address: interpreter.input.bytecode_address().copied(),
-                            caller_address: interpreter.input.caller_address(),
-                            input: CallInput::default(),
-                            call_value: U256::ZERO,
-                            depth: interpreter.input.depth() + 1,
-                        },
-                        false,
-                        SpecId::CANCUN,
-                        100_000,
-                    );
-                    let instructions =
-                        EthInstructions::<EthInterpreter, SevmContext>::new_mainnet_with_spec(
-                            SpecId::CANCUN,
-                        );
-                    let action = nested.run_plain(
-                        instructions.instruction_table(),
-                        instructions.gas_table(),
-                        context,
-                    );
-                    let result = action.into_result_return().ok_or_else(|| {
-                        SessionError::InvalidCommand(
-                            "speculative execution suspended on a nested call".to_owned(),
-                        )
-                    });
-                    let result = match result {
-                        Ok(result) if result.result.is_ok() => {
-                            Ok(CommandValue::Bytes(result.output))
-                        }
-                        Ok(result) => Err(SessionError::InvalidCommand(format!(
-                            "speculative execution halted: {:?}",
-                            result.result
-                        ))),
-                        Err(error) => Err(error),
-                    };
-                    if keep && result.is_ok() {
-                        context.journal_mut().checkpoint_commit();
+                EngineCommand::Debug(DebugCommand::Evaluate { code, keep }) => execute_evaluation(
+                    context,
+                    interpreter,
+                    code,
+                    Bytes::new(),
+                    interpreter.input.caller_address(),
+                    U256::ZERO,
+                    100_000,
+                    keep,
+                )
+                .and_then(|result| {
+                    if result.success {
+                        Ok(CommandValue::Bytes(result.output))
                     } else {
-                        context.journal_mut().checkpoint_revert(checkpoint);
+                        Err(SessionError::InvalidCommand(
+                            "speculative execution reverted".to_owned(),
+                        ))
                     }
-                    result
-                }
+                }),
+                EngineCommand::Debug(DebugCommand::EvaluateCall {
+                    code,
+                    data,
+                    caller,
+                    value,
+                    gas_limit,
+                    keep,
+                }) => execute_evaluation(
+                    context,
+                    interpreter,
+                    code,
+                    data,
+                    caller,
+                    value,
+                    gas_limit,
+                    keep,
+                )
+                .map(CommandValue::Evaluation),
                 EngineCommand::Debug(DebugCommand::RespondHost { .. }) => {
                     Err(SessionError::InvalidCommand(
                         "no host call is waiting for a response".to_owned(),
@@ -560,6 +549,56 @@ fn execute_state_command(
             Ok(CommandValue::Word(value))
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_evaluation(
+    context: &mut SevmContext,
+    interpreter: &Interpreter<EthInterpreter>,
+    code: Bytes,
+    data: Bytes,
+    caller: Address,
+    value: U256,
+    gas_limit: u64,
+    keep: bool,
+) -> Result<Evaluation, SessionError> {
+    let checkpoint = context.journal_mut().checkpoint();
+    let mut nested = Interpreter::new(
+        SharedMemory::new(),
+        ExtBytecode::new(Bytecode::new_raw(code)),
+        InputsImpl {
+            target_address: interpreter.input.target_address(),
+            bytecode_address: interpreter.input.bytecode_address().copied(),
+            caller_address: caller,
+            input: CallInput::Bytes(data),
+            call_value: value,
+            depth: interpreter.input.depth() + 1,
+        },
+        false,
+        SpecId::CANCUN,
+        gas_limit,
+    );
+    let instructions =
+        EthInstructions::<EthInterpreter, SevmContext>::new_mainnet_with_spec(SpecId::CANCUN);
+    let action = nested.run_plain(
+        instructions.instruction_table(),
+        instructions.gas_table(),
+        context,
+    );
+    let result = action.into_result_return().ok_or_else(|| {
+        SessionError::InvalidCommand("speculative execution suspended on a nested call".to_owned())
+    });
+    let evaluation = result.map(|result| Evaluation {
+        success: result.result.is_ok(),
+        gas_used: result.gas.total_gas_spent(),
+        output: result.output,
+    });
+    if keep && evaluation.as_ref().is_ok_and(|result| result.success) {
+        context.journal_mut().checkpoint_commit();
+    } else {
+        context.journal_mut().checkpoint_revert(checkpoint);
+    }
+    evaluation
 }
 
 impl Inspector<SevmContext> for SevmInspector {
@@ -877,6 +916,29 @@ impl DebugEngine {
     pub fn evaluate(&self, code: Bytes, keep: bool) -> Result<Bytes, SessionError> {
         match self.execute(DebugCommand::Evaluate { code, keep })? {
             CommandValue::Bytes(value) => Ok(value),
+            _ => unreachable!(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_call(
+        &self,
+        code: Bytes,
+        data: Bytes,
+        caller: Address,
+        value: U256,
+        gas_limit: u64,
+        keep: bool,
+    ) -> Result<Evaluation, SessionError> {
+        match self.execute(DebugCommand::EvaluateCall {
+            code,
+            data,
+            caller,
+            value,
+            gas_limit,
+            keep,
+        })? {
+            CommandValue::Evaluation(value) => Ok(value),
             _ => unreachable!(),
         }
     }

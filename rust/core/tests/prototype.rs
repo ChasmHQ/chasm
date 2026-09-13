@@ -210,6 +210,53 @@ fn speculative_execution_reverts_its_journal_checkpoint() {
 }
 
 #[test]
+fn speculative_call_mirrors_frame_inputs_and_reports_gas() {
+    let session = PrototypeSession::start(
+        SessionConfig::new(DEFAULT_TARGET, Bytes::from_static(&[opcode::STOP]))
+            .with_breakpoint(DEFAULT_TARGET, 0),
+    );
+    paused(&session);
+    let caller = address!("4000000000000000000000000000000000000004");
+    let code = Bytes::from_static(&[
+        opcode::CALLER,
+        opcode::PUSH0,
+        opcode::MSTORE,
+        opcode::CALLVALUE,
+        opcode::PUSH1,
+        32,
+        opcode::MSTORE,
+        opcode::CALLDATASIZE,
+        opcode::PUSH1,
+        64,
+        opcode::MSTORE,
+        opcode::PUSH1,
+        96,
+        opcode::PUSH0,
+        opcode::RETURN,
+    ]);
+    let result = session
+        .evaluate_call(
+            code,
+            Bytes::from_static(&[1, 2, 3, 4]),
+            caller,
+            U256::from(77),
+            1_000_000,
+            false,
+        )
+        .unwrap();
+    assert!(result.success);
+    assert!(result.gas_used > 0);
+    assert_eq!(
+        U256::from_be_slice(&result.output[..32]),
+        U256::from_be_slice(caller.as_slice())
+    );
+    assert_eq!(U256::from_be_slice(&result.output[32..64]), U256::from(77));
+    assert_eq!(U256::from_be_slice(&result.output[64..]), U256::from(4));
+    session.resume().unwrap();
+    assert!(finished(&session).success);
+}
+
+#[test]
 fn persists_state_across_create_and_call_transactions() {
     let runtime = [
         &[opcode::JUMPDEST; 16][..],
