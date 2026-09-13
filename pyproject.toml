@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.10,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "sevm"
@@ -58,14 +58,15 @@ sevm = "sevm.cli:main"
 Homepage = "https://github.com/your-org/sevm"
 Documentation = "https://github.com/your-org/sevm/blob/main/README.md"
 
-# src layout: the package lives under src/. Hatchling includes package data
-# files (e.g. tui/sevm.tcss) automatically.
-[tool.hatch.build.targets.wheel]
-packages = ["src/sevm"]
+[tool.maturin]
+manifest-path = "rust/python/Cargo.toml"
+module-name = "sevm._revm"
+python-source = "src"
 
 [dependency-groups]
 # uv-native dev group: `uv sync` installs these by default.
 dev = [
+    "maturin>=1.10,<2.0",
     "pytest>=8.0",
     "textual-dev>=1.8", # `textual console` for debugging the debugger
     "ruff>=0.9",

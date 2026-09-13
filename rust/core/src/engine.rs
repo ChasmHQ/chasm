@@ -149,7 +149,7 @@ impl SevmInspector {
                 Action::WriteStorage { key, value } => context
                     .journal_mut()
                     .sstore(interpreter.input.target_address(), key, value)
-                    .map(|stored| CommandValue::Word(stored.data.present_value))
+                    .map(|_| CommandValue::Word(value))
                     .map_err(|error| SessionError::InvalidCommand(format!("{error:?}"))),
                 Action::Evaluate { code, keep } => {
                     let checkpoint = context.journal_mut().checkpoint();
