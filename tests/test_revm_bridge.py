@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 
-from sevm._revm import RevmSession, revm_version
+from sevm._revm import RevmChain, RevmSession, revm_version
 
 
 def test_live_mutation_crosses_the_python_bridge():
@@ -64,3 +64,24 @@ def test_installed_headless_launcher_uses_json_rpc():
     assert result.stderr == ""
     assert responses[0]["result"]["protocol"] == "sevm-debugger/1"
     assert responses[1]["result"] is None
+
+
+def test_persistent_chain_deploys_and_reuses_state():
+    runtime = bytes.fromhex("5b" * 16 + "5f546001015f5500")
+    init_code = bytes.fromhex("6018600a5f3960185ff3") + runtime
+    chain = RevmChain()
+    chain.create(init_code)
+    deployment = chain.wait()
+    address = deployment["created_address"]
+    assert deployment["success"] and address
+    assert chain.set_breakpoints([(address, 22)]) == 1
+
+    for expected in ("0x1", "0x2"):
+        chain.call(address)
+        paused = chain.wait()
+        assert paused["type"] == "paused"
+        assert paused["pc"] == 22
+        chain.resume()
+        finished = chain.wait()
+        storage = {(addr, key): value for addr, key, value in finished["storage"]}
+        assert storage[(address, "0x0")] == expected
