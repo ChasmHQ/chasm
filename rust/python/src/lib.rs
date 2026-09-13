@@ -7,7 +7,7 @@ use revm::primitives::{Address, B256, Bytes, U256};
 use sevm_revm_core::{
     AccountSpec, Breakpoint, CHEATCODE_ADDRESS, CONSOLE_ADDRESS, ChainConfig, CommandValue,
     DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine, DebugEvent, FrameContext, FrameKind, PauseReason,
-    SessionConfig, SessionError, Snapshot, StateCommand, TransactionRequest,
+    PrankConfig, SessionConfig, SessionError, Snapshot, StateCommand, TransactionRequest,
 };
 use std::{io, str::FromStr, time::Duration};
 
@@ -570,6 +570,31 @@ impl RevmChain {
             py,
             StateCommand::WriteDifficulty(parse_word(value)?),
         )
+    }
+
+    #[pyo3(signature = (new_sender=None, caller=None, persistent=false, new_origin=None, delegate=false))]
+    fn configure_prank(
+        &self,
+        py: Python<'_>,
+        new_sender: Option<&str>,
+        caller: Option<&str>,
+        persistent: bool,
+        new_origin: Option<&str>,
+        delegate: bool,
+    ) -> PyResult<()> {
+        let prank = new_sender
+            .map(|new_sender| -> PyResult<PrankConfig> {
+                Ok(PrankConfig {
+                    caller: caller.map(parse_address).transpose()?,
+                    new_sender: parse_address(new_sender)?,
+                    persistent,
+                    new_origin: new_origin.map(parse_address).transpose()?,
+                    delegate,
+                })
+            })
+            .transpose()?;
+        py.detach(|| self.inner.set_prank(prank))
+            .map_err(python_error)
     }
 
     #[pyo3(signature = (bytecode, keep=false))]

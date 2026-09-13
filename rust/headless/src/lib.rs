@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sevm_revm_core::{
     AccountSpec, Breakpoint, ChainConfig, CommandValue, DEFAULT_CALLER, DebugCommand, DebugEngine,
-    DebugEvent, FrameContext, FrameKind, PauseReason, SessionConfig, SessionError, Snapshot,
-    StateCommand, TransactionKind, TransactionRequest,
+    DebugEvent, FrameContext, FrameKind, PauseReason, PrankConfig, SessionConfig, SessionError,
+    Snapshot, StateCommand, TransactionKind, TransactionRequest,
 };
 use std::{
     fmt,
@@ -201,6 +201,21 @@ struct HostResponseParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrankParams {
+    #[serde(default)]
+    new_sender: Option<String>,
+    #[serde(default)]
+    caller: Option<String>,
+    #[serde(default)]
+    persistent: bool,
+    #[serde(default)]
+    new_origin: Option<String>,
+    #[serde(default)]
+    delegate: bool,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum StateParams {
     ReadBalance {
@@ -363,6 +378,7 @@ impl ProtocolServer {
                         "write_storage",
                         "state",
                         "evaluate",
+                        "set_prank",
                         "respond_host",
                         "resume",
                         "close",
@@ -434,6 +450,10 @@ impl ProtocolServer {
                     code: decode_bytes(&params.bytecode)?,
                     keep: params.keep,
                 })
+            }
+            "set_prank" => {
+                let params: PrankParams = parse_params(params)?;
+                self.execute(DebugCommand::SetPrank(prank_config(params)?))
             }
             "respond_host" => {
                 let params: HostResponseParams = parse_params(params)?;
@@ -713,6 +733,25 @@ fn state_command(params: StateParams) -> Result<StateCommand, ProtocolError> {
             StateCommand::WriteDifficulty(parse_word(&value)?)
         }
     })
+}
+
+fn prank_config(params: PrankParams) -> Result<Option<PrankConfig>, ProtocolError> {
+    params
+        .new_sender
+        .map(|new_sender| {
+            Ok(PrankConfig {
+                caller: params.caller.as_deref().map(parse_address).transpose()?,
+                new_sender: parse_address(&new_sender)?,
+                persistent: params.persistent,
+                new_origin: params
+                    .new_origin
+                    .as_deref()
+                    .map(parse_address)
+                    .transpose()?,
+                delegate: params.delegate,
+            })
+        })
+        .transpose()
 }
 
 fn parse_address(value: &str) -> Result<Address, ProtocolError> {

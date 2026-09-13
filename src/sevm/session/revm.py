@@ -18,6 +18,7 @@ from ..cheatcodes import (
     CheatError,
     CheatState,
     apply_cheat,
+    cheat_name,
     decode_console_log,
 )
 from ..compile import Project
@@ -414,6 +415,8 @@ class RevmDebugSession:
             return
         try:
             output = apply_cheat(self.cheats, self._state, data, caller)
+            if cheat_name(data) in {"prank", "startPrank", "stopPrank"}:
+                self._sync_prank()
         except Exception as exc:
             reason = (
                 str(exc)
@@ -423,6 +426,23 @@ class RevmDebugSession:
             self._chain.respond_host(_error_payload(reason), revert=True)
             return
         self._chain.respond_host(output)
+
+    def _sync_prank(self) -> None:
+        prank = self.cheats.prank
+        if prank is None:
+            self._chain.configure_prank()
+            return
+        self._chain.configure_prank(
+            _address_hex(prank.new_sender),
+            caller=_address_hex(prank.caller) if prank.caller is not None else None,
+            persistent=prank.persistent,
+            new_origin=(
+                _address_hex(prank.new_origin) if prank.new_origin is not None else None
+            ),
+            delegate=prank.delegate,
+        )
+        if not prank.persistent:
+            self.cheats.prank = None
 
     def _set_mode(self, command: Resume, snapshot: FrameSnapshot) -> None:
         self._mode = command.mode
@@ -863,9 +883,16 @@ class RevmDebugSession:
             return fresh
         if op == "cheat":
             try:
-                return apply_cheat(
+                output = apply_cheat(
                     self.cheats, self._state, bytes(args[0]), frame.address
                 )
+                if cheat_name(bytes(args[0])) in {
+                    "prank",
+                    "startPrank",
+                    "stopPrank",
+                }:
+                    self._sync_prank()
+                return output
             except CheatError as exc:
                 raise SessionError(str(exc)) from exc
         raise SessionError(f"inspect {op!r} is not available on REVM yet")

@@ -69,6 +69,10 @@ def test_revm_foundry_session_returns_assertion_reverts(failing_project):
         "testFeeIsNotChargedAtSettlement",
         "testNonceCheats",
         "testPrankValue",
+        "testPrank",
+        "testPrankOrigin",
+        "testDelegatePrank",
+        "testStartPrankDelegate",
     ],
 )
 def test_revm_foundry_session_applies_stateful_cheats(solo_project, function):

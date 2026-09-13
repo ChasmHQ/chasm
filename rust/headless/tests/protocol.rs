@@ -214,9 +214,14 @@ fn delegates_foundry_host_calls_over_json_rpc() {
                 "value": "0x8"
             }),
         ),
-        request(10, "respond_host", json!({})),
-        request(11, "wait_event", json!({})),
-        request(12, "shutdown", json!({})),
+        request(
+            10,
+            "set_prank",
+            json!({ "caller": TARGET, "new_sender": CALLER }),
+        ),
+        request(11, "respond_host", json!({})),
+        request(12, "wait_event", json!({})),
+        request(13, "shutdown", json!({})),
     ]);
 
     assert_eq!(responses[3]["result"]["type"], "host_call");
@@ -227,8 +232,9 @@ fn delegates_foundry_host_calls_over_json_rpc() {
     assert_eq!(responses[6]["result"], "0x1092");
     assert_eq!(responses[7]["result"], "0x1092");
     assert_eq!(responses[8]["result"], "0x8");
-    assert_eq!(responses[10]["result"]["type"], "finished");
-    assert_eq!(responses[10]["result"]["success"], true);
-    assert_eq!(responses[10]["result"]["storage"][0]["key"], "0x7");
-    assert_eq!(responses[10]["result"]["storage"][0]["value"], "0x8");
+    assert_eq!(responses[9]["result"], Value::Null);
+    assert_eq!(responses[11]["result"]["type"], "finished");
+    assert_eq!(responses[11]["result"]["success"], true);
+    assert_eq!(responses[11]["result"]["storage"][0]["key"], "0x7");
+    assert_eq!(responses[11]["result"]["storage"][0]["value"], "0x8");
 }
