@@ -126,6 +126,12 @@ struct BreakpointParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BreakpointsParams {
+    breakpoints: Vec<BreakpointParams>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WaitParams {
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
@@ -251,6 +257,7 @@ impl ProtocolServer {
                         "transact",
                         "wait_event",
                         "snapshot",
+                        "set_breakpoints",
                         "set_stack",
                         "write_memory",
                         "set_gas",
@@ -271,6 +278,13 @@ impl ProtocolServer {
             "snapshot" => {
                 empty_params(params)?;
                 self.execute(DebugCommand::Snapshot)
+            }
+            "set_breakpoints" => {
+                let params: BreakpointsParams = parse_params(params)?;
+                self.engine()?
+                    .set_breakpoints(breakpoint_specs(params.breakpoints)?)
+                    .map(Value::from)
+                    .map_err(engine_error)
             }
             "set_stack" => {
                 let params: StackParams = parse_params(params)?;

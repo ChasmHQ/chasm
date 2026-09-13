@@ -118,29 +118,31 @@ fn persistent_protocol_deploys_then_calls_the_created_contract() {
     let created = format!("{:#x}", caller.create(0));
     let init_code = format!("0x6018600a5f3960185ff3{}5f546001015f5500", "5b".repeat(16));
     let responses = run(&[
-        request(
-            1,
-            "open",
-            json!({ "breakpoints": [{ "address": created.clone(), "pc": 22 }] }),
-        ),
+        request(1, "open", json!({})),
         request(2, "transact", json!({ "data": init_code })),
         request(3, "wait_event", json!({})),
-        request(4, "transact", json!({ "to": created.clone() })),
-        request(5, "wait_event", json!({})),
-        request(6, "resume", json!({})),
-        request(7, "wait_event", json!({})),
-        request(8, "transact", json!({ "to": created.clone() })),
-        request(9, "wait_event", json!({})),
-        request(10, "resume", json!({})),
-        request(11, "wait_event", json!({})),
-        request(12, "shutdown", json!({})),
+        request(
+            4,
+            "set_breakpoints",
+            json!({ "breakpoints": [{ "address": created.clone(), "pc": 22 }] }),
+        ),
+        request(5, "transact", json!({ "to": created.clone() })),
+        request(6, "wait_event", json!({})),
+        request(7, "resume", json!({})),
+        request(8, "wait_event", json!({})),
+        request(9, "transact", json!({ "to": created.clone() })),
+        request(10, "wait_event", json!({})),
+        request(11, "resume", json!({})),
+        request(12, "wait_event", json!({})),
+        request(13, "shutdown", json!({})),
     ]);
 
-    assert_eq!(responses.len(), 12);
+    assert_eq!(responses.len(), 13);
     assert_eq!(responses[0]["result"]["opened"], true);
     assert_eq!(responses[2]["result"]["created_address"], created);
-    assert_eq!(responses[4]["result"]["snapshot"]["pc"], 22);
-    assert_eq!(responses[6]["result"]["storage"][0]["value"], "0x1");
-    assert_eq!(responses[8]["result"]["snapshot"]["pc"], 22);
-    assert_eq!(responses[10]["result"]["storage"][0]["value"], "0x2");
+    assert_eq!(responses[3]["result"], 1);
+    assert_eq!(responses[5]["result"]["snapshot"]["pc"], 22);
+    assert_eq!(responses[7]["result"]["storage"][0]["value"], "0x1");
+    assert_eq!(responses[9]["result"]["snapshot"]["pc"], 22);
+    assert_eq!(responses[11]["result"]["storage"][0]["value"], "0x2");
 }
