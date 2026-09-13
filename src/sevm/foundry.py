@@ -232,6 +232,39 @@ class TestFailed(RuntimeError):
     """A test transaction reverted. forge would print a failure; sevm ends the run with one."""
 
 
+@dataclass(frozen=True)
+class RevmTestsDriver:
+    """Foundry test sequence executed by `RevmDebugSession`."""
+
+    project: Project
+    targets: tuple[TestTarget, ...]
+
+    def run_revm(self, session: Any) -> None:
+        for target in self.targets:
+            art = self.project.artifact(target.contract)
+            if art is None:
+                raise ValueError(f"no artifact for test contract {target.contract!r}")
+            session.reset_chain()
+            address = session.deploy(art, f"{target.contract} deployment")
+            if target.has_setup:
+                session.call(
+                    address, _selector(art, "setUp"), f"{target.contract}.setUp()"
+                )
+            session.call(
+                address,
+                _selector(art, target.function),
+                f"{target.contract}.{target.function}",
+            )
+
+
+def _selector(art: Any, name: str) -> bytes:
+    signature = f"{name}()"
+    encoded = art.method_identifiers.get(signature)
+    if encoded is None:
+        raise ValueError(f"{art.name} has no {signature} function")
+    return bytes.fromhex(encoded)
+
+
 def _receipt(w3: object, tx: object, what: str) -> Any:
     """Wait for a receipt and refuse a failed one.
 
@@ -261,6 +294,13 @@ def _run_one_test(w3: object, art: object, target: TestTarget) -> None:
 def make_test_driver(project: Project, target: TestTarget) -> Callable[[], None]:
     """Driver for a single test: deploy, setUp, then the test call."""
     return make_tests_driver(project, [target])
+
+
+def make_revm_tests_driver(
+    project: Project, targets: Sequence[TestTarget]
+) -> RevmTestsDriver:
+    """Build the equivalent deploy, setUp, and test sequence for REVM."""
+    return RevmTestsDriver(project, tuple(targets))
 
 
 def make_tests_driver(

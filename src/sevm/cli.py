@@ -22,7 +22,7 @@ from typing import Any
 from .commands.parsing import expand_file_args
 from .compile import CompileError, compile_foundry_project, find_foundry_root, solcbin
 from .evaluate import Evaluator, make_eval_hook
-from .session import DebugSession, Finished, StepMode
+from .session import DebugSession, Finished, RevmDebugSession, StepMode
 
 
 def _find_contracts_dir(script_path: str, explicit: str | None) -> str:
@@ -56,7 +56,7 @@ def _run_script(path: str, argv: Sequence[str]):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sevm",
-        description="A gdb-style interactive Solidity/EVM debugger running on Py-EVM.",
+        description="A gdb-style interactive Solidity/EVM debugger.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -136,6 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--force", action="store_true", help="recompile even if the cache has this build"
+    )
+    run.add_argument(
+        "--engine",
+        choices=("revm", "pyevm"),
+        default=None,
+        help="execution engine; defaults to REVM for Foundry tests and Py-EVM for scripts",
     )
 
     compile_cmd = sub.add_parser(
@@ -274,6 +280,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "no-install",
             "no-cache",
             "force",
+            "engine",
         }
     ]
     if stray:
@@ -304,6 +311,12 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
     from .foundry import prepare_project
 
     script = args.script
+    if args.engine == "revm":
+        console.print(
+            "[bold red]REVM cannot run a web3.py driver yet[/bold red]. "
+            "Use --engine pyevm."
+        )
+        return 1
     contracts = _find_contracts_dir(script, args.contracts)
     if not os.path.isdir(contracts):
         console.print(
@@ -375,6 +388,7 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
     from .foundry import (
         compile_test,
         discover_tests,
+        make_revm_tests_driver,
         make_tests_driver,
         prepare_project,
         select_tests,
@@ -421,7 +435,12 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
     console.print(
         f"[dim]debugging {len(selected)} test(s): {names}[/dim]", highlight=False
     )
-    driver = make_tests_driver(project, selected)
+    use_revm = args.engine != "pyevm"
+    driver = (
+        make_revm_tests_driver(project, selected)
+        if use_revm
+        else make_tests_driver(project, selected)
+    )
     return _debug(
         console,
         project,
@@ -429,6 +448,7 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
         args,
         foundry_mode=True,
         stop_functions=[f"{t.contract}.{t.function}" for t in selected],
+        session_class=RevmDebugSession if use_revm else DebugSession,
     )
 
 
@@ -441,6 +461,7 @@ def _debug(
     stop_functions: list[str] | None = None,
     restart_factory: Any = None,
     restart_argv: list[str] | None = None,
+    session_class: Any = DebugSession,
 ) -> int:
     """Shared tail: start the target on the VM thread and hand off to a frontend.
 
@@ -448,7 +469,7 @@ def _debug(
     past deployment and `setUp` and opens at the first one; `continue` then stops at each
     subsequent test in turn. `restart_factory` binds the `reset` / `run` commands.
     """
-    session = DebugSession(project)
+    session = session_class(project)
     session.foundry_mode = foundry_mode
     evaluator = Evaluator(project)
     session.set_eval_hook(make_eval_hook(evaluator))

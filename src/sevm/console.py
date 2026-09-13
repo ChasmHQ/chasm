@@ -13,7 +13,7 @@ from .commands import CommandProcessor, CommandResult, escape_markup
 from .evaluate import Evaluator
 from .session import DebugSession, Finished, Paused
 
-BANNER = """[bold]sevm[/bold] - Solidity/EVM debugger on Py-EVM. [dim]gdb commands; `help` for the list.[/dim]"""
+BANNER = """[bold]sevm[/bold] - Solidity/EVM debugger. [dim]gdb commands; `help` for the list.[/dim]"""
 
 
 class ConsoleFrontend:

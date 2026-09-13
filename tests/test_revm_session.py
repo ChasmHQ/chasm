@@ -1,0 +1,58 @@
+"""The source-level Foundry path runs on REVM without a Py-EVM chain."""
+
+from __future__ import annotations
+
+from sevm.foundry import RevmTestsDriver, discover_tests, select_test
+from sevm.session import Finished, Paused, RevmDebugSession, StepMode
+
+TIMEOUT = 30.0
+
+
+def _driver(project, contract: str, function: str) -> RevmTestsDriver:
+    target = select_test(
+        discover_tests(project),
+        match=function,
+        match_contract=contract,
+    )
+    assert target is not None
+    return RevmTestsDriver(project, (target,))
+
+
+def test_revm_foundry_session_stops_and_steps_in_source(token_project):
+    session = RevmDebugSession(token_project)
+    session.break_at_function("TokenTest.testMintAsOwner")
+    session.start(_driver(token_project, "TokenTest", "testMintAsOwner"))
+    try:
+        event = session.wait(timeout=TIMEOUT)
+        assert isinstance(event, Paused)
+        assert event.snapshot.contract_name == "TokenTest"
+        assert event.snapshot.function is not None
+        assert event.snapshot.function.name == "testMintAsOwner"
+        before = event.snapshot.step
+
+        event = session.resume(StepMode.STEPI, timeout=TIMEOUT)
+        assert isinstance(event, Paused)
+        assert event.snapshot.step == before + 1
+
+        event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        assert isinstance(event, Finished)
+        assert event.ok
+    finally:
+        session.detach(timeout=TIMEOUT)
+
+
+def test_revm_foundry_session_applies_prank(token_project):
+    session = RevmDebugSession(token_project)
+    session.start(_driver(token_project, "TokenTest", "testMintPrankRevertsForNonOwner"))
+    event = session.wait(timeout=TIMEOUT)
+    assert isinstance(event, Finished)
+    assert event.ok
+
+
+def test_revm_foundry_session_returns_assertion_reverts(failing_project):
+    session = RevmDebugSession(failing_project)
+    session.start(_driver(failing_project, "DemoTest", "testFails"))
+    event = session.wait(timeout=TIMEOUT)
+    assert isinstance(event, Finished)
+    assert not event.ok
+    assert "1 != 2" in str(session.last_revert)
