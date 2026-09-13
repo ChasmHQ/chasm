@@ -92,6 +92,135 @@ class _ComputationView:
         return self._gas_meter.gas_remaining
 
 
+class _RevmExecutionContext:
+    def __init__(self, session: RevmDebugSession) -> None:
+        self._session = session
+
+    @property
+    def block_number(self) -> int:
+        return int(self._session._chain.read_block_number(), 16)
+
+    @property
+    def _block_number(self) -> int:
+        return self.block_number
+
+    @_block_number.setter
+    def _block_number(self, value: int) -> None:
+        self._session._chain.write_block_number(value)
+
+    @property
+    def timestamp(self) -> int:
+        return int(self._session._chain.read_timestamp(), 16)
+
+    @property
+    def _timestamp(self) -> int:
+        return self.timestamp
+
+    @_timestamp.setter
+    def _timestamp(self, value: int) -> None:
+        self._session._chain.write_timestamp(value)
+
+    @property
+    def base_fee_per_gas(self) -> int:
+        return int(self._session._chain.read_base_fee())
+
+    @property
+    def _base_fee_per_gas(self) -> int:
+        return self.base_fee_per_gas
+
+    @_base_fee_per_gas.setter
+    def _base_fee_per_gas(self, value: int) -> None:
+        self._session._chain.write_base_fee(value)
+
+    @property
+    def chain_id(self) -> int:
+        return int(self._session._chain.read_chain_id())
+
+    @property
+    def _chain_id(self) -> int:
+        return self.chain_id
+
+    @_chain_id.setter
+    def _chain_id(self, value: int) -> None:
+        self._session._chain.write_chain_id(value)
+
+    @property
+    def coinbase(self) -> bytes:
+        return _address_bytes(self._session._chain.read_coinbase())
+
+    @property
+    def _coinbase(self) -> bytes:
+        return self.coinbase
+
+    @_coinbase.setter
+    def _coinbase(self, value: bytes) -> None:
+        self._session._chain.write_coinbase(_address_hex(value))
+
+    @property
+    def mix_hash(self) -> bytes:
+        return bytes(self._session._chain.read_prevrandao())
+
+    @property
+    def _mix_hash(self) -> bytes:
+        return self.mix_hash
+
+    @_mix_hash.setter
+    def _mix_hash(self, value: bytes) -> None:
+        self._session._chain.write_prevrandao(value)
+
+    @property
+    def difficulty(self) -> int:
+        return int(self._session._chain.read_difficulty(), 16)
+
+    @property
+    def _difficulty(self) -> int:
+        return self.difficulty
+
+    @_difficulty.setter
+    def _difficulty(self, value: int) -> None:
+        self._session._chain.write_difficulty(value)
+
+
+class _RevmState:
+    def __init__(self, session: RevmDebugSession) -> None:
+        self._session = session
+        self.execution_context = _RevmExecutionContext(session)
+
+    def get_balance(self, address: bytes) -> int:
+        return int(self._session._chain.read_balance(_address_hex(address)), 16)
+
+    def set_balance(self, address: bytes, value: int) -> None:
+        self._session._chain.write_balance(_address_hex(address), value)
+
+    def get_code(self, address: bytes) -> bytes:
+        return bytes(self._session._chain.read_code_at(_address_hex(address)))
+
+    def set_code(self, address: bytes, code: bytes) -> None:
+        self._session._chain.write_code_at(_address_hex(address), code)
+
+    def get_storage(self, address: bytes, slot: int) -> int:
+        return int(self._session._chain.read_storage_at(_address_hex(address), slot), 16)
+
+    def set_storage(self, address: bytes, slot: int, value: int) -> None:
+        self._session._chain.write_storage_at(_address_hex(address), slot, value)
+
+    def get_transient_storage(self, address: bytes, slot: int) -> bytes:
+        value = int(self._session._chain.read_transient(_address_hex(address), slot), 16)
+        return value.to_bytes(32, "big")
+
+    def set_transient_storage(self, address: bytes, slot: int, value: int) -> None:
+        self._session._chain.write_transient(_address_hex(address), slot, value)
+
+    def get_nonce(self, address: bytes) -> int:
+        return int(self._session._chain.read_nonce(_address_hex(address)))
+
+    def set_nonce(self, address: bytes, value: int) -> None:
+        self._session._chain.write_nonce(_address_hex(address), value)
+
+    def mark_storage_warm(self, address: bytes, slot: int) -> None:
+        self._session._chain.warm_storage(_address_hex(address), slot)
+
+
 class RevmDebugSession:
     """Drive REVM through the session interface shared by the console and TUI."""
 
@@ -115,6 +244,7 @@ class RevmDebugSession:
         self.foundry_mode = True
 
         self._chain = RevmChain()
+        self._state = _RevmState(self)
         self._deployed: dict[str, Any] = {}
         self._frames: list[EvmFrame] = []
         self._last_raw: dict[str, Any] | None = None
@@ -283,7 +413,7 @@ class RevmDebugSession:
             self._chain.respond_host(_error_payload("unknown host address"), revert=True)
             return
         try:
-            output = apply_cheat(self.cheats, None, data, caller)
+            output = apply_cheat(self.cheats, self._state, data, caller)
         except Exception as exc:
             reason = (
                 str(exc)
@@ -689,11 +819,11 @@ class RevmDebugSession:
             data = bytes(frame.computation._memory._bytes[offset : offset + size])
             return data + bytes(size - len(data))
         if op == "read_code":
-            address = bytes(args[0])
-            match = next(
-                (item for item in self._frames if item.code_address == address), None
-            )
-            return match.disassembly.code if match else b""
+            return self._state.get_code(bytes(args[0]))
+        if op == "read_balance":
+            return self._state.get_balance(bytes(args[0]))
+        if op == "read_nonce":
+            return self._state.get_nonce(bytes(args[0]))
         if op == "logs":
             return []
         if op == "is_warm":
@@ -701,9 +831,19 @@ class RevmDebugSession:
         if not current:
             raise SessionError(f"inspect {op!r} requires the innermost REVM frame")
         if op == "read_storage":
-            return int(self._chain.read_storage(int(args[0])), 16)
+            address = bytes(args[1]) if len(args) > 1 and args[1] else frame.address
+            return self._state.get_storage(address, int(args[0]))
+        if op == "read_transient":
+            address = bytes(args[1]) if len(args) > 1 and args[1] else frame.address
+            return self._state.get_transient_storage(address, int(args[0]))
         if op == "write_storage":
-            return int(self._chain.write_storage(int(args[0]), int(args[1])), 16)
+            address = bytes(args[2]) if len(args) > 2 and args[2] else frame.address
+            self._state.set_storage(address, int(args[0]), int(args[1]))
+            return self._state.get_storage(address, int(args[0]))
+        if op == "write_balance":
+            address, value = bytes(args[0]), int(args[1])
+            self._state.set_balance(address, value)
+            return self._state.get_balance(address)
         if op == "write_stack":
             return int(self._chain.set_stack(int(args[0]), int(args[1])), 16)
         if op == "write_memory":
@@ -723,7 +863,9 @@ class RevmDebugSession:
             return fresh
         if op == "cheat":
             try:
-                return apply_cheat(self.cheats, None, bytes(args[0]), frame.address)
+                return apply_cheat(
+                    self.cheats, self._state, bytes(args[0]), frame.address
+                )
             except CheatError as exc:
                 raise SessionError(str(exc)) from exc
         raise SessionError(f"inspect {op!r} is not available on REVM yet")
@@ -848,6 +990,10 @@ class RevmDebugSession:
 
 def _address_bytes(value: str) -> bytes:
     return bytes.fromhex(value.removeprefix("0x"))
+
+
+def _address_hex(value: bytes) -> str:
+    return "0x" + value.hex()
 
 
 def _line_at(frame: EvmFrame, pc: int) -> int:

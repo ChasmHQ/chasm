@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from sevm.foundry import RevmTestsDriver, discover_tests, select_test
 from sevm.session import Finished, Paused, RevmDebugSession, StepMode
 
@@ -56,3 +58,31 @@ def test_revm_foundry_session_returns_assertion_reverts(failing_project):
     assert isinstance(event, Finished)
     assert not event.ok
     assert "1 != 2" in str(session.last_revert)
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        "testEnv",
+        "testStorageAndKeys",
+        "testBlockGetters",
+        "testFeeIsNotChargedAtSettlement",
+        "testNonceCheats",
+        "testPrankValue",
+    ],
+)
+def test_revm_foundry_session_applies_stateful_cheats(solo_project, function):
+    session = RevmDebugSession(solo_project)
+    session.start(_driver(solo_project, "AllCheatsTest", function))
+    event = session.wait(timeout=TIMEOUT)
+    assert isinstance(event, Finished)
+    assert event.ok, session.exit_error
+
+
+def test_revm_foundry_session_captures_console_logs(solo_project):
+    session = RevmDebugSession(solo_project)
+    session.start(_driver(solo_project, "AllCheatsTest", "testEnv"))
+    event = session.wait(timeout=TIMEOUT)
+    assert isinstance(event, Finished)
+    assert event.ok
+    assert any("env ok at 4242" in line for line in session.cheats.console_lines)
