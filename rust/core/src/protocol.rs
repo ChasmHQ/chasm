@@ -107,6 +107,19 @@ pub enum DebugEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DebugCommand {
+    Snapshot,
+    SetStack { index: usize, value: U256 },
+    WriteMemory { offset: usize, data: Bytes },
+    SetGas(u64),
+    SetPc(usize),
+    ReadStorage(U256),
+    WriteStorage { key: U256, value: U256 },
+    Evaluate { code: Bytes, keep: bool },
+    Resume,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandValue {
     None,
     Snapshot(Snapshot),

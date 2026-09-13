@@ -1,6 +1,6 @@
 use crate::protocol::{
-    CommandValue, DebugEvent, Finished, PauseReason, SessionConfig, SessionError, Snapshot,
-    StorageSlot,
+    CommandValue, DebugCommand, DebugEvent, Finished, PauseReason, SessionConfig, SessionError,
+    Snapshot, StorageSlot,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use revm::{
@@ -26,21 +26,13 @@ pub const CHEATCODE_ADDRESS: Address = address!("7109709ECfa91a80626fF3989D68f67
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
-enum Action {
-    Snapshot,
-    SetStack { index: usize, value: U256 },
-    WriteMemory { offset: usize, data: Bytes },
-    SetGas(u64),
-    SetPc(usize),
-    ReadStorage(U256),
-    WriteStorage { key: U256, value: U256 },
-    Evaluate { code: Bytes, keep: bool },
-    Resume,
+enum EngineCommand {
+    Debug(DebugCommand),
     Abort,
 }
 
 struct Command {
-    action: Action,
+    action: EngineCommand,
     reply: Sender<Result<CommandValue, SessionError>>,
 }
 
@@ -100,13 +92,15 @@ impl SevmInspector {
         while let Ok(command) = self.commands.recv() {
             let mut resume = false;
             let result = match command.action {
-                Action::Snapshot => Ok(CommandValue::Snapshot(self.snapshot(interpreter, reason))),
-                Action::SetStack { index, value } => interpreter
+                EngineCommand::Debug(DebugCommand::Snapshot) => {
+                    Ok(CommandValue::Snapshot(self.snapshot(interpreter, reason)))
+                }
+                EngineCommand::Debug(DebugCommand::SetStack { index, value }) => interpreter
                     .stack
                     .set(index, value)
                     .map(|()| CommandValue::Word(value))
                     .map_err(|error| SessionError::InvalidCommand(format!("{error:?}"))),
-                Action::WriteMemory { offset, data } => {
+                EngineCommand::Debug(DebugCommand::WriteMemory { offset, data }) => {
                     let end = offset.saturating_add(data.len());
                     if end < offset {
                         Err(SessionError::InvalidCommand(
@@ -120,12 +114,12 @@ impl SevmInspector {
                         Ok(CommandValue::Number(data.len() as u64))
                     }
                 }
-                Action::SetGas(value) => {
+                EngineCommand::Debug(DebugCommand::SetGas(value)) => {
                     interpreter.gas.set_remaining(value);
                     gas_changed = true;
                     Ok(CommandValue::Number(value))
                 }
-                Action::SetPc(value) => {
+                EngineCommand::Debug(DebugCommand::SetPc(value)) => {
                     let code = interpreter.bytecode.bytecode_slice();
                     if code.get(value).copied() != Some(revm::bytecode::opcode::JUMPDEST) {
                         Err(SessionError::InvalidCommand(format!(
@@ -136,7 +130,7 @@ impl SevmInspector {
                         Ok(CommandValue::Number(value as u64))
                     }
                 }
-                Action::ReadStorage(key) => {
+                EngineCommand::Debug(DebugCommand::ReadStorage(key)) => {
                     let checkpoint = context.journal_mut().checkpoint();
                     let result = context
                         .journal_mut()
@@ -146,12 +140,12 @@ impl SevmInspector {
                     context.journal_mut().checkpoint_revert(checkpoint);
                     result
                 }
-                Action::WriteStorage { key, value } => context
+                EngineCommand::Debug(DebugCommand::WriteStorage { key, value }) => context
                     .journal_mut()
                     .sstore(interpreter.input.target_address(), key, value)
                     .map(|_| CommandValue::Word(value))
                     .map_err(|error| SessionError::InvalidCommand(format!("{error:?}"))),
-                Action::Evaluate { code, keep } => {
+                EngineCommand::Debug(DebugCommand::Evaluate { code, keep }) => {
                     let checkpoint = context.journal_mut().checkpoint();
                     let mut nested = Interpreter::new(
                         SharedMemory::new(),
@@ -199,11 +193,11 @@ impl SevmInspector {
                     }
                     result
                 }
-                Action::Resume => {
+                EngineCommand::Debug(DebugCommand::Resume) => {
                     resume = true;
                     Ok(CommandValue::None)
                 }
-                Action::Abort => {
+                EngineCommand::Abort => {
                     interpreter.halt(InstructionResult::Stop);
                     resume = true;
                     Ok(CommandValue::None)
@@ -332,13 +326,13 @@ where
     }
 }
 
-pub struct PrototypeSession {
+pub struct DebugEngine {
     commands: Sender<Command>,
     events: Receiver<DebugEvent>,
     worker: Option<JoinHandle<()>>,
 }
 
-impl PrototypeSession {
+impl DebugEngine {
     pub fn start(config: SessionConfig) -> Self {
         let (command_tx, command_rx) = unbounded();
         let (event_tx, event_rx) = unbounded();
@@ -364,66 +358,70 @@ impl PrototypeSession {
     }
 
     pub fn snapshot(&self) -> Result<Snapshot, SessionError> {
-        match self.command(Action::Snapshot)? {
+        match self.execute(DebugCommand::Snapshot)? {
             CommandValue::Snapshot(snapshot) => Ok(snapshot),
             _ => unreachable!(),
         }
     }
 
     pub fn set_stack(&self, index: usize, value: U256) -> Result<U256, SessionError> {
-        match self.command(Action::SetStack { index, value })? {
+        match self.execute(DebugCommand::SetStack { index, value })? {
             CommandValue::Word(value) => Ok(value),
             _ => unreachable!(),
         }
     }
 
     pub fn write_memory(&self, offset: usize, data: Bytes) -> Result<usize, SessionError> {
-        match self.command(Action::WriteMemory { offset, data })? {
+        match self.execute(DebugCommand::WriteMemory { offset, data })? {
             CommandValue::Number(value) => Ok(value as usize),
             _ => unreachable!(),
         }
     }
 
     pub fn set_gas(&self, value: u64) -> Result<u64, SessionError> {
-        match self.command(Action::SetGas(value))? {
+        match self.execute(DebugCommand::SetGas(value))? {
             CommandValue::Number(value) => Ok(value),
             _ => unreachable!(),
         }
     }
 
     pub fn set_pc(&self, value: usize) -> Result<usize, SessionError> {
-        match self.command(Action::SetPc(value))? {
+        match self.execute(DebugCommand::SetPc(value))? {
             CommandValue::Number(value) => Ok(value as usize),
             _ => unreachable!(),
         }
     }
 
     pub fn read_storage(&self, key: U256) -> Result<U256, SessionError> {
-        match self.command(Action::ReadStorage(key))? {
+        match self.execute(DebugCommand::ReadStorage(key))? {
             CommandValue::Word(value) => Ok(value),
             _ => unreachable!(),
         }
     }
 
     pub fn write_storage(&self, key: U256, value: U256) -> Result<U256, SessionError> {
-        match self.command(Action::WriteStorage { key, value })? {
+        match self.execute(DebugCommand::WriteStorage { key, value })? {
             CommandValue::Word(value) => Ok(value),
             _ => unreachable!(),
         }
     }
 
     pub fn evaluate(&self, code: Bytes, keep: bool) -> Result<Bytes, SessionError> {
-        match self.command(Action::Evaluate { code, keep })? {
+        match self.execute(DebugCommand::Evaluate { code, keep })? {
             CommandValue::Bytes(value) => Ok(value),
             _ => unreachable!(),
         }
     }
 
     pub fn resume(&self) -> Result<(), SessionError> {
-        self.command(Action::Resume).map(|_| ())
+        self.execute(DebugCommand::Resume).map(|_| ())
     }
 
-    fn command(&self, action: Action) -> Result<CommandValue, SessionError> {
+    pub fn execute(&self, command: DebugCommand) -> Result<CommandValue, SessionError> {
+        self.command(EngineCommand::Debug(command))
+    }
+
+    fn command(&self, action: EngineCommand) -> Result<CommandValue, SessionError> {
         let (reply_tx, reply_rx) = bounded(1);
         self.commands
             .send(Command {
@@ -439,18 +437,20 @@ impl PrototypeSession {
     }
 }
 
-impl Drop for PrototypeSession {
+impl Drop for DebugEngine {
     fn drop(&mut self) {
         if let Some(worker) = self.worker.take() {
             let (reply, _) = bounded(1);
             let _ = self.commands.send(Command {
-                action: Action::Abort,
+                action: EngineCommand::Abort,
                 reply,
             });
             let _ = worker.join();
         }
     }
 }
+
+pub type PrototypeSession = DebugEngine;
 
 fn run_worker(
     config: SessionConfig,
