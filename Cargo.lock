@@ -2600,6 +2600,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sevm-revm-headless"
+version = "0.1.0"
+dependencies = [
+ "revm",
+ "serde",
+ "serde_json",
+ "sevm-revm-core",
+]
+
+[[package]]
 name = "sevm-revm-python"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,13 @@
+[package]
+name = "sevm-revm-headless"
+description = "Transport-neutral JSON-RPC server for the sevm REVM engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+revm.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sevm-revm-core.workspace = true
