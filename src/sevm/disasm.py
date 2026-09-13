@@ -1,35 +1,16 @@
-"""EVM disassembly.
-
-The opcode table is derived at import time by pairing `eth.vm.opcode_values` with
-`eth.vm.mnemonics`, which declare the same constant names. That keeps our mnemonics
-identical to the ones Py-EVM reports at runtime rather than a hand-maintained copy that
-drifts one hard fork later.
-"""
+"""EVM disassembly using the opcode table exported by the REVM core."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from eth.vm import mnemonics as _mnemonics
-from eth.vm import opcode_values as _opcode_values
-
+from ._revm import opcode_names
 from .srcmap import PUSH0, PUSH1, PUSH32
 
 JUMPDEST = 0x5B
 
 
-def _build_opcode_table() -> dict[int, str]:
-    table: dict[int, str] = {}
-    for name, value in vars(_opcode_values).items():
-        if name.startswith("_") or not isinstance(value, int):
-            continue
-        mnemonic = getattr(_mnemonics, name, None)
-        if isinstance(mnemonic, str):
-            table[value] = mnemonic
-    return table
-
-
-OPCODES: dict[int, str] = _build_opcode_table()
+OPCODES: dict[int, str] = opcode_names()
 
 # Opcodes that hand control to another contract. `nexti` steps over these; `stepi` enters.
 CALL_OPCODES = frozenset(

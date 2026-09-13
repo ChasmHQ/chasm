@@ -9,9 +9,17 @@ import threading
 import time
 
 from eth_utils import function_signature_to_4byte_selector
-from sevm._revm import RevmChain, RevmSession, revm_version
+from sevm._revm import RevmChain, RevmSession, opcode_names, revm_version
 
 from sevm.cheatcodes import VM_ADDRESS, CheatState, apply_cheat
+
+
+def test_bridge_exports_revm_opcode_names():
+    names = opcode_names()
+    assert names[0x00] == "STOP"
+    assert names[0x55] == "SSTORE"
+    assert names[0x5F] == "PUSH0"
+    assert 0x0C not in names
 
 
 def test_live_mutation_crosses_the_python_bridge():

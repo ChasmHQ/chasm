@@ -3,7 +3,10 @@ use pyo3::{
     prelude::*,
     types::{PyAny, PyBytes, PyDict, PyList},
 };
-use revm::primitives::{Address, B256, Bytes, U256};
+use revm::{
+    bytecode::OpCode,
+    primitives::{Address, B256, Bytes, U256},
+};
 use sevm_revm_core::{
     AccountSpec, Breakpoint, CHEATCODE_ADDRESS, CONSOLE_ADDRESS, ChainConfig, CommandValue,
     DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine, DebugEvent, FrameContext, FrameKind, PauseReason,
@@ -862,6 +865,18 @@ fn revm_version() -> &'static str {
 }
 
 #[pyfunction]
+fn opcode_names<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    let output = PyDict::new(py);
+    for opcode in 0..=u8::MAX {
+        let name = OpCode::name_by_op(opcode);
+        if name != "Unknown" {
+            output.set_item(opcode, name)?;
+        }
+    }
+    Ok(output)
+}
+
+#[pyfunction]
 fn serve_stdio(py: Python<'_>) -> PyResult<()> {
     py.detach(|| {
         let stdin = io::stdin();
@@ -874,5 +889,5 @@ fn serve_stdio(py: Python<'_>) -> PyResult<()> {
 #[pymodule]
 mod _revm {
     #[pymodule_export]
-    use super::{RevmChain, RevmSession, revm_version, serve_stdio};
+    use super::{RevmChain, RevmSession, opcode_names, revm_version, serve_stdio};
 }
