@@ -63,6 +63,7 @@ pub struct TransactionRequest {
     pub gas_limit: u64,
     pub value: U256,
     pub data: Bytes,
+    pub commit: bool,
 }
 
 impl TransactionRequest {
@@ -73,6 +74,7 @@ impl TransactionRequest {
             gas_limit: 100_000,
             value: U256::ZERO,
             data: data.into(),
+            commit: true,
         }
     }
 
@@ -83,6 +85,7 @@ impl TransactionRequest {
             gas_limit: 3_000_000,
             value: U256::ZERO,
             data: init_code.into(),
+            commit: true,
         }
     }
 }
@@ -189,6 +192,7 @@ pub struct Finished {
     pub output: Bytes,
     pub created_address: Option<Address>,
     pub storage: Vec<StorageSlot>,
+    pub logs: Vec<LogEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

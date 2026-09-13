@@ -97,6 +97,8 @@ struct TransactParams {
     value: Option<String>,
     #[serde(default = "default_transaction_gas_limit")]
     gas_limit: u64,
+    #[serde(default = "default_true")]
+    commit: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -336,6 +338,10 @@ fn default_step_count() -> usize {
 
 fn default_transaction_gas_limit() -> u64 {
     30_000_000
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_evaluation_gas_limit() -> u64 {
@@ -640,6 +646,7 @@ impl ProtocolServer {
                     .transpose()?
                     .unwrap_or(U256::ZERO),
                 data: decode_bytes(&params.data)?,
+                commit: params.commit,
             })
             .map_err(engine_error)?;
         Ok(json!({ "started": true }))
@@ -939,6 +946,11 @@ fn event_json(event: DebugEvent) -> Value {
                 "address": format!("{:#x}", slot.address),
                 "key": word(slot.key),
                 "value": word(slot.value),
+            })).collect::<Vec<_>>(),
+            "logs": finished.logs.into_iter().map(|log| json!({
+                "address": format!("{:#x}", log.address),
+                "topics": log.topics.into_iter().map(|topic| hex_bytes(topic.as_slice())).collect::<Vec<_>>(),
+                "data": hex_bytes(&log.data),
             })).collect::<Vec<_>>(),
         }),
         DebugEvent::Failed(message) => json!({

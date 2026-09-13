@@ -185,6 +185,21 @@ fn event_dict<'py>(py: Python<'py>, event: DebugEvent) -> PyResult<Bound<'py, Py
                 })
                 .collect::<Vec<_>>();
             result.set_item("storage", storage)?;
+            let logs = PyList::empty(py);
+            for log in finished.logs {
+                let item = PyDict::new(py);
+                item.set_item("address", format!("{:#x}", log.address))?;
+                item.set_item(
+                    "topics",
+                    log.topics
+                        .into_iter()
+                        .map(|topic| word(U256::from_be_slice(topic.as_slice())))
+                        .collect::<Vec<_>>(),
+                )?;
+                item.set_item("data", PyBytes::new(py, &log.data))?;
+                logs.append(item)?;
+            }
+            result.set_item("logs", logs)?;
             Ok(result)
         }
         DebugEvent::Failed(message) => {
@@ -237,7 +252,7 @@ impl RevmChain {
             .map_err(python_error)
     }
 
-    #[pyo3(signature = (init_code, caller=None, value=None, gas_limit=3_000_000))]
+    #[pyo3(signature = (init_code, caller=None, value=None, gas_limit=3_000_000, commit=true))]
     fn create(
         &self,
         py: Python<'_>,
@@ -245,6 +260,7 @@ impl RevmChain {
         caller: Option<&str>,
         value: Option<&Bound<'_, PyAny>>,
         gas_limit: u64,
+        commit: bool,
     ) -> PyResult<()> {
         let mut transaction = TransactionRequest::create(
             caller
@@ -255,11 +271,13 @@ impl RevmChain {
         );
         transaction.value = value.map(parse_word).transpose()?.unwrap_or(U256::ZERO);
         transaction.gas_limit = gas_limit;
+        transaction.commit = commit;
         py.detach(|| self.inner.transact(transaction))
             .map_err(python_error)
     }
 
-    #[pyo3(signature = (address, calldata=None, caller=None, value=None, gas_limit=30_000_000))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (address, calldata=None, caller=None, value=None, gas_limit=30_000_000, commit=true))]
     fn call(
         &self,
         py: Python<'_>,
@@ -268,6 +286,7 @@ impl RevmChain {
         caller: Option<&str>,
         value: Option<&Bound<'_, PyAny>>,
         gas_limit: u64,
+        commit: bool,
     ) -> PyResult<()> {
         let mut transaction = TransactionRequest::call(
             caller
@@ -281,6 +300,7 @@ impl RevmChain {
         );
         transaction.value = value.map(parse_word).transpose()?.unwrap_or(U256::ZERO);
         transaction.gas_limit = gas_limit;
+        transaction.commit = commit;
         py.detach(|| self.inner.transact(transaction))
             .map_err(python_error)
     }

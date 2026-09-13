@@ -399,6 +399,30 @@ fn persists_state_across_create_and_call_transactions() {
         assert!(result.success);
         assert_eq!(result.storage_at(created, U256::ZERO), expected);
     }
+    assert_eq!(
+        engine
+            .state(StateCommand::ReadStorage {
+                address: created,
+                key: U256::ZERO,
+            })
+            .unwrap(),
+        CommandValue::Word(U256::from(2))
+    );
+    engine.set_breakpoints(Vec::new()).unwrap();
+    let mut read_only = TransactionRequest::call(DEFAULT_CALLER, created, Bytes::new());
+    read_only.commit = false;
+    engine.transact(read_only).unwrap();
+    let speculative = finished(&engine);
+    assert_eq!(speculative.storage_at(created, U256::ZERO), U256::from(3));
+    assert_eq!(
+        engine
+            .state(StateCommand::ReadStorage {
+                address: created,
+                key: U256::ZERO,
+            })
+            .unwrap(),
+        CommandValue::Word(U256::from(2))
+    );
 }
 
 #[test]

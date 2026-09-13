@@ -887,6 +887,7 @@ impl DebugEngine {
             gas_limit: config.gas_limit,
             value: U256::ZERO,
             data: Bytes::new(),
+            commit: true,
         };
         let engine = Self::new(ChainConfig {
             accounts: config.accounts,
@@ -1018,7 +1019,11 @@ impl DebugEngine {
     }
 
     pub fn state(&self, command: StateCommand) -> Result<CommandValue, SessionError> {
-        self.execute(DebugCommand::State(command))
+        if self.state.load(Ordering::Acquire) == STATE_IDLE {
+            self.command(EngineCommand::Debug(DebugCommand::State(command)))
+        } else {
+            self.execute(DebugCommand::State(command))
+        }
     }
 
     pub fn set_prank(&self, prank: Option<PrankConfig>) -> Result<(), SessionError> {
@@ -1173,6 +1178,7 @@ fn run_worker(
         match command.action {
             EngineCommand::Transact(transaction) => {
                 evm.inspector.origin = transaction.caller;
+                let commit = transaction.commit;
                 let tx = match transaction_env(transaction) {
                     Ok(tx) => tx,
                     Err(error) => {
@@ -1191,7 +1197,9 @@ fn run_worker(
                 match outcome {
                     Ok(outcome) => {
                         let finished = finished_event(&outcome.result, &outcome.state);
-                        evm.commit(outcome.state);
+                        if commit {
+                            evm.commit(outcome.state);
+                        }
                         events
                             .send(DebugEvent::Finished(finished))
                             .map_err(|_| "debug event receiver closed".to_owned())?;
@@ -1202,6 +1210,10 @@ fn run_worker(
                             .map_err(|_| "debug event receiver closed".to_owned())?;
                     }
                 }
+            }
+            EngineCommand::Debug(DebugCommand::State(state_command)) => {
+                let result = execute_state_command(&mut evm.ctx, state_command);
+                let _ = command.reply.send(result);
             }
             EngineCommand::Debug(_) => {
                 let _ = command.reply.send(Err(SessionError::NotPaused));
@@ -1259,5 +1271,14 @@ fn finished_event(
         output: result.output().cloned().unwrap_or_default(),
         created_address: result.created_address(),
         storage,
+        logs: result
+            .logs()
+            .iter()
+            .map(|log| LogEntry {
+                address: log.address,
+                topics: log.topics().to_vec(),
+                data: log.data.data.clone(),
+            })
+            .collect(),
     }
 }

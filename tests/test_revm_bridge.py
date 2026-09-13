@@ -174,6 +174,13 @@ def test_persistent_chain_deploys_and_reuses_state():
         finished = chain.wait()
         storage = {(addr, key): value for addr, key, value in finished["storage"]}
         assert storage[(address, "0x0")] == expected
+    assert chain.read_storage_at(address, 0) == "0x2"
+    assert chain.set_breakpoints([]) == 0
+    chain.call(address, commit=False)
+    speculative = chain.wait()
+    storage = {(addr, key): value for addr, key, value in speculative["storage"]}
+    assert storage[(address, "0x0")] == "0x3"
+    assert chain.read_storage_at(address, 0) == "0x2"
 
 
 def test_foundry_host_call_crosses_the_python_bridge():
