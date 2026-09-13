@@ -183,6 +183,15 @@ pub struct HostCall {
     pub gas_limit: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrankConfig {
+    pub caller: Option<Address>,
+    pub new_sender: Address,
+    pub persistent: bool,
+    pub new_origin: Option<Address>,
+    pub delegate: bool,
+}
+
 impl Finished {
     pub fn storage_at(&self, address: Address, key: U256) -> U256 {
         self.storage
@@ -210,6 +219,7 @@ pub enum DebugCommand {
     ReadStorage(U256),
     WriteStorage { key: U256, value: U256 },
     State(StateCommand),
+    SetPrank(Option<PrankConfig>),
     Evaluate { code: Bytes, keep: bool },
     RespondHost { output: Bytes, revert: bool },
     Step { count: usize },

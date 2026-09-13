@@ -1,7 +1,7 @@
 use crate::protocol::{
     ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished, FrameContext, FrameKind,
-    HostCall, PauseReason, SessionConfig, SessionError, Snapshot, StateCommand, StorageSlot,
-    TransactionKind, TransactionRequest,
+    HostCall, PauseReason, PrankConfig, SessionConfig, SessionError, Snapshot, StateCommand,
+    StorageSlot, TransactionKind, TransactionRequest,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use revm::{
@@ -18,7 +18,7 @@ use revm::{
         interpreter::{EthInterpreter, ExtBytecode, InputsImpl, SharedMemory},
         interpreter_types::{InputsTr, Jumps, LegacyBytecode, LoopControl},
     },
-    primitives::{Address, Bytes, TxKind, U256, address, hardfork::SpecId, keccak256},
+    primitives::{Address, Bytes, TxKind, U256, address, hardfork::SpecId},
     state::{AccountInfo, Bytecode},
 };
 use std::{
@@ -74,7 +74,8 @@ struct SevmInspector {
     backup: Option<StepBackup>,
     instruction_checkpoint: Option<revm::context_interface::journaled_state::JournalCheckpoint>,
     skip_breakpoint_once: bool,
-    next_prank: Option<Address>,
+    prank: Option<PrankConfig>,
+    origin_restore: Vec<Option<Address>>,
     state: Arc<AtomicU8>,
     abort_requested: bool,
     steps_until_pause: Option<usize>,
@@ -218,6 +219,10 @@ impl SevmInspector {
                 EngineCommand::Debug(DebugCommand::State(command)) => {
                     execute_state_command(context, command)
                 }
+                EngineCommand::Debug(DebugCommand::SetPrank(prank)) => {
+                    self.prank = prank;
+                    Ok(CommandValue::None)
+                }
                 EngineCommand::Debug(DebugCommand::Evaluate { code, keep }) => {
                     let checkpoint = context.journal_mut().checkpoint();
                     let mut nested = Interpreter::new(
@@ -352,6 +357,10 @@ impl SevmInspector {
                 EngineCommand::Debug(DebugCommand::State(command)) => {
                     execute_state_command(context, command)
                 }
+                EngineCommand::Debug(DebugCommand::SetPrank(prank)) => {
+                    self.prank = prank;
+                    Ok(CommandValue::None)
+                }
                 EngineCommand::Debug(_) => Err(SessionError::InvalidCommand(
                     "the engine is waiting for a host-call response".to_owned(),
                 )),
@@ -368,6 +377,40 @@ impl SevmInspector {
             let _ = command.reply.send(response);
         }
         call_result(inputs, Bytes::new(), true)
+    }
+
+    fn apply_prank(&mut self, context: &mut SevmContext, inputs: &mut CallInputs) {
+        let Some(prank) = self.prank.clone() else {
+            return;
+        };
+        let is_delegate = inputs.scheme.is_delegate_call();
+        if is_delegate && !prank.delegate {
+            return;
+        }
+        let caller = if is_delegate {
+            inputs.target_address
+        } else {
+            inputs.caller
+        };
+        if prank.caller.is_some_and(|expected| expected != caller) {
+            return;
+        }
+
+        inputs.caller = prank.new_sender;
+        if is_delegate {
+            inputs.target_address = prank.new_sender;
+        }
+        if let Some(origin) = prank.new_origin {
+            let previous = context.tx.caller;
+            context.tx.caller = origin;
+            self.origin = origin;
+            if let Some(restore) = self.origin_restore.last_mut() {
+                *restore = Some(previous);
+            }
+        }
+        if !prank.persistent {
+            self.prank = None;
+        }
     }
 }
 
@@ -568,6 +611,7 @@ impl Inspector<SevmContext> for SevmInspector {
             FrameInput::Empty => return None,
         };
         self.frames.push(frame);
+        self.origin_restore.push(None);
         None
     }
 
@@ -583,11 +627,15 @@ impl Inspector<SevmContext> for SevmInspector {
 
     fn frame_end(
         &mut self,
-        _context: &mut SevmContext,
+        context: &mut SevmContext,
         _frame_input: &FrameInput,
         _frame_result: &mut revm::handler::FrameResult,
     ) {
         self.frames.pop();
+        if let Some(Some(origin)) = self.origin_restore.pop() {
+            context.tx.caller = origin;
+            self.origin = origin;
+        }
     }
 
     fn step(&mut self, interpreter: &mut Interpreter<EthInterpreter>, context: &mut SevmContext) {
@@ -665,26 +713,10 @@ impl Inspector<SevmContext> for SevmInspector {
     }
 
     fn call(&mut self, context: &mut SevmContext, inputs: &mut CallInputs) -> Option<CallOutcome> {
-        if inputs.bytecode_address == CHEATCODE_ADDRESS {
-            let data = inputs.input.bytes(context);
-            let selector = &keccak256("prank(address)")[..4];
-            if data.len() == 36 && data[..4] == *selector {
-                self.next_prank = Some(Address::from_slice(&data[16..36]));
-                return Some(CallOutcome::new(
-                    InterpreterResult::new(
-                        InstructionResult::Return,
-                        Bytes::new(),
-                        Gas::new(inputs.gas_limit),
-                    ),
-                    inputs.return_memory_offset.clone(),
-                ));
-            }
+        if matches!(inputs.bytecode_address, CHEATCODE_ADDRESS | CONSOLE_ADDRESS) {
             return Some(self.host_call(context, inputs));
-        } else if inputs.bytecode_address == CONSOLE_ADDRESS {
-            return Some(self.host_call(context, inputs));
-        } else if let Some(caller) = self.next_prank.take() {
-            inputs.caller = caller;
         }
+        self.apply_prank(context, inputs);
         None
     }
 }
@@ -838,6 +870,10 @@ impl DebugEngine {
         self.execute(DebugCommand::State(command))
     }
 
+    pub fn set_prank(&self, prank: Option<PrankConfig>) -> Result<(), SessionError> {
+        self.execute(DebugCommand::SetPrank(prank)).map(|_| ())
+    }
+
     pub fn evaluate(&self, code: Bytes, keep: bool) -> Result<Bytes, SessionError> {
         match self.execute(DebugCommand::Evaluate { code, keep })? {
             CommandValue::Bytes(value) => Ok(value),
@@ -931,7 +967,8 @@ fn run_worker(
         backup: None,
         instruction_checkpoint: None,
         skip_breakpoint_once: false,
-        next_prank: None,
+        prank: None,
+        origin_restore: Vec::new(),
         state: Arc::clone(state),
         abort_requested: false,
         steps_until_pause: None,

@@ -4,7 +4,7 @@ use revm::{
 };
 use sevm_revm_core::{
     AccountSpec, Breakpoint, CHEATCODE_ADDRESS, ChainConfig, CommandValue, DEFAULT_CALLER,
-    DEFAULT_TARGET, DebugEngine, DebugEvent, FrameKind, PauseReason, PrototypeSession,
+    DEFAULT_TARGET, DebugEngine, DebugEvent, FrameKind, PauseReason, PrankConfig, PrototypeSession,
     SessionConfig, StateCommand, TransactionRequest,
 };
 use std::time::Duration;
@@ -339,6 +339,22 @@ fn foundry_style_prank_changes_the_next_nested_caller() {
             .with_account(AccountSpec::new(child, child_code))
             .with_breakpoint(child, 0),
     );
+
+    let call = match session.wait(TIMEOUT).unwrap() {
+        DebugEvent::HostCall(call) => call,
+        event => panic!("expected host call, got {event:?}"),
+    };
+    assert_eq!(call.address, CHEATCODE_ADDRESS);
+    session
+        .set_prank(Some(PrankConfig {
+            caller: Some(DEFAULT_TARGET),
+            new_sender: pranked,
+            persistent: false,
+            new_origin: None,
+            delegate: false,
+        }))
+        .unwrap();
+    session.respond_host(Bytes::new(), false).unwrap();
 
     let snapshot = paused(&session);
     assert_eq!(snapshot.address, child);
