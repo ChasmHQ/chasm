@@ -43,7 +43,6 @@ def run_to_finish(project, contract: str, function: str):
     target = select_test(targets, match=function, match_contract=contract)
     assert target is not None, f"no target {contract}.{function}"
     session = DebugSession(project)
-    session.foundry_mode = True
     evaluator = Evaluator(project)
     session.set_eval_hook(make_eval_hook(evaluator))
     session.start(make_test_driver(project, target))
@@ -52,10 +51,7 @@ def run_to_finish(project, contract: str, function: str):
         if isinstance(event, Finished):
             break
         event = session.resume(StepMode.RUN, count=1, timeout=TIMEOUT)
-    try:
-        session.detach(timeout=TIMEOUT)
-    except Exception:
-        session.uninstall()
+    session.detach(timeout=TIMEOUT)
     return session, event
 
 
@@ -155,7 +151,6 @@ def test_multi_test_stops_at_each_test(solo_project):
     targets = discover_tests(project)
     names = {f"{t.contract}.{t.function}" for t in targets}
     session = DebugSession(project)
-    session.foundry_mode = True
     evaluator = Evaluator(project)
     session.set_eval_hook(make_eval_hook(evaluator))
     for t in targets:
@@ -171,10 +166,7 @@ def test_multi_test_stops_at_each_test(solo_project):
         if snap is not None and snap.stop_reason == "breakpoint" and fn is not None:
             seen.add(f"{fn.contract}.{fn.name}")
         event = session.resume(StepMode.RUN, count=1, timeout=TIMEOUT)
-    try:
-        session.detach(timeout=TIMEOUT)
-    except Exception:
-        session.uninstall()
+    session.detach(timeout=TIMEOUT)
     # Every test body was stopped at, and nothing else (proves contract-scoped breakpoints).
     assert seen == names
 
@@ -182,7 +174,6 @@ def test_multi_test_stops_at_each_test(solo_project):
 def test_session_opens_at_test_function(solo_project):
     project = solo_project
     session = DebugSession(project)
-    session.foundry_mode = True
     evaluator = Evaluator(project)
     session.set_eval_hook(make_eval_hook(evaluator))
     session.break_at_function("AllCheatsTest.testEnv", temporary=True)
@@ -195,10 +186,7 @@ def test_session_opens_at_test_function(solo_project):
         assert event.snapshot.function.name == "testEnv"
         assert event.snapshot.function.contract == "AllCheatsTest"
     finally:
-        try:
-            session.detach(timeout=TIMEOUT)
-        except Exception:
-            session.uninstall()
+        session.detach(timeout=TIMEOUT)
 
 
 # ==================================================================

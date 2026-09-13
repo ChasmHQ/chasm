@@ -3,7 +3,7 @@
 Where things live:
 
   cli.py         argument parsing and `main()`; `.py` vs `.sol` dispatch
-  session/       the source-level REVM session and legacy compatibility engine
+  session/       the source-level REVM session
   commands/      the gdb-style command layer both frontends drive
   evaluate/      Solidity expression evaluation at a breakpoint
   assembly/      Yul typed at the prompt, run against the live frame

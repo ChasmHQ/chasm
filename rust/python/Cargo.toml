@@ -1,6 +1,6 @@
 [package]
 name = "sevm-revm-python"
-description = "Python bridge for the sevm REVM feasibility core"
+description = "Python bridge for the sevm REVM debugger core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

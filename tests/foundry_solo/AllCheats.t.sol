@@ -105,9 +105,7 @@ contract AllCheatsTest is Test {
     }
 
     function testFeeIsNotChargedAtSettlement() public {
-        // A base fee above the transaction's own gas price would leave py-evm paying the
-        // coinbase a negative amount at the end of the transaction, and a fresh coinbase
-        // cannot go negative. The cheat must be visible here and gone by settlement.
+        // The fee cheat must be visible during the test without affecting settlement.
         vm.fee(7 gwei);
         vm.coinbase(alice);
         assertEq(block.basefee, 7 gwei);

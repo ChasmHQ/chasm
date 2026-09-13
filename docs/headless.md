@@ -1,6 +1,6 @@
 # Headless REVM protocol
 
-The experimental REVM engine can run without the sevm console or fullscreen interface.
+The REVM engine can run without the sevm console or fullscreen interface.
 Any frontend that can launch a process and exchange newline-delimited JSON can control the
 same live debugger session. This includes editor extensions, browser backends, terminal
 interfaces, and clients written in languages other than Python.
@@ -17,12 +17,12 @@ to `9`, resumes, and reads the committed storage from the finish event:
 
 ```bash
 $ uv run sevm-engine < examples/headless-session.jsonl
-{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","step","read_storage","write_storage","evaluate","respond_host","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
+{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","step","read_storage","write_storage","state","evaluate","evaluate_call","execute_opcode","set_prank","respond_host","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
 {"id":2,"jsonrpc":"2.0","result":{"started":true}}
 {"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","calldata":"0x","caller":"0x2000000000000000000000000000000000000002","code_address":"0x1000000000000000000000000000000000000001","depth":0,"frames":[{"address":"0x1000000000000000000000000000000000000001","calldata":"0x","caller":"0x2000000000000000000000000000000000000002","code":"0x600160005500","code_address":"0x1000000000000000000000000000000000000001","depth":0,"gas_limit":79000,"gas_remaining":78994,"is_static":false,"kind":"call","opcode":85,"pc":4,"value":"0x0"}],"gas_limit":79000,"gas_refund":0,"gas_remaining":78994,"gas_used":6,"is_static":false,"memory":"0x","memory_size":0,"mnemonic":"SSTORE","opcode":85,"origin":"0x2000000000000000000000000000000000000002","pc":4,"reason":"breakpoint","stack":["0x0","0x1"],"step":3,"value":"0x0"},"type":"paused"}}
 {"id":4,"jsonrpc":"2.0","result":"0x9"}
 {"id":5,"jsonrpc":"2.0","result":null}
-{"id":6,"jsonrpc":"2.0","result":{"created_address":null,"gas_used":43106,"output":"0x","storage":[{"address":"0x1000000000000000000000000000000000000001","key":"0x0","value":"0x9"}],"success":true,"type":"finished"}}
+{"id":6,"jsonrpc":"2.0","result":{"created_address":null,"gas_used":43106,"logs":[],"output":"0x","storage":[{"address":"0x1000000000000000000000000000000000000001","key":"0x0","value":"0x9"}],"success":true,"type":"finished"}}
 {"id":7,"jsonrpc":"2.0","result":null}
 ```
 
@@ -54,7 +54,7 @@ after sending its response.
 | `hello` | `{}` | Protocol version, transport, and method names |
 | `open` | Initial `accounts` and `breakpoints` | `{"opened":true}` |
 | `start` | Session configuration below | `{"started":true}` |
-| `transact` | `caller`, optional `to`, `data`, `value`, and `gas_limit` | `{"started":true}` |
+| `transact` | `caller`, optional `to`, `data`, `value`, `gas_limit`, and `commit` | `{"started":true}` |
 | `wait_event` | `{"timeout_ms":5000}` | A paused, finished, or failed event |
 | `snapshot` | `{}` | The current paused frame |
 | `set_breakpoints` | `{"breakpoints":[{"address":"0x...","pc":4}]}` | Number installed |
@@ -65,7 +65,11 @@ after sending its response.
 | `step` | `{"count":1}` | `null`; execution pauses before the next opcode |
 | `read_storage` | `{"key":"0x0"}` | Storage word |
 | `write_storage` | `{"key":"0x0","value":"0x9"}` | Written word |
+| `state` | A tagged state operation such as `{"op":"read_balance","address":"0x..."}` | The requested value |
 | `evaluate` | `{"bytecode":"0x...","keep":false}` | Returned bytes |
+| `evaluate_call` | Bytecode, calldata, caller, value, gas limit, and `keep` | Success, output, and gas used |
+| `execute_opcode` | `opcode`, `arguments`, and `outputs` | Output word and gas used |
+| `set_prank` | New sender and optional caller, origin, persistence, and delegate flag | `null` |
 | `respond_host` | `{"output":"0x...","revert":false}` | `null` |
 | `resume` | `{}` | `null` |
 | `close` | `{}` | `null` |
@@ -73,7 +77,14 @@ after sending its response.
 
 Omitting `to` from `transact` executes a CREATE transaction and reports the new address as
 `created_address` in the finish event. Supplying `to` executes a CALL. Persistent chains
-retain account and storage changes between transactions.
+retain account and storage changes between transactions unless `commit` is `false`.
+
+`state` reads and writes balances, code, nonces, persistent or transient storage, block
+fields, access warmth, and accumulated logs. `evaluate_call` executes injected bytecode
+with explicit frame inputs; `keep: false` rolls its journal back. `execute_opcode` runs one
+opcode against the paused frame without consuming its stack or gas, while retaining state
+and memory changes. `set_prank` configures caller rewriting in the core; omit `new_sender`
+to clear it.
 
 `wait_event` is a bounded long poll, not an unsolicited server message. Its default
 timeout is 5 seconds. A graphical frontend can use a shorter timeout when it needs to
@@ -162,8 +173,8 @@ A pause event contains a snapshot of the frame that is still executing:
 }
 ```
 
-`reason` is `breakpoint`, `step`, or `out_of_gas`. A finish event contains `success`,
-`gas_used`, `output`, and the changed storage slots. The `frames` array runs from the
+`reason` is `breakpoint`, `step`, `revert`, or `out_of_gas`. A finish event contains
+`success`, `gas_used`, `output`, logs, and the changed storage slots. The `frames` array runs from the
 outermost frame to the paused frame and retains each caller's last program counter. A
 failed event contains a `message`.
 
@@ -179,6 +190,6 @@ parameter, engine, and session-state errors:
 | `-32000` | REVM engine error or timeout |
 | `-32001` | No active session, or a session is already active |
 
-This transport is additive. The Python bridge still links directly to the same Rust core,
-and the existing Py-EVM debugger remains the default application engine while the REVM
-migration is developed and checked for parity.
+The console, fullscreen TUI, Web3 provider, and JSON-RPC server all use this same Rust
+core. Frontends choose the direct Python bridge or the process boundary; neither owns EVM
+execution policy.

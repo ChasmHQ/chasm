@@ -41,7 +41,7 @@ from .panes import (
 
 CSS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sevm.tcss")
 
-WELCOME = """[bold]sevm[/bold]  Solidity/EVM debugger on Py-EVM"""
+WELCOME = """[bold]sevm[/bold]  Solidity/EVM debugger on REVM"""
 
 
 class CommandDone(Message):

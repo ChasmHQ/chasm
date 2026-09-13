@@ -1,7 +1,7 @@
 """Recovering a Solidity frame's local variables from the EVM stack.
 
 Locals have no runtime representation: their stack position is inferred from where solc's
-source map says each declaration executed, which `DebugSession._observe_declaration`
+source map says each declaration executed, which `RevmDebugSession._advance_internal`
 records as the program runs. This module turns those positions back into values.
 """
 

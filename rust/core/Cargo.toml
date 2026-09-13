@@ -1,6 +1,6 @@
 [package]
 name = "sevm-revm-core"
-description = "REVM feasibility core for sevm"
+description = "REVM debugger core for sevm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,4 +9,3 @@ license.workspace = true
 [dependencies]
 crossbeam-channel = "0.5.15"
 revm.workspace = true
-

@@ -1,14 +1,9 @@
-"""What the controller and the VM thread say to each other.
-
-The two threads strictly alternate over three queues: the controller puts a `Resume` or
-an `Inspect`, the VM thread answers with a `Paused`/`Finished` event or an inspect reply.
-"""
+"""Messages exchanged by the debugger controller and VM thread."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 from ..frames import FrameSnapshot
 
@@ -34,16 +29,6 @@ class Resume:
     detach: bool = False
 
 
-@dataclass
-class Inspect:
-    """A read or mutation performed by the VM thread against the live computation."""
-
-    op: str
-    args: tuple[Any, ...] = ()
-    kwargs: dict[str, Any] = field(default_factory=dict)
-    frame_index: int | None = None  # which EVM frame; None means the innermost
-
-
 # -- VM -> controller events -------------------------------------------------
 
 
@@ -57,11 +42,6 @@ class Finished:
     ok: bool
     error: str | None = None
     traceback: str | None = None
-
-
-@dataclass
-class Failure:
-    error: str
 
 
 class SessionError(RuntimeError):

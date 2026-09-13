@@ -45,7 +45,6 @@ def test_real_forge_std_installs_and_runs(tmp_path):
 
     target = select_test(discover_tests(project), match="testPrankValue")
     session = DebugSession(project)
-    session.foundry_mode = True
     session.set_eval_hook(make_eval_hook(Evaluator(project)))
     session.start(make_test_driver(project, target))
     event = session.wait(timeout=60)
@@ -53,10 +52,7 @@ def test_real_forge_std_installs_and_runs(tmp_path):
         if isinstance(event, Finished):
             break
         event = session.resume(StepMode.RUN, count=1, timeout=60)
-    try:
-        session.detach(timeout=30)
-    except Exception:
-        session.uninstall()
+    session.detach(timeout=30)
     assert isinstance(event, Finished) and event.ok, session.exit_error
 
 

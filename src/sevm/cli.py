@@ -2,8 +2,8 @@
 
 By decision, the debugger attaches to the user's own script rather than owning the
 setup. The script drives web3 exactly as it already does; sevm compiles the contracts,
-patches Py-EVM process-wide, runs the script on the VM thread, and stops the first time
-execution enters code it recognises.
+temporarily supplies its REVM-backed Web3 provider, runs the script on the VM thread, and
+stops the first time execution enters code it recognises.
 
 Recognition is by bytecode, not by configuration: every contract under --contracts is
 compiled, and a deployed account's runtime code is matched against those artifacts with
@@ -137,13 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--force", action="store_true", help="recompile even if the cache has this build"
     )
-    run.add_argument(
-        "--engine",
-        choices=("revm",),
-        default="revm",
-        help="execution engine (REVM)",
-    )
-
     compile_cmd = sub.add_parser(
         "compile", help="compile contracts and report what sevm sees"
     )
@@ -280,7 +273,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             "no-install",
             "no-cache",
             "force",
-            "engine",
         }
     ]
     if stray:
@@ -377,7 +369,6 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
         project,
         target,
         args,
-        foundry_mode=True,
         restart_factory=restart_factory,
         restart_argv=expanded,
         session_class=DebugSession,
@@ -440,7 +431,6 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
         project,
         driver,
         args,
-        foundry_mode=True,
         stop_functions=[f"{t.contract}.{t.function}" for t in selected],
         session_class=DebugSession,
     )
@@ -451,7 +441,6 @@ def _debug(
     project: Any,
     target: Any,
     args: argparse.Namespace,
-    foundry_mode: bool,
     stop_functions: list[str] | None = None,
     restart_factory: Any = None,
     restart_argv: list[str] | None = None,
@@ -464,7 +453,6 @@ def _debug(
     subsequent test in turn. `restart_factory` binds the `reset` / `run` commands.
     """
     session = session_class(project)
-    session.foundry_mode = foundry_mode
     evaluator = Evaluator(project)
     session.set_eval_hook(make_eval_hook(evaluator))
     if restart_factory is not None:

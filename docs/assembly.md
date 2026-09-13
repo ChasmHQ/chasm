@@ -1,7 +1,7 @@
 # Inline assembly (Yul) at the prompt
 
 Type a Yul builtin at the prompt and it runs on the frame you are stopped in, using
-Py-EVM's real opcode implementations. This is the low-level twin of `set var`. `p` answers
+REVM's opcode implementations. This is the low-level twin of `set var`. `p` answers
 a question on a state snapshot that is then thrown away, assembly writes to the machine
 that is actually running.
 
@@ -9,17 +9,17 @@ that is actually running.
 
 ```bash
 (sevm) mload(0x40)
-mload(0x40) -> $1 = 0x80 (128)  (gas 3)
+mload(0x40) -> $1 = 0x80 (128)  (gas 12)
 (sevm) mstore(0x80, 0xdeadbeef)
-mstore(0x80, 0xdeadbeef) -> ok  (gas 9)
+mstore(0x80, 0xdeadbeef) -> ok  (gas 18)
 (sevm) sstore(3, add(sload(3), 1))
 sstore(3, add(sload(3), 1)) -> ok  (gas 22,103)
 (sevm) asm mstore(0x80, 1); mstore8(0xa0, 0x61); mload(0x80)
-mstore(0x80, 1) -> ok  (gas 3)
-mstore8(0xa0, 0x61) -> ok  (gas 6)
-mload(0x80) -> $2 = 0x1 (1)  (gas 3)
+mstore(0x80, 1) -> ok  (gas 18)
+mstore8(0xa0, 0x61) -> ok  (gas 21)
+mload(0x80) -> $2 = 0x1 (1)  (gas 18)
 (sevm) keccak256(0x80, 32)
-keccak256(0x80, 32) -> $3 = 0xb10e2d52...b7fa0cf6  (gas 36)
+keccak256(0x80, 32) -> $3 = 0xb10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6  (gas 51)
 ```
 
 Calls nest exactly as in `assembly { }`. Reads print their value and enter the value

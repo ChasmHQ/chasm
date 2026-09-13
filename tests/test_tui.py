@@ -53,10 +53,7 @@ def test_tui_renders_every_pane(bank):
     try:
         screen = asyncio.run(drive())
     finally:
-        try:
-            session.detach(timeout=TIMEOUT)
-        except Exception:
-            session.uninstall()
+        session.detach(timeout=TIMEOUT)
 
     for title in (
         "SOURCE",
@@ -135,10 +132,7 @@ def test_tui_startup_commands_run_in_sequence(bank):
     try:
         snap = asyncio.run(drive())
     finally:
-        try:
-            session.detach(timeout=TIMEOUT)
-        except Exception:
-            session.uninstall()
+        session.detach(timeout=TIMEOUT)
 
     assert snap is not None and snap.function is not None
     assert snap.function.display_name == "Bank.deposit", (

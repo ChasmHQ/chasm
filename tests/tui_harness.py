@@ -64,10 +64,7 @@ def run_tui(session, app, size, body):
     try:
         return asyncio.run(drive())
     finally:
-        try:
-            session.detach(timeout=TIMEOUT)
-        except Exception:
-            session.uninstall()
+        session.detach(timeout=TIMEOUT)
 
 
 async def stop_at_credit(app, pilot, proj_):

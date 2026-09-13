@@ -91,7 +91,6 @@ class Debugger:
     def __init__(self, proj, txfn, **session_kwargs):
         self.session = _session_from_target(txfn) or DebugSession(proj, **session_kwargs)
         self.session.stop_at_start = session_kwargs.get("stop_at_start", True)
-        self.session.skip_to_source = session_kwargs.get("skip_to_source", True)
         self.session._opening_stop_pending = self.session.stop_at_start
         self.evaluator = Evaluator(proj)
         self.session.set_eval_hook(make_eval_hook(self.evaluator))
@@ -112,10 +111,7 @@ class Debugger:
         return self.session.last_snapshot
 
     def close(self):
-        try:
-            self.session.detach(timeout=TIMEOUT)
-        except Exception:
-            self.session.uninstall()
+        self.session.detach(timeout=TIMEOUT)
 
 
 def _session_from_target(target: Any) -> DebugSession | None:

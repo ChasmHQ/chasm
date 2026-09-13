@@ -246,11 +246,8 @@ def test_python_run_resolves_libraries_and_enables_cheatcodes(
 
     captured: dict = {}
 
-    def fake_debug(
-        console, project, target, args, foundry_mode, stop_functions=None, **kwargs
-    ):
+    def fake_debug(console, project, target, args, stop_functions=None, **kwargs):
         captured["project"] = project
-        captured["foundry_mode"] = foundry_mode
         return 0
 
     monkeypatch.setattr(cli, "_debug", fake_debug)
@@ -263,6 +260,4 @@ def test_python_run_resolves_libraries_and_enables_cheatcodes(
     project = captured["project"]
     assert project.artifact("Logger") is not None
     assert any("forge-std/=" in r for r in project.remappings)
-    # console.log and vm.* are intercepted for a .py driver too.
-    assert captured["foundry_mode"] is True
     assert os.path.isdir(tmp_path / "contracts" / "lib" / "forge-std")

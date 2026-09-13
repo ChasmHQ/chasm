@@ -110,7 +110,6 @@ class _ComputationView:
         self._memory = _MemoryView(memory)
         self._gas_meter = _GasView(gas_limit, gas_remaining, gas_refund)
         self.transaction_context = _TransactionView(origin)
-        self.opcodes: dict[int, Any] = {}
 
     def get_gas_remaining(self) -> int:
         return self._gas_meter.gas_remaining
@@ -256,7 +255,6 @@ class RevmDebugSession:
         project: Project,
         breakpoints: BreakpointSet | None = None,
         stop_at_start: bool = True,
-        skip_to_source: bool = True,
     ) -> None:
         self.project = project
         self.breakpoints = breakpoints or BreakpointSet()
@@ -266,9 +264,7 @@ class RevmDebugSession:
         self.line_indexes = build_line_indexes(project.sources.values())
         self.code = CodeIndex(project, self.line_indexes, self.locals, self.breakpoints)
         self.stop_at_start = stop_at_start
-        self.skip_to_source = skip_to_source
         self.stop_on_revert = True
-        self.foundry_mode = True
 
         self._chain = RevmChain()
         self._state = _RevmState(self)
@@ -376,9 +372,6 @@ class RevmDebugSession:
                 self._cmd_q.put(Resume(mode=StepMode.RUN, detach=True))
         if self._thread is not None:
             self._thread.join(timeout=timeout)
-
-    def uninstall(self) -> None:
-        pass
 
     def restart(self, argv: list[str] | None = None, timeout: float = 120.0) -> Any:
         if self._restart_factory is None:

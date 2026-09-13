@@ -1,10 +1,9 @@
 """The cheat registry, and the dispatch that runs one.
 
 Foundry cheatcodes are calls to the magic address `0x7109709E...` (the last 20 bytes of
-keccak256("hevm cheat code")). A real EVM does not know it; forge's revm intercepts the
-call and interprets it. sevm intercepts every message in its patched opcode loop, so
-`apply_cheat` is that interpreter: decode selector + args, mutate live Py-EVM state (or the
-session's cheat bookkeeping), hand back the ABI-encoded return.
+keccak256("hevm cheat code")). A real EVM does not know it; Foundry and sevm intercept the
+call and interpret it. `apply_cheat` decodes the selector and arguments, mutates live REVM
+state or session bookkeeping, and returns ABI-encoded data to the caller.
 
 Handlers register themselves with `@_cheat` at import time, which is why `__init__` imports
 the `cheats` and `assertions` modules for their side effects.

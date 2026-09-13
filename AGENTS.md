@@ -5,15 +5,13 @@ Context for any agent working in this directory. Read before editing.
 ## What this is
 
 `sevm` is a fullscreen, gdb-compatible interactive debugger for Solidity, running on
-Py-EVM. It stops *inside* a running transaction with the frame still alive: read
+REVM. It stops *inside* a running transaction with the frame still alive: read
 uncommitted state, call view functions, rewrite a stack operand before the opcode
 consumes it, mutate storage through Solidity, and force out-of-gas at an exact
-instruction. See `README.md` for user docs and `PLAN.md` for the design and its
-feasibility research.
+instruction. See `README.md` for user docs and `docs/headless.md` for the engine protocol.
 
-This is a self-contained, uv-managed Python project. It grew out of the article demo in
-the parent directory (the Py-EVM `apply_computation` monkeypatch trick) but stands on its
-own here.
+This is a self-contained Rust/Python project managed by Cargo, Maturin, and uv. The REVM
+core is shared by the Python bridge and the headless JSON-RPC server.
 
 ## Layout (src layout)
 
@@ -22,14 +20,16 @@ maps the whole tree. Read those first; `tests/test_layout.py` fails if one goes 
 
 ```
 sevm/
-├── pyproject.toml        # metadata, deps, `sevm` entry point, pytest + hatch config
+├── Cargo.toml            # Rust workspace: core, Python bridge, headless server
+├── pyproject.toml        # metadata, deps, `sevm` entry points, pytest + Maturin config
 ├── uv.lock               # pinned resolution
-├── README.md, PLAN.md    # landing page, design
+├── README.md             # landing page and usage
+├── rust/                 # REVM core, PyO3 bridge, headless JSON-RPC server
 ├── docs/                 # commands, expressions, assembly, Foundry reference
 ├── src/sevm/             # the package (import as `sevm`)
 │   ├── cli.py            # arg parsing + `main()`; `.py` vs `.sol` dispatch in `sevm run`
-│   ├── session/          # the stepping engine: core, patch, stepping, snapshots,
-│   │                     #   framelocals, inspect_ops, code, events
+│   ├── session/          # source debugger over REVM: revm, snapshots, framelocals,
+│   │                     #   code, events
 │   ├── commands/         # the gdb command layer: processor + one module per verb group
 │   ├── compile/          # model, solc, solcbin, wasm, versions, foundry_config, build
 │   ├── evaluate/         # bindings, injection, evaluator
@@ -40,7 +40,9 @@ sevm/
 │   ├── cache.py          # on-disk build cache: unit hashing, partial rebuilds
 │   ├── artifacts.py      # forge-shaped `out/sevm/<File.sol>/<Contract>.json`
 │   ├── libs.py           # dependency resolution: imports -> repo -> clone -> remapping
-│   ├── foundry.py        # Foundry test runner: resolve project, discover, driver
+│   ├── foundry.py        # Foundry test runner: resolve project, discover, REVM driver
+│   ├── provider.py       # synchronous Web3 provider backed by the REVM session
+│   ├── revm_server.py    # `sevm-engine` headless-process entry point
 │   ├── frames.py, srcmap.py, decode.py, disasm.py, dispatch.py
 │   ├── doctor.py         # `sevm doctor`: compiler, runtimes, caches, overrides
 │   ├── breakpoints.py, clipboard.py
@@ -50,23 +52,21 @@ sevm/
 ```
 
 `sevm run` dispatches by extension: `.py` attaches to a web3 driver (below); `.sol`
-compiles + runs a Foundry test. Both paths resolve dependencies the same way and both run
-with `foundry_mode` on. With no `-m` filter it debugs every test in the file: a
+compiles + runs a Foundry test. Both paths resolve dependencies the same way. With no
+`-m` filter it debugs every test in the file: a
 fresh deploy + `setUp` + test per function, a breakpoint on each body, opening at the first
 and stepping to each on `continue`. A test transaction that reverts fails the run
-(`foundry.TestFailed`); eth-tester reports it as `status = 0` rather than raising, so
-without that check a failing assertion looks like a passing test. Function/line breakpoints
+(`foundry.TestFailed`); the Web3 provider reports it as `status = 0` rather than raising,
+so without that check a failing assertion looks like a passing test. Function/line breakpoints
 are contract-scoped (`Breakpoint.contract`), so a shared pc in another same-file contract
 (e.g. a helper's creation code, where the running artifact is unrecognised) does not
 mis-fire them.
 
-Cheatcodes are intercepted in the patched loop right after the precompile check (calls to
-the VM / console addresses); `session.foundry_mode` etches a byte at those addresses so
-Solidity's `extcodesize` guard on `vm.*` calls does not revert before dispatch. A prank is
-applied at the calling opcode (`exec_opcode` swaps the caller's `storage_address`), so
-value, gas and `msg.sender` all follow it as in forge. A `delegateCall` prank swaps the
-caller's `msg.sender` as well, because that is where a delegated frame's sender comes
-from. See README "Foundry tests and cheatcodes" for the user-facing surface and v1 limits.
+The REVM inspector yields calls to the VM and console addresses as host-call events;
+Python dispatches them through the cheat registry and returns the result to REVM. Pranks
+are applied by the Rust inspector before a nested call starts, including sender, origin,
+and delegate-call context. See README "Foundry tests and cheatcodes" for the user-facing
+surface and v1 limits.
 
 ## Library resolution (libs.py)
 
@@ -109,12 +109,11 @@ checker. `test_known_type_agrees_with_the_probe` holds it to that, and `_compile
 back to the probe if a type ever fails to compile.
 
 A Yul builtin typed at the prompt (`mstore(0x80, 1)`, or the explicit `asm ...`) is parsed
-by `assembly/parser.py` and executed by Py-EVM's own opcode functions against the paused
-computation: arguments pushed in EVM order, `opcode_fn(computation=...)` called, result
-read off the top, then the stack restored by slice-assignment (never rebinding
-`Stack.values`, whose `append`/`pop` are cached bound to that list object). Gas is metered,
-reported and then handed back; memory expansion is kept. Yul's own exclusions (`jump`,
-`pc`, `push*`, `dup*`, `swap*`) plus the frame terminators are refused with a reason.
+by `assembly/parser.py` and executed by REVM against a nested interpreter carrying the
+paused frame's memory, environment, return data, and journal. The live stack and gas are
+not consumed; successful state and memory changes are committed. Yul's own exclusions
+(`jump`, `pc`, `push*`, `dup*`, `swap*`) plus the frame terminators are refused with a
+reason.
 
 A cheat argument typed at the prompt is a literal when it reads as one and a Solidity
 expression when it does not: `CommandProcessor._cheat_arg` sends the latter through the
@@ -132,8 +131,8 @@ the help.
 Any command that writes to the VM sets `CommandResult.mutated`, and `execute()` then calls
 `DebugSession.refresh_snapshot()`. A `FrameSnapshot` is a copy taken at the pause, so
 without that step a write to memory, the stack or a local is invisible to the panes until
-the next stop. `_live_view` is the single source of the mutable fields, shared by
-`_build_snapshot` and the `resnapshot` inspect op so the two cannot drift.
+the next stop. The REVM bridge's `snapshot` operation is the source of truth for refreshing
+those mutable fields.
 
 Panes re-centre on their anchor at every stop, but only until you scroll one by hand:
 `Pane.watch_scroll_y` sets `_user_scrolled` for any move the pane did not make itself
@@ -251,25 +250,19 @@ for directory trees only.
 
 ## Dependencies
 
-Declared in `pyproject.toml`. Rule: every third-party package imported under `src/sevm`
-is a direct dependency, not left to transitive resolution — `eth` (py-evm), `eth_abi`,
-`eth_utils`, `eth_account`, `eth_keys`, `rlp` and `packaging` all arrive under something
-else's tree, and are named anyway, so a release that drops one does not take sevm with it.
-`test_packaging.py` walks the imports and fails if one goes undeclared, mapping import name
-to distribution through the installed metadata (`eth` -> py-evm, `solcx` -> py-solc-x).
+Declared in `pyproject.toml` and the Cargo manifests. Rule: every third-party Python
+package imported under `src/sevm` is a direct dependency rather than left to transitive
+resolution. `test_packaging.py` walks the imports and fails if one goes undeclared,
+mapping import names such as `solcx` to their distributions.
 Dev-only tools (`pytest`, `textual-dev`) live in the PEP 735 `[dependency-groups] dev`,
 not in the runtime deps, and are not shipped in the wheel.
 
-The eth-tester stack is named piece by piece (`web3`, `eth-tester`, `py-evm`) instead of
-taken as `web3[tester]`, because that extra requires `eth-hash[pysha3]` -> safe-pysha3,
-a C extension whose wheels are x86_64-only. On arm64 Linux, Apple silicon or Windows it
-builds from source, so an install fails on any machine without a compiler; sevm ran
-nowhere but x86_64 until this was untangled. `eth-hash[pycryptodome]` (wheels everywhere)
-is named for the same reason: it is the keccak backend that remains, and web3 requiring it
-today is not a promise it will tomorrow.
+Do not add `web3[tester]`, `eth-tester`, or `py-evm`: Web3 calls run through
+`provider.RevmProvider`. `eth-hash[pycryptodome]` is named directly so the keccak backend
+sevm relies on is not left to a transitive dependency.
 
-Two files are package data, both loaded relative to their module and both bundled by
-hatchling automatically: the Textual stylesheet `src/sevm/tui/sevm.tcss` and the node
+Two files are package data, both loaded relative to their module and included by the
+Maturin build: the Textual stylesheet `src/sevm/tui/sevm.tcss` and the node
 driver `src/sevm/compile/soljson.js`. If you move or rename either, update `CSS_PATH` in
 `tui/app.py` or `DRIVER` in `compile/wasm.py`, and re-check `uv build` still bundles it.
 Nothing else is: forge-std is no longer vendored.
@@ -301,7 +294,7 @@ what the rest of the package holds rather than a path. Tests and examples use so
 
 `tests/` is a parallel test dir, one file per layer of `src/` (`test_stepping`,
 `test_breakpoints`, `test_commands`, `test_locals`, `test_tui`, ...). `harness.py` compiles
-`tests/contracts/` once per process, deploys over an in-process Py-EVM chain, and owns the
+`tests/contracts/` once per process, deploys over an in-process REVM chain, and owns the
 `Debugger` helper; `conftest.py` holds the fixtures every file shares and `tui_harness.py`
 the Textual pilot helpers. Test files import them with `from harness import ...`, which
 works because `pyproject.toml` sets
@@ -315,7 +308,7 @@ The expected values are not invented, each was read off a run of the same call u
 `forge test`, so the file doubles as sevm's differential record of Foundry behaviour. The
 generated `vm.assert*` overloads are driven from the signature rather than a hand-written
 table, which is the only way 116 of them stay covered. Cheats that touch VM state are
-proven a second time end to end in `test_foundry.py`, where they reach a real Py-EVM
+proven a second time end to end in `test_foundry.py`, where they reach a real REVM
 transaction, which is where the prank and fee-settlement bugs lived. `test_foundry.py`
 also covers the Foundry path itself; `test_libs*.py` cover
 dependency resolution, the compile pipeline around it, and the network-only equivalents;
@@ -350,7 +343,7 @@ are skipped unless `SEVM_NETWORK_TESTS=1`. One of them asserts sevm implements e
 `assert*` the current forge-std declares, so a new overload upstream fails the suite
 rather than surfacing as "unimplemented cheatcode" at run time.
 
-## Invariants — do NOT reintroduce these bugs (each cost a debugging session; detail in PLAN.md §12)
+## Invariants — do NOT reintroduce these bugs
 
 1. The `next` exemption for a function entering its own body.
 2. Inject eval code at the artifact's own `source_range`, not an arbitrary offset.
@@ -367,13 +360,11 @@ rather than surfacing as "unimplemented cheatcode" at run time.
 9. Bind `msg.data`/`msg.sig` from the frame. The injected `__sevm_eval` is reached by a
    real call, so read directly they report *that* call's calldata (`0x365a2820` plus the
    bound locals), silently and plausibly wrong.
-10. Prank a DELEGATECALL by rewriting `msg.sender`, not only `storage_address`. Py-EVM
-    sources a delegated frame's sender from the caller's `msg.sender` and its storage
-    context from `storage_address`; forge's `delegateCall` flag rewrites both, so swapping
-    only the latter moves the storage context and leaves `msg.sender` untouched.
-11. Put `base_fee_per_gas` back before the transaction settles. The coinbase is paid
-    `gas_used * (max_fee_per_gas - base_fee_per_gas)`, so a `vm.fee` above the
-    transaction's own cap pays a negative fee and Py-EVM rejects the negative balance.
+10. Apply a delegate-call prank to both caller identity and target/storage context in the
+    REVM call inputs. Rewriting only one gives the wrong `msg.sender` or `address(this)`.
+11. When an injected opcode returns less memory than the paused frame held, merge it into
+    the original allocation. Replacing the buffer truncates bytes above the opcode's own
+    expansion boundary.
 12. Walk an external wrapper through the payable guard's `JUMPI`, and key the
     implementation on the return tag the wrapper pushes first. Falling through the guard
     reads its revert stub as the end of the wrapper, so every non-payable function
@@ -383,16 +374,17 @@ rather than surfacing as "unimplemented cheatcode" at run time.
     so `referencedDeclaration` comes back as 4294967281 and the two backends' ASTs differ
     for every builtin reference while bytecode, source maps and layouts match exactly.
 
-Underlying Py-EVM monkeypatch gotchas (inherited from the tracer, still apply): restore
-the raw classmethod descriptor not the bound method; stack items are `int` or `bytes`;
-pass explicit `gas=` so web3 does not re-run the tx during estimation.
+REVM integration gotchas: synthetic breakpoints used to track declarations and internal
+jumps must stay hidden in `RUN`; restoring an out-of-gas stack must retain REVM's stack
+capacity; the wrapper-to-body self-jump updates the frame base but a recursive self-call
+pushes a new internal frame; and REVERT pauses only surface while a debugger is armed.
 
 ## Verified environment
 
-web3 7.16.0, py-evm 0.12.1b1, eth-tester 0.13.0b1, py-solc-x 2.0.5, solc 0.8.28, git 2.x,
-forge-std 1.16.2, CPython 3.12. `requires-python = ">=3.10"`. All 798 tests pass as of
-2026-08-30 (5 more with `SEVM_NETWORK_TESTS=1`), that run on linux/arm64 against a native
-arm64 solc, covering every registered cheatcode
+REVM 43.0.2, Rust 1.92.0, Maturin 1.15.0, web3 7.16.0, py-solc-x 2.0.5, solc 0.8.28,
+git 2.x, forge-std 1.16.2, and CPython 3.12. `requires-python = ">=3.10"`; the Rust
+workspace requires 1.91+. All 832 offline tests pass as of 2026-09-14 (5 more with
+`SEVM_NETWORK_TESTS=1`), covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and
 remapping derivation, the assertion engine, the Yul assembly surface, the build cache and
 its artifacts, the snapshot refresh after a mutation, the dispatcher and selector layer,

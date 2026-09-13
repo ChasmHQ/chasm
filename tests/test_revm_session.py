@@ -1,4 +1,4 @@
-"""The source-level Foundry path runs on REVM without a Py-EVM chain."""
+"""The source-level Foundry path running on REVM."""
 
 from __future__ import annotations
 

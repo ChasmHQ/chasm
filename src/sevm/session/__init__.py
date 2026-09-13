@@ -16,32 +16,20 @@ Where things live:
   events.py       the messages the two threads exchange
   code.py         resolving running bytecode back to the source it came from
   revm.py         `DebugSession`: source stepping backed by the Rust engine
-  snapshots.py    building the `FrameSnapshot` the UI renders
+  snapshots.py    building source-level backtraces for `FrameSnapshot`
   framelocals.py  recovering Solidity locals from the EVM stack
 """
 
 from __future__ import annotations
 
-from .events import (
-    Failure,
-    Finished,
-    Inspect,
-    Paused,
-    Resume,
-    SessionError,
-    StepMode,
-)
+from .events import Finished, Paused, Resume, SessionError, StepMode
 from .revm import RevmDebugSession
-from .snapshots import SNAPSHOT_MEMORY_LIMIT
 
 DebugSession = RevmDebugSession
 
 __all__ = [
-    "SNAPSHOT_MEMORY_LIMIT",
     "DebugSession",
-    "Failure",
     "Finished",
-    "Inspect",
     "Paused",
     "Resume",
     "RevmDebugSession",

@@ -2,9 +2,8 @@
 pragma solidity ^0.8.0;
 
 /// @title Vault - a deliberately buggy contract for EVM-level debugging practice.
-/// @notice The article uses Py-EVM to chase low-level EVM/memory bugs that Foundry's
-///         read-only debugger struggles with. This contract seeds one such bug so the
-///         opcode tracer has something concrete to reveal.
+/// @notice This contract seeds a low-level storage bug so the live opcode debugger has
+///         something concrete to reveal.
 contract Vault {
     address public owner;   // storage slot 0
     uint256 public num;     // storage slot 1

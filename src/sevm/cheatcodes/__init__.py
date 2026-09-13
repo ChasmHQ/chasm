@@ -1,8 +1,8 @@
 """Foundry cheatcode engine.
 
 A cheatcode is a call to the magic address `0x7109709E...`; `console.log` is the same idea
-against `0x000000000000000000636F6e736F6c652e6c6f67`. sevm's patched opcode loop intercepts
-both and dispatches here.
+against `0x000000000000000000636F6e736F6c652e6c6f67`. The REVM inspector yields both as
+host calls and the session dispatches them here.
 
 Importing the handler modules is load-bearing, not tidiness: their handlers register
 themselves with `@_cheat` at import time, and without it `apply_cheat` finds an empty table.

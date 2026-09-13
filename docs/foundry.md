@@ -156,7 +156,7 @@ entry, `--no-cache` (or `SEVM_NO_CACHE=1`) writes nothing anywhere.
 
 ## Cheatcodes
 
-Cheatcodes run against live Py-EVM state and `console.log` prints as you step.
+Cheatcodes run against live REVM state and `console.log` prints as you step.
 Implemented:
 
 - block env: `warp roll fee chainId coinbase prevrandao difficulty`, plus the
