@@ -3,11 +3,11 @@ use pyo3::{
     prelude::*,
     types::{PyAny, PyBytes, PyDict, PyList},
 };
-use revm::primitives::{Address, Bytes, U256};
+use revm::primitives::{Address, B256, Bytes, U256};
 use sevm_revm_core::{
-    AccountSpec, Breakpoint, CHEATCODE_ADDRESS, CONSOLE_ADDRESS, ChainConfig, DEFAULT_CALLER,
-    DEFAULT_TARGET, DebugEngine, DebugEvent, FrameContext, FrameKind, PauseReason, SessionConfig,
-    SessionError, Snapshot, TransactionRequest,
+    AccountSpec, Breakpoint, CHEATCODE_ADDRESS, CONSOLE_ADDRESS, ChainConfig, CommandValue,
+    DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine, DebugEvent, FrameContext, FrameKind, PauseReason,
+    SessionConfig, SessionError, Snapshot, StateCommand, TransactionRequest,
 };
 use std::{io, str::FromStr, time::Duration};
 
@@ -31,6 +31,42 @@ fn parse_address(value: &str) -> PyResult<Address> {
 
 fn word(value: U256) -> String {
     format!("0x{value:x}")
+}
+
+fn parse_hash(value: &Bound<'_, PyBytes>) -> PyResult<B256> {
+    if value.len()? != 32 {
+        return Err(PyValueError::new_err("EVM hashes must contain 32 bytes"));
+    }
+    Ok(B256::from_slice(value.as_bytes()))
+}
+
+fn state_value(
+    engine: &DebugEngine,
+    py: Python<'_>,
+    command: StateCommand,
+) -> PyResult<CommandValue> {
+    py.detach(|| engine.state(command)).map_err(python_error)
+}
+
+fn state_word(engine: &DebugEngine, py: Python<'_>, command: StateCommand) -> PyResult<String> {
+    match state_value(engine, py, command)? {
+        CommandValue::Word(value) => Ok(word(value)),
+        _ => unreachable!(),
+    }
+}
+
+fn state_number(engine: &DebugEngine, py: Python<'_>, command: StateCommand) -> PyResult<u64> {
+    match state_value(engine, py, command)? {
+        CommandValue::Number(value) => Ok(value),
+        _ => unreachable!(),
+    }
+}
+
+fn state_bytes(engine: &DebugEngine, py: Python<'_>, command: StateCommand) -> PyResult<Bytes> {
+    match state_value(engine, py, command)? {
+        CommandValue::Bytes(value) => Ok(value),
+        _ => unreachable!(),
+    }
 }
 
 fn frame_kind(kind: FrameKind) -> &'static str {
@@ -307,6 +343,233 @@ impl RevmChain {
         py.detach(|| self.inner.write_storage(key, value))
             .map(word)
             .map_err(python_error)
+    }
+
+    fn read_balance(&self, py: Python<'_>, address: &str) -> PyResult<String> {
+        state_word(
+            &self.inner,
+            py,
+            StateCommand::ReadBalance(parse_address(address)?),
+        )
+    }
+
+    fn write_balance(
+        &self,
+        py: Python<'_>,
+        address: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        state_word(
+            &self.inner,
+            py,
+            StateCommand::WriteBalance {
+                address: parse_address(address)?,
+                value: parse_word(value)?,
+            },
+        )
+    }
+
+    fn read_code_at<'py>(&self, py: Python<'py>, address: &str) -> PyResult<Bound<'py, PyBytes>> {
+        let value = state_bytes(
+            &self.inner,
+            py,
+            StateCommand::ReadCode(parse_address(address)?),
+        )?;
+        Ok(PyBytes::new(py, &value))
+    }
+
+    fn write_code_at(
+        &self,
+        py: Python<'_>,
+        address: &str,
+        code: &Bound<'_, PyBytes>,
+    ) -> PyResult<()> {
+        state_value(
+            &self.inner,
+            py,
+            StateCommand::WriteCode {
+                address: parse_address(address)?,
+                code: Bytes::copy_from_slice(code.as_bytes()),
+            },
+        )?;
+        Ok(())
+    }
+
+    fn read_nonce(&self, py: Python<'_>, address: &str) -> PyResult<u64> {
+        state_number(
+            &self.inner,
+            py,
+            StateCommand::ReadNonce(parse_address(address)?),
+        )
+    }
+
+    fn write_nonce(&self, py: Python<'_>, address: &str, value: u64) -> PyResult<u64> {
+        state_number(
+            &self.inner,
+            py,
+            StateCommand::WriteNonce {
+                address: parse_address(address)?,
+                value,
+            },
+        )
+    }
+
+    fn read_storage_at(
+        &self,
+        py: Python<'_>,
+        address: &str,
+        key: &Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        state_word(
+            &self.inner,
+            py,
+            StateCommand::ReadStorage {
+                address: parse_address(address)?,
+                key: parse_word(key)?,
+            },
+        )
+    }
+
+    fn write_storage_at(
+        &self,
+        py: Python<'_>,
+        address: &str,
+        key: &Bound<'_, PyAny>,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        state_word(
+            &self.inner,
+            py,
+            StateCommand::WriteStorage {
+                address: parse_address(address)?,
+                key: parse_word(key)?,
+                value: parse_word(value)?,
+            },
+        )
+    }
+
+    fn read_transient(
+        &self,
+        py: Python<'_>,
+        address: &str,
+        key: &Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        state_word(
+            &self.inner,
+            py,
+            StateCommand::ReadTransient {
+                address: parse_address(address)?,
+                key: parse_word(key)?,
+            },
+        )
+    }
+
+    fn write_transient(
+        &self,
+        py: Python<'_>,
+        address: &str,
+        key: &Bound<'_, PyAny>,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        state_word(
+            &self.inner,
+            py,
+            StateCommand::WriteTransient {
+                address: parse_address(address)?,
+                key: parse_word(key)?,
+                value: parse_word(value)?,
+            },
+        )
+    }
+
+    fn warm_storage(&self, py: Python<'_>, address: &str, key: &Bound<'_, PyAny>) -> PyResult<()> {
+        state_value(
+            &self.inner,
+            py,
+            StateCommand::WarmStorage {
+                address: parse_address(address)?,
+                key: parse_word(key)?,
+            },
+        )?;
+        Ok(())
+    }
+
+    fn read_block_number(&self, py: Python<'_>) -> PyResult<String> {
+        state_word(&self.inner, py, StateCommand::ReadBlockNumber)
+    }
+
+    fn write_block_number(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String> {
+        state_word(
+            &self.inner,
+            py,
+            StateCommand::WriteBlockNumber(parse_word(value)?),
+        )
+    }
+
+    fn read_timestamp(&self, py: Python<'_>) -> PyResult<String> {
+        state_word(&self.inner, py, StateCommand::ReadTimestamp)
+    }
+
+    fn write_timestamp(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String> {
+        state_word(
+            &self.inner,
+            py,
+            StateCommand::WriteTimestamp(parse_word(value)?),
+        )
+    }
+
+    fn read_base_fee(&self, py: Python<'_>) -> PyResult<u64> {
+        state_number(&self.inner, py, StateCommand::ReadBaseFee)
+    }
+
+    fn write_base_fee(&self, py: Python<'_>, value: u64) -> PyResult<u64> {
+        state_number(&self.inner, py, StateCommand::WriteBaseFee(value))
+    }
+
+    fn read_chain_id(&self, py: Python<'_>) -> PyResult<u64> {
+        state_number(&self.inner, py, StateCommand::ReadChainId)
+    }
+
+    fn write_chain_id(&self, py: Python<'_>, value: u64) -> PyResult<u64> {
+        state_number(&self.inner, py, StateCommand::WriteChainId(value))
+    }
+
+    fn read_coinbase(&self, py: Python<'_>) -> PyResult<String> {
+        let value = state_bytes(&self.inner, py, StateCommand::ReadCoinbase)?;
+        Ok(format!("{:#x}", Address::from_slice(&value)))
+    }
+
+    fn write_coinbase(&self, py: Python<'_>, value: &str) -> PyResult<String> {
+        let address = parse_address(value)?;
+        state_value(&self.inner, py, StateCommand::WriteCoinbase(address))?;
+        Ok(format!("{address:#x}"))
+    }
+
+    fn read_prevrandao<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let value = state_bytes(&self.inner, py, StateCommand::ReadPrevrandao)?;
+        Ok(PyBytes::new(py, &value))
+    }
+
+    fn write_prevrandao<'py>(
+        &self,
+        py: Python<'py>,
+        value: &Bound<'_, PyBytes>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let hash = parse_hash(value)?;
+        let output = state_bytes(&self.inner, py, StateCommand::WritePrevrandao(hash))?;
+        Ok(PyBytes::new(py, &output))
+    }
+
+    fn read_difficulty(&self, py: Python<'_>) -> PyResult<String> {
+        state_word(&self.inner, py, StateCommand::ReadDifficulty)
+    }
+
+    fn write_difficulty(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String> {
+        state_word(
+            &self.inner,
+            py,
+            StateCommand::WriteDifficulty(parse_word(value)?),
+        )
     }
 
     #[pyo3(signature = (bytecode, keep=false))]

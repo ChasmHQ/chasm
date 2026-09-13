@@ -1,10 +1,10 @@
-use revm::primitives::{Address, Bytes, U256};
+use revm::primitives::{Address, B256, Bytes, U256};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sevm_revm_core::{
     AccountSpec, Breakpoint, ChainConfig, CommandValue, DEFAULT_CALLER, DebugCommand, DebugEngine,
     DebugEvent, FrameContext, FrameKind, PauseReason, SessionConfig, SessionError, Snapshot,
-    TransactionKind, TransactionRequest,
+    StateCommand, TransactionKind, TransactionRequest,
 };
 use std::{
     fmt,
@@ -200,6 +200,82 @@ struct HostResponseParams {
     revert: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum StateParams {
+    ReadBalance {
+        address: String,
+    },
+    WriteBalance {
+        address: String,
+        value: String,
+    },
+    ReadCode {
+        address: String,
+    },
+    WriteCode {
+        address: String,
+        code: String,
+    },
+    ReadNonce {
+        address: String,
+    },
+    WriteNonce {
+        address: String,
+        value: u64,
+    },
+    ReadStorage {
+        address: String,
+        key: String,
+    },
+    WriteStorage {
+        address: String,
+        key: String,
+        value: String,
+    },
+    ReadTransient {
+        address: String,
+        key: String,
+    },
+    WriteTransient {
+        address: String,
+        key: String,
+        value: String,
+    },
+    WarmStorage {
+        address: String,
+        key: String,
+    },
+    ReadBlockNumber,
+    WriteBlockNumber {
+        value: String,
+    },
+    ReadTimestamp,
+    WriteTimestamp {
+        value: String,
+    },
+    ReadBaseFee,
+    WriteBaseFee {
+        value: u64,
+    },
+    ReadChainId,
+    WriteChainId {
+        value: u64,
+    },
+    ReadCoinbase,
+    WriteCoinbase {
+        value: String,
+    },
+    ReadPrevrandao,
+    WritePrevrandao {
+        value: String,
+    },
+    ReadDifficulty,
+    WriteDifficulty {
+        value: String,
+    },
+}
+
 fn default_gas_limit() -> u64 {
     100_000
 }
@@ -285,6 +361,7 @@ impl ProtocolServer {
                         "step",
                         "read_storage",
                         "write_storage",
+                        "state",
                         "evaluate",
                         "respond_host",
                         "resume",
@@ -346,6 +423,10 @@ impl ProtocolServer {
                     key: parse_word(&params.key)?,
                     value: parse_word(&params.value)?,
                 })
+            }
+            "state" => {
+                let params: StateParams = parse_params(params)?;
+                self.execute(DebugCommand::State(state_command(params)?))
             }
             "evaluate" => {
                 let params: EvaluateParams = parse_params(params)?;
@@ -564,6 +645,76 @@ fn account_spec(params: AccountParams) -> Result<AccountSpec, ProtocolError> {
     })
 }
 
+fn state_command(params: StateParams) -> Result<StateCommand, ProtocolError> {
+    Ok(match params {
+        StateParams::ReadBalance { address } => StateCommand::ReadBalance(parse_address(&address)?),
+        StateParams::WriteBalance { address, value } => StateCommand::WriteBalance {
+            address: parse_address(&address)?,
+            value: parse_word(&value)?,
+        },
+        StateParams::ReadCode { address } => StateCommand::ReadCode(parse_address(&address)?),
+        StateParams::WriteCode { address, code } => StateCommand::WriteCode {
+            address: parse_address(&address)?,
+            code: decode_bytes(&code)?,
+        },
+        StateParams::ReadNonce { address } => StateCommand::ReadNonce(parse_address(&address)?),
+        StateParams::WriteNonce { address, value } => StateCommand::WriteNonce {
+            address: parse_address(&address)?,
+            value,
+        },
+        StateParams::ReadStorage { address, key } => StateCommand::ReadStorage {
+            address: parse_address(&address)?,
+            key: parse_word(&key)?,
+        },
+        StateParams::WriteStorage {
+            address,
+            key,
+            value,
+        } => StateCommand::WriteStorage {
+            address: parse_address(&address)?,
+            key: parse_word(&key)?,
+            value: parse_word(&value)?,
+        },
+        StateParams::ReadTransient { address, key } => StateCommand::ReadTransient {
+            address: parse_address(&address)?,
+            key: parse_word(&key)?,
+        },
+        StateParams::WriteTransient {
+            address,
+            key,
+            value,
+        } => StateCommand::WriteTransient {
+            address: parse_address(&address)?,
+            key: parse_word(&key)?,
+            value: parse_word(&value)?,
+        },
+        StateParams::WarmStorage { address, key } => StateCommand::WarmStorage {
+            address: parse_address(&address)?,
+            key: parse_word(&key)?,
+        },
+        StateParams::ReadBlockNumber => StateCommand::ReadBlockNumber,
+        StateParams::WriteBlockNumber { value } => {
+            StateCommand::WriteBlockNumber(parse_word(&value)?)
+        }
+        StateParams::ReadTimestamp => StateCommand::ReadTimestamp,
+        StateParams::WriteTimestamp { value } => StateCommand::WriteTimestamp(parse_word(&value)?),
+        StateParams::ReadBaseFee => StateCommand::ReadBaseFee,
+        StateParams::WriteBaseFee { value } => StateCommand::WriteBaseFee(value),
+        StateParams::ReadChainId => StateCommand::ReadChainId,
+        StateParams::WriteChainId { value } => StateCommand::WriteChainId(value),
+        StateParams::ReadCoinbase => StateCommand::ReadCoinbase,
+        StateParams::WriteCoinbase { value } => StateCommand::WriteCoinbase(parse_address(&value)?),
+        StateParams::ReadPrevrandao => StateCommand::ReadPrevrandao,
+        StateParams::WritePrevrandao { value } => {
+            StateCommand::WritePrevrandao(parse_hash(&value)?)
+        }
+        StateParams::ReadDifficulty => StateCommand::ReadDifficulty,
+        StateParams::WriteDifficulty { value } => {
+            StateCommand::WriteDifficulty(parse_word(&value)?)
+        }
+    })
+}
+
 fn parse_address(value: &str) -> Result<Address, ProtocolError> {
     Address::from_str(value)
         .map_err(|error| ProtocolError::invalid_params(format!("invalid address: {error}")))
@@ -578,6 +729,16 @@ fn parse_word(value: &str) -> Result<U256, ProtocolError> {
     }
     U256::from_str_radix(digits, radix)
         .map_err(|error| ProtocolError::invalid_params(format!("invalid EVM word: {error}")))
+}
+
+fn parse_hash(value: &str) -> Result<B256, ProtocolError> {
+    let bytes = decode_bytes(value)?;
+    if bytes.len() != 32 {
+        return Err(ProtocolError::invalid_params(
+            "EVM hashes must contain 32 bytes",
+        ));
+    }
+    Ok(B256::from_slice(&bytes))
 }
 
 fn decode_bytes(value: &str) -> Result<Bytes, ProtocolError> {

@@ -188,14 +188,47 @@ fn delegates_foundry_host_calls_over_json_rpc() {
         request(2, "wait_event", json!({})),
         request(3, "resume", json!({})),
         request(4, "wait_event", json!({})),
-        request(5, "respond_host", json!({})),
-        request(6, "wait_event", json!({})),
-        request(7, "shutdown", json!({})),
+        request(
+            5,
+            "state",
+            json!({ "op": "write_balance", "address": TARGET, "value": "0x2a" }),
+        ),
+        request(
+            6,
+            "state",
+            json!({ "op": "read_balance", "address": TARGET }),
+        ),
+        request(
+            7,
+            "state",
+            json!({ "op": "write_timestamp", "value": "0x1092" }),
+        ),
+        request(8, "state", json!({ "op": "read_timestamp" })),
+        request(
+            9,
+            "state",
+            json!({
+                "op": "write_storage",
+                "address": TARGET,
+                "key": "0x7",
+                "value": "0x8"
+            }),
+        ),
+        request(10, "respond_host", json!({})),
+        request(11, "wait_event", json!({})),
+        request(12, "shutdown", json!({})),
     ]);
 
     assert_eq!(responses[3]["result"]["type"], "host_call");
     assert_eq!(responses[3]["result"]["address"], format!("0x{CHEATCODE}"));
     assert_eq!(responses[3]["result"]["caller"], TARGET);
-    assert_eq!(responses[5]["result"]["type"], "finished");
-    assert_eq!(responses[5]["result"]["success"], true);
+    assert_eq!(responses[4]["result"], "0x2a");
+    assert_eq!(responses[5]["result"], "0x2a");
+    assert_eq!(responses[6]["result"], "0x1092");
+    assert_eq!(responses[7]["result"], "0x1092");
+    assert_eq!(responses[8]["result"], "0x8");
+    assert_eq!(responses[10]["result"]["type"], "finished");
+    assert_eq!(responses[10]["result"]["success"], true);
+    assert_eq!(responses[10]["result"]["storage"][0]["key"], "0x7");
+    assert_eq!(responses[10]["result"]["storage"][0]["value"], "0x8");
 }

@@ -119,6 +119,33 @@ def test_persistent_chain_deploys_and_reuses_state():
             assert chain.snapshot()["memory"][3:5] == b"\xaa\xbb"
             assert chain.write_storage(7, 8) == "0x8"
             assert chain.evaluate(bytes.fromhex("602a5f5260205ff3"))[-1] == 42
+            assert chain.write_balance(address, 99) == "0x63"
+            assert chain.read_balance(address) == "0x63"
+            assert chain.read_code_at(address) == runtime
+            assert chain.write_nonce(address, 12) == 12
+            assert chain.read_nonce(address) == 12
+            assert chain.write_storage_at(address, 9, 10) == "0xa"
+            assert chain.read_storage_at(address, 9) == "0xa"
+            assert chain.write_transient(address, 11, 12) == "0xc"
+            assert chain.read_transient(address, 11) == "0xc"
+            chain.warm_storage(address, 13)
+            assert chain.write_block_number(100) == "0x64"
+            assert chain.read_block_number() == "0x64"
+            assert chain.write_timestamp(200) == "0xc8"
+            assert chain.read_timestamp() == "0xc8"
+            assert chain.write_base_fee(300) == 300
+            assert chain.read_base_fee() == 300
+            assert chain.write_base_fee(0) == 0
+            assert chain.write_chain_id(400) == 400
+            assert chain.read_chain_id() == 400
+            assert chain.write_chain_id(1) == 1
+            assert chain.write_coinbase(address) == address
+            assert chain.read_coinbase() == address
+            randao = bytes.fromhex("44" * 32)
+            assert chain.write_prevrandao(randao) == randao
+            assert chain.read_prevrandao() == randao
+            assert chain.write_difficulty(500) == "0x1f4"
+            assert chain.read_difficulty() == "0x1f4"
         chain.resume()
         finished = chain.wait()
         storage = {(addr, key): value for addr, key, value in finished["storage"]}
