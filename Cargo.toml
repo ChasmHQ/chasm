@@ -1,29 +1,13 @@
-[package]
-name = "chainsmith"
+[workspace]
+members = ["rust/core"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
 
-[[bin]]
-name = "chasm"
-path = "src/main.rs"
-
-[dependencies]
-axum = { version = "0.7", features = ["ws"] }
-tokio = { version = "1", features = ["full"] }
-tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-notify = "6"
-foundry-compilers = { version = "0.19", features = ["svm-solc"] } # auto-install solc based on pragmas
-anyhow = "1.0"
-ethers = "2.0" # or alloy, using ethers for now as it's common with foundry-compilers usually
-futures = "0.3"
-walkdir = "2.5.0"
-clap = { version = "4.5.54", features = ["derive"] }
-include_dir = "0.7.4"
-mime_guess = "2.0.5"
-reqwest = { version = "0.12", features = ["json"] }
-toml = "0.8"
+[workspace.dependencies]
+revm = { version = "=43.0.2", default-features = false, features = ["std"] }
+sevm-revm-core = { path = "rust/core" }
