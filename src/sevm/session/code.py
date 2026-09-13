@@ -86,7 +86,7 @@ class CodeIndex:
     def declpcs_for(
         self, code: bytes, pcmap: PcMap | None, is_create: bool
     ) -> dict[int, LocalVar]:
-        """pc -> declaration AST id for this code object, built once and shared.
+        """pc -> local declaration for this code object, built once and shared.
 
         This is the table that makes local-variable observation affordable: the hook
         does one dict lookup per opcode instead of resolving a source location.

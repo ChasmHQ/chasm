@@ -15,9 +15,12 @@ program. `next` must step over both or it dives into helper functions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .srcmap import Location
+
+if TYPE_CHECKING:
+    from .locals import LocalVar
 
 # AST node types that own a source range we want to name.
 _FUNCTION_NODES = {"FunctionDefinition", "ModifierDefinition"}
@@ -238,9 +241,8 @@ class EvmFrame:
     computation: Any = None
     pc_map: Any = None
     disassembly: Any = None
-    # pc -> AST id of the local variable that instruction allocates. Empty when the code
-    # has no artifact, which is how a frame with no source degrades to no locals.
-    decl_pcs: dict[int, int] = field(default_factory=dict)
+    # pc -> local variable allocated by that instruction.
+    decl_pcs: dict[int, LocalVar] = field(default_factory=dict)
 
     @property
     def internal_depth(self) -> int:

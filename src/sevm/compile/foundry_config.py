@@ -67,7 +67,7 @@ def _load_toml(text: str) -> dict:
             path = line[1:-1].split(".")
             section = data
             for part in path:
-                section = section.setdefault(part.strip(), {})  # type: ignore[assignment]
+                section = section.setdefault(part.strip(), {})
             continue
         if "=" not in line:
             continue

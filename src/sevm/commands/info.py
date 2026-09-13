@@ -136,11 +136,11 @@ def _info_args(proc: CommandProcessor, args: list[str]) -> CommandResult:
         return CommandResult().add(
             "[dim]calldata does not match any function in the ABI[/dim]"
         )
-    signature, params = decoded
+    signature, decoded_params = decoded
     result = CommandResult().add(f"[bold cyan]{signature}[/bold cyan]")
-    if not params:
+    if not decoded_params:
         result.add("[dim](no arguments)[/dim]")
-    for type_name, name, value in params:
+    for type_name, name, value in decoded_params:
         shown = _addr(value) if isinstance(value, bytes) and len(value) == 20 else value
         result.add(
             f"  [cyan]{name or '_':<14}[/cyan] [dim]{type_name}[/dim] = {_escape(str(shown))}"

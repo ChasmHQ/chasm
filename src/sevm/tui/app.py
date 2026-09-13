@@ -455,7 +455,7 @@ class SevmApp(App):
             return
         self.notify(f"copied {what} to the clipboard ({tool})", timeout=3)
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         self.exit()
 
     def on_unmount(self) -> None:

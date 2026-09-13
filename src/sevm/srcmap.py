@@ -55,7 +55,7 @@ def parse_source_map(source_map: str) -> list[SrcMapEntry]:
     if not source_map:
         return []
     entries: list[SrcMapEntry] = []
-    prev = [0, 0, -1, JUMP_NONE, 0]
+    prev: list[int | str] = [0, 0, -1, JUMP_NONE, 0]
     for chunk in source_map.split(";"):
         cur = list(prev)
         if chunk:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import Any
 
 from eth_utils import keccak
 from web3.providers import BaseProvider
+from web3.types import RPCEndpoint, RPCResponse
 
 DEFAULT_ACCOUNT = "0x2000000000000000000000000000000000000002"
 ZERO_ADDRESS = "0x" + "00" * 20
@@ -41,7 +43,7 @@ class RevmProvider(BaseProvider):
     def is_connected(self, show_traceback: bool = False) -> bool:
         return not self.session.finished
 
-    def make_request(self, method: Any, params: Any) -> dict[str, Any]:
+    def make_request(self, method: RPCEndpoint, params: Any) -> RPCResponse:
         self._request_id += 1
         try:
             result = self._dispatch(str(method), list(params))
@@ -192,10 +194,10 @@ class RevmProvider(BaseProvider):
             "baseFeePerGas": _quantity(self.session._chain.read_base_fee()),
         }
 
-    def _result(self, result: Any) -> dict[str, Any]:
+    def _result(self, result: Any) -> RPCResponse:
         return {"jsonrpc": "2.0", "id": self._request_id, "result": result}
 
-    def _error(self, code: int, message: str) -> dict[str, Any]:
+    def _error(self, code: int, message: str) -> RPCResponse:
         return {
             "jsonrpc": "2.0",
             "id": self._request_id,
@@ -206,21 +208,22 @@ class RevmProvider(BaseProvider):
 @contextmanager
 def replace_tester_provider(session: Any):
     import web3
-    import web3.providers.eth_tester
 
-    original_root = web3.EthereumTesterProvider
-    original_module = web3.providers.eth_tester.EthereumTesterProvider
+    web3_module: Any = web3
+    tester_module: Any = importlib.import_module("web3.providers.eth_tester")
+    original_root = web3_module.EthereumTesterProvider
+    original_module = tester_module.EthereumTesterProvider
 
     def factory(*_args: Any, **_kwargs: Any) -> RevmProvider:
         return RevmProvider(session)
 
-    web3.EthereumTesterProvider = factory
-    web3.providers.eth_tester.EthereumTesterProvider = factory
+    web3_module.EthereumTesterProvider = factory
+    tester_module.EthereumTesterProvider = factory
     try:
         yield
     finally:
-        web3.EthereumTesterProvider = original_root
-        web3.providers.eth_tester.EthereumTesterProvider = original_module
+        web3_module.EthereumTesterProvider = original_root
+        tester_module.EthereumTesterProvider = original_module
 
 
 @dataclass(frozen=True)

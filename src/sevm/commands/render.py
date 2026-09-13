@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from typing import Any, cast
 
 from rich.markup import escape as rich_escape
 from rich.text import Text
@@ -122,7 +123,7 @@ def _event_name(abi: Sequence[dict], topics: Sequence[int]) -> str:
         if entry.get("type") != "event":
             continue
         try:
-            if event_abi_to_log_topic(entry) == topic0:
+            if event_abi_to_log_topic(cast(Any, entry)) == topic0:
                 types = ",".join(i["type"] for i in entry.get("inputs", []))
                 return f"{entry['name']}({types})"
         except Exception:

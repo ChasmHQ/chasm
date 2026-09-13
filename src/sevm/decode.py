@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from eth_abi import decode as abi_decode
 from eth_utils import keccak
@@ -97,13 +97,13 @@ def _decode_primitive(
         # bytesN is LEFT-aligned inside its packed region.
         return DecodedValue(label, chunk, "0x" + chunk.hex())
     if label.startswith("int") and not label.startswith("uint"):
-        val = int.from_bytes(chunk, "big", signed=True)
-        return DecodedValue(label, val, str(val))
+        signed_value = int.from_bytes(chunk, "big", signed=True)
+        return DecodedValue(label, signed_value, str(signed_value))
     if label.startswith("enum "):
-        val = int.from_bytes(chunk, "big")
-        return DecodedValue(label, val, str(val))
-    val = int.from_bytes(chunk, "big")
-    return DecodedValue(label, val, str(val))
+        enum_value = int.from_bytes(chunk, "big")
+        return DecodedValue(label, enum_value, str(enum_value))
+    numeric_value = int.from_bytes(chunk, "big")
+    return DecodedValue(label, numeric_value, str(numeric_value))
 
 
 class StorageDecoder:
@@ -346,7 +346,7 @@ def decode_calldata(
         if entry.get("type") != "function":
             continue
         try:
-            if function_abi_to_4byte_selector(entry) != selector:
+            if function_abi_to_4byte_selector(cast(Any, entry)) != selector:
                 continue
         except Exception:
             continue
@@ -389,7 +389,7 @@ def decode_revert(output: bytes, abi: Sequence[dict] | None = None) -> str:
             if entry.get("type") != "error":
                 continue
             try:
-                if function_abi_to_4byte_selector(entry) != selector:
+                if function_abi_to_4byte_selector(cast(Any, entry)) != selector:
                     continue
                 types = _abi_types(entry.get("inputs", []))
                 values = abi_decode(types, output[4:]) if types else ()

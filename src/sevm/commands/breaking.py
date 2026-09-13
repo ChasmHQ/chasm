@@ -32,10 +32,13 @@ def _make_break(
         snap = proc.require_stop()
         if not snap.has_source:
             return CommandResult(error="no source here; use `break *0xPC`")
+        source_key = snap.source_key
+        if source_key is None:
+            return CommandResult(error="no source here; use `break *0xPC`")
         bp, line = proc.session.break_at_line(
-            snap.source_key, snap.line, temporary=temporary, condition=condition
+            source_key, snap.line, temporary=temporary, condition=condition
         )
-        return result.add(f"Breakpoint {bp.number} at {snap.source_key}:{line}")
+        return result.add(f"Breakpoint {bp.number} at {source_key}:{line}")
 
     spec = args[0]
     if spec.startswith("*"):
