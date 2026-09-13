@@ -19,7 +19,7 @@ to `9`, resumes, and reads the committed storage from the finish event:
 $ uv run sevm-engine < examples/headless-session.jsonl
 {"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","step","read_storage","write_storage","evaluate","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
 {"id":2,"jsonrpc":"2.0","result":{"started":true}}
-{"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","depth":0,"gas_remaining":78994,"memory":"0x","opcode":85,"pc":4,"reason":"breakpoint","stack":["0x0","0x1"]},"type":"paused"}}
+{"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","calldata":"0x","caller":"0x2000000000000000000000000000000000000002","code_address":"0x1000000000000000000000000000000000000001","depth":0,"frames":[{"address":"0x1000000000000000000000000000000000000001","calldata":"0x","caller":"0x2000000000000000000000000000000000000002","code":"0x600160005500","code_address":"0x1000000000000000000000000000000000000001","depth":0,"gas_limit":79000,"gas_remaining":78994,"is_static":false,"kind":"call","opcode":85,"pc":4,"value":"0x0"}],"gas_limit":79000,"gas_refund":0,"gas_remaining":78994,"gas_used":6,"is_static":false,"memory":"0x","memory_size":0,"mnemonic":"SSTORE","opcode":85,"origin":"0x2000000000000000000000000000000000000002","pc":4,"reason":"breakpoint","stack":["0x0","0x1"],"value":"0x0"},"type":"paused"}}
 {"id":4,"jsonrpc":"2.0","result":"0x9"}
 {"id":5,"jsonrpc":"2.0","result":null}
 {"id":6,"jsonrpc":"2.0","result":{"created_address":null,"gas_used":43106,"output":"0x","storage":[{"address":"0x1000000000000000000000000000000000000001","key":"0x0","value":"0x9"}],"success":true,"type":"finished"}}
@@ -116,18 +116,48 @@ A pause event contains a snapshot of the frame that is still executing:
   "snapshot": {
     "reason": "breakpoint",
     "address": "0x1000000000000000000000000000000000000001",
+    "code_address": "0x1000000000000000000000000000000000000001",
+    "caller": "0x2000000000000000000000000000000000000002",
+    "origin": "0x2000000000000000000000000000000000000002",
+    "value": "0x0",
+    "calldata": "0x",
+    "is_static": false,
     "depth": 0,
     "pc": 4,
     "opcode": 85,
+    "mnemonic": "SSTORE",
+    "gas_limit": 79000,
     "gas_remaining": 78994,
+    "gas_used": 6,
+    "gas_refund": 0,
     "stack": ["0x0", "0x1"],
-    "memory": "0x"
+    "memory_size": 0,
+    "memory": "0x",
+    "frames": [
+      {
+        "depth": 0,
+        "kind": "call",
+        "address": "0x1000000000000000000000000000000000000001",
+        "code_address": "0x1000000000000000000000000000000000000001",
+        "caller": "0x2000000000000000000000000000000000000002",
+        "value": "0x0",
+        "calldata": "0x",
+        "is_static": false,
+        "pc": 4,
+        "opcode": 85,
+        "gas_limit": 79000,
+        "gas_remaining": 78994,
+        "code": "0x600160005500"
+      }
+    ]
   }
 }
 ```
 
 `reason` is `breakpoint`, `step`, or `out_of_gas`. A finish event contains `success`,
-`gas_used`, `output`, and the changed storage slots. A failed event contains a `message`.
+`gas_used`, `output`, and the changed storage slots. The `frames` array runs from the
+outermost frame to the paused frame and retains each caller's last program counter. A
+failed event contains a `message`.
 
 Errors use the JSON-RPC error shape. The server stays alive after parse, request, method,
 parameter, engine, and session-state errors:
