@@ -1,9 +1,9 @@
-"""sevm: an interactive EVM playground on Py-EVM, built for red-team dynamic analysis.
+"""sevm: an interactive EVM playground on REVM, built for red-team dynamic analysis.
 
 Where things live:
 
   cli.py         argument parsing and `main()`; `.py` vs `.sol` dispatch
-  session/       the stepping engine: the Py-EVM patch, the threads, the stop policy
+  session/       the source-level REVM session and legacy compatibility engine
   commands/      the gdb-style command layer both frontends drive
   evaluate/      Solidity expression evaluation at a breakpoint
   assembly/      Yul typed at the prompt, run against the live frame
@@ -24,6 +24,7 @@ Where things live:
   foundry.py     the Foundry test runner
   frames.py      EVM and Solidity frames, and the snapshot handed to the UI
   libs.py        dependency resolution: imports -> repo -> clone -> remapping
+  provider.py    the REVM-backed Web3 provider for Python driver scripts
   revm_server.py the headless REVM JSON-RPC process (`sevm-engine`)
   srcmap.py      solc source maps: pc <-> source location
 """

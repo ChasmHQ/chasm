@@ -141,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--engine",
         choices=("revm", "pyevm"),
         default=None,
-        help="execution engine; defaults to REVM for Foundry tests and Py-EVM for scripts",
+        help="execution engine; defaults to REVM (Py-EVM is a temporary fallback)",
     )
 
     compile_cmd = sub.add_parser(
@@ -309,14 +309,9 @@ def _warn_if_declined(console: Any, prepared: Any) -> None:
 
 def _run_python(console: Any, args: argparse.Namespace) -> int:
     from .foundry import prepare_project
+    from .provider import RevmWeb3Driver
 
     script = args.script
-    if args.engine == "revm":
-        console.print(
-            "[bold red]REVM cannot run a web3.py driver yet[/bold red]. "
-            "Use --engine pyevm."
-        )
-        return 1
     contracts = _find_contracts_dir(script, args.contracts)
     if not os.path.isdir(contracts):
         console.print(
@@ -372,15 +367,22 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
     if isinstance(expanded, str):
         console.print(f"[bold red]{expanded}[/bold red]", highlight=False)
         return 1
-    target = _run_script(script, expanded)
+    use_revm = args.engine != "pyevm"
+
+    def restart_factory(argv: list[str]) -> Any:
+        target = _run_script(script, argv)
+        return RevmWeb3Driver(target) if use_revm else target
+
+    target = restart_factory(expanded)
     return _debug(
         console,
         project,
         target,
         args,
         foundry_mode=True,
-        restart_factory=lambda argv: _run_script(script, argv),
+        restart_factory=restart_factory,
         restart_argv=expanded,
+        session_class=RevmDebugSession if use_revm else DebugSession,
     )
 
 

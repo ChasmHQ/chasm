@@ -5,6 +5,7 @@ from __future__ import annotations
 import queue
 import threading
 import traceback
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, cast
@@ -276,6 +277,8 @@ class RevmDebugSession:
         self._cmd_q: queue.Queue[Resume] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._eval_hook: Any = None
+        self._restart_factory: Callable[[list[str]], Any] | None = None
+        self._restart_argv: list[str] = []
         self._mode = StepMode.RUN
         self._mode_depth = 0
         self._mode_internal = 0
@@ -283,6 +286,7 @@ class RevmDebugSession:
         self._mode_target_pc: int | None = None
         self._pending_count = 1
         self._pending_watches: dict[int, int | None] = {}
+        self._opening_stop_pending = stop_at_start
         self._detached = False
 
         self.armed = False
@@ -297,6 +301,14 @@ class RevmDebugSession:
 
     def set_eval_hook(self, hook: Any) -> None:
         self._eval_hook = hook
+
+    def set_restart_factory(
+        self,
+        factory: Callable[[list[str]], Any],
+        initial_argv: Sequence[str],
+    ) -> None:
+        self._restart_factory = factory
+        self._restart_argv = list(initial_argv)
 
     def start(self, target: Any) -> None:
         if self._thread is not None:
@@ -358,6 +370,56 @@ class RevmDebugSession:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
 
+    def restart(self, argv: list[str] | None = None, timeout: float = 120.0) -> Any:
+        if self._restart_factory is None:
+            raise SessionError(
+                "no restart target; the session was not started by `sevm run`"
+            )
+        if self._thread is not None and not self.finished:
+            self._cmd_q.put(Resume(mode=StepMode.RUN, detach=True))
+            while True:
+                event = self.wait(timeout=timeout)
+                if event is None:
+                    raise SessionError("the current run did not finish; restart aborted")
+                if isinstance(event, Finished):
+                    break
+                self._cmd_q.put(Resume(mode=StepMode.RUN, detach=True))
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        for events in (self._event_q, self._cmd_q):
+            while True:
+                try:
+                    events.get_nowait()
+                except queue.Empty:
+                    break
+        self._thread = None
+        self._detached = False
+        self.finished = False
+        self.armed = False
+        self.last_snapshot = None
+        self.exit_error = None
+        self.last_revert = None
+        self.estimations = 0
+        self.step_index = 0
+        self.gas_by_line.clear()
+        self.gas_by_opcode.clear()
+        self._mode = StepMode.RUN
+        self._mode_depth = 0
+        self._mode_internal = 0
+        self._mode_key = None
+        self._mode_target_pc = None
+        self._pending_count = 1
+        self._pending_watches.clear()
+        self._opening_stop_pending = self.stop_at_start
+        for watchpoint in self.breakpoints.active_watchpoints():
+            watchpoint.initialised = False
+            watchpoint.old_value = None
+        if argv is not None:
+            self._restart_argv = list(argv)
+        self.reset_chain()
+        self.start(self._restart_factory(self._restart_argv))
+        return self.wait(timeout=timeout)
+
     def reset_chain(self) -> None:
         self._chain = RevmChain()
         self._deployed.clear()
@@ -381,6 +443,35 @@ class RevmDebugSession:
         result = self._drive_transaction()
         artifact = self._deployed.get(address.lower())
         self._require_success(result, what, artifact)
+        return result
+
+    def transact(
+        self,
+        *,
+        to: str | None,
+        data: bytes = b"",
+        caller: str | None = None,
+        value: int = 0,
+        gas_limit: int = 30_000_000,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        self._sync_breakpoints()
+        kwargs = {
+            "caller": caller,
+            "value": value,
+            "gas_limit": gas_limit,
+            "commit": commit,
+        }
+        if to is None:
+            self._chain.create(data, **kwargs)
+        else:
+            self._chain.call(to, data, **kwargs)
+        result = self._drive_transaction()
+        created = result.get("created_address")
+        if commit and result.get("success") and created:
+            artifact = self.code.artifact_for(data, is_create=True)
+            if artifact is not None:
+                self._deployed[created.lower()] = artifact
         return result
 
     def _require_success(self, result: dict[str, Any], what: str, artifact: Any) -> None:
@@ -419,6 +510,7 @@ class RevmDebugSession:
             if not self._should_surface(event, snapshot, hits):
                 self._continue_raw()
                 continue
+            self._opening_stop_pending = False
             self.last_snapshot = snapshot
             self._event_q.put(Paused(snapshot))
             command = self._cmd_q.get()
@@ -611,6 +703,14 @@ class RevmDebugSession:
         hits: tuple[int, ...],
     ) -> bool:
         if snapshot.stop_reason == "watchpoint":
+            return True
+        if (
+            self._opening_stop_pending
+            and not self.breakpoints.breakpoints
+            and snapshot.has_source
+            and not self._is_dispatcher(snapshot)
+        ):
+            self._opening_stop_pending = False
             return True
         reason = raw["reason"]
         if reason == "out_of_gas":
@@ -909,6 +1009,16 @@ class RevmDebugSession:
                     (_ANY_ADDRESS, pc)
                     for pc in self.code.declpcs_for(code, pc_map, is_create)
                 )
+                if (
+                    self._opening_stop_pending
+                    and not self.breakpoints.breakpoints
+                    and pc_map is not None
+                ):
+                    points.update(
+                        (_ANY_ADDRESS, pc)
+                        for pc in pc_map.pcs
+                        if (loc := pc_map.at(pc)) is not None and not loc.is_generated
+                    )
                 points.update(
                     (_ANY_ADDRESS, instruction.pc)
                     for instruction in disassembly.instructions
