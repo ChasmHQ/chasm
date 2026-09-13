@@ -19,7 +19,7 @@ to `9`, resumes, and reads the committed storage from the finish event:
 $ uv run sevm-engine < examples/headless-session.jsonl
 {"id":1,"jsonrpc":"2.0","result":{"methods":["hello","start","wait_event","snapshot","set_stack","write_memory","set_gas","set_pc","read_storage","write_storage","evaluate","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
 {"id":2,"jsonrpc":"2.0","result":{"started":true}}
-{"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","depth":1,"gas_remaining":78994,"memory":"0x","opcode":85,"pc":4,"reason":"breakpoint","stack":["0x0","0x1"]},"type":"paused"}}
+{"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","depth":0,"gas_remaining":78994,"memory":"0x","opcode":85,"pc":4,"reason":"breakpoint","stack":["0x0","0x1"]},"type":"paused"}}
 {"id":4,"jsonrpc":"2.0","result":"0x9"}
 {"id":5,"jsonrpc":"2.0","result":null}
 {"id":6,"jsonrpc":"2.0","result":{"gas_used":43106,"output":"0x","storage":[{"address":"0x1000000000000000000000000000000000000001","key":"0x0","value":"0x9"}],"success":true,"type":"finished"}}
@@ -107,7 +107,7 @@ A pause event contains a snapshot of the frame that is still executing:
   "snapshot": {
     "reason": "breakpoint",
     "address": "0x1000000000000000000000000000000000000001",
-    "depth": 1,
+    "depth": 0,
     "pc": 4,
     "opcode": 85,
     "gas_remaining": 78994,
