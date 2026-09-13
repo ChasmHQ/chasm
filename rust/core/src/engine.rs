@@ -434,20 +434,26 @@ fn execute_state_command(
             account.set_nonce(value);
             Ok(CommandValue::Number(value))
         }
-        StateCommand::ReadStorage { address, key } => context
-            .journal_mut()
-            .sload(address, key)
-            .map(|value| CommandValue::Word(value.data))
-            .map_err(invalid),
+        StateCommand::ReadStorage { address, key } => {
+            let journal = context.journal_mut();
+            journal.load_account(address).map_err(invalid)?;
+            journal
+                .sload(address, key)
+                .map(|value| CommandValue::Word(value.data))
+                .map_err(invalid)
+        }
         StateCommand::WriteStorage {
             address,
             key,
             value,
-        } => context
-            .journal_mut()
-            .sstore(address, key, value)
-            .map(|_| CommandValue::Word(value))
-            .map_err(invalid),
+        } => {
+            let journal = context.journal_mut();
+            journal.load_account(address).map_err(invalid)?;
+            journal
+                .sstore(address, key, value)
+                .map(|_| CommandValue::Word(value))
+                .map_err(invalid)
+        }
         StateCommand::ReadTransient { address, key } => Ok(CommandValue::Word(
             context.journal_mut().tload(address, key),
         )),
@@ -459,11 +465,14 @@ fn execute_state_command(
             context.journal_mut().tstore(address, key, value);
             Ok(CommandValue::Word(value))
         }
-        StateCommand::WarmStorage { address, key } => context
-            .journal_mut()
-            .sload(address, key)
-            .map(|_| CommandValue::None)
-            .map_err(invalid),
+        StateCommand::WarmStorage { address, key } => {
+            let journal = context.journal_mut();
+            journal.load_account(address).map_err(invalid)?;
+            journal
+                .sload(address, key)
+                .map(|_| CommandValue::None)
+                .map_err(invalid)
+        }
         StateCommand::ReadBlockNumber => Ok(CommandValue::Word(context.block.number)),
         StateCommand::WriteBlockNumber(value) => {
             context.block.number = value;
