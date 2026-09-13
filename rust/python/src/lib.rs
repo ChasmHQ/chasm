@@ -5,10 +5,9 @@ use pyo3::{
 };
 use revm::primitives::{Bytes, U256};
 use sevm_revm_core::{
-    DEFAULT_TARGET, DebugEvent, PauseReason, PrototypeSession, SessionConfig, SessionError,
-    Snapshot,
+    DEFAULT_TARGET, DebugEngine, DebugEvent, PauseReason, SessionConfig, SessionError, Snapshot,
 };
-use std::time::Duration;
+use std::{io, time::Duration};
 
 fn python_error(error: SessionError) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
@@ -84,7 +83,7 @@ fn event_dict<'py>(py: Python<'py>, event: DebugEvent) -> PyResult<Bound<'py, Py
 
 #[pyclass(module = "sevm._revm")]
 struct RevmSession {
-    inner: PrototypeSession,
+    inner: DebugEngine,
 }
 
 #[pymethods]
@@ -97,7 +96,7 @@ impl RevmSession {
                 .with_breakpoint(DEFAULT_TARGET, stop_pc);
         config.gas_limit = gas_limit;
         Self {
-            inner: PrototypeSession::start(config),
+            inner: DebugEngine::start(config),
         }
     }
 
@@ -195,8 +194,18 @@ fn revm_version() -> &'static str {
     "43.0.2"
 }
 
+#[pyfunction]
+fn serve_stdio(py: Python<'_>) -> PyResult<()> {
+    py.detach(|| {
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        sevm_revm_headless::serve(stdin.lock(), stdout.lock())
+    })
+    .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+}
+
 #[pymodule]
 mod _revm {
     #[pymodule_export]
-    use super::{RevmSession, revm_version};
+    use super::{RevmSession, revm_version, serve_stdio};
 }

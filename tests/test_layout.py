@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.machinery
 import os
 import pkgutil
 import re
@@ -60,6 +61,12 @@ def test_relative_imports_point_at_a_real_module():
             for f in os.listdir(pkg)
             if f.endswith(".py") or os.path.isdir(os.path.join(pkg, f))
         }
+        siblings.update(
+            f.removesuffix(suffix)
+            for f in os.listdir(pkg)
+            for suffix in importlib.machinery.EXTENSION_SUFFIXES
+            if f.endswith(suffix)
+        )
         for node in ast.walk(_parse(path)):
             if not isinstance(node, ast.ImportFrom) or node.level != 1 or not node.module:
                 continue

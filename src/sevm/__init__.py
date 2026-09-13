@@ -24,6 +24,7 @@ Where things live:
   foundry.py     the Foundry test runner
   frames.py      EVM and Solidity frames, and the snapshot handed to the UI
   libs.py        dependency resolution: imports -> repo -> clone -> remapping
+  revm_server.py the headless REVM JSON-RPC process (`sevm-engine`)
   srcmap.py      solc source maps: pc <-> source location
 """
 

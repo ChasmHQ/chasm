@@ -53,6 +53,7 @@ dependencies = [
 
 [project.scripts]
 sevm = "sevm.cli:main"
+sevm-engine = "sevm.revm_server:main"
 
 [project.urls]
 Homepage = "https://github.com/your-org/sevm"

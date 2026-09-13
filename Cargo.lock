@@ -2616,6 +2616,7 @@ dependencies = [
  "pyo3",
  "revm",
  "sevm-revm-core",
+ "sevm-revm-headless",
 ]
 
 [[package]]

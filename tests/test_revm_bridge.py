@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 import threading
 import time
 
@@ -43,3 +46,21 @@ def test_wait_releases_the_gil():
     assert not waiter.is_alive()
     assert result[0]["type"] == "finished"
     assert revm_version() == "43.0.2"
+
+
+def test_installed_headless_launcher_uses_json_rpc():
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "hello", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}},
+    ]
+    result = subprocess.run(
+        [sys.executable, "-m", "sevm.revm_server"],
+        input="".join(json.dumps(request) + "\n" for request in requests),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    responses = [json.loads(line) for line in result.stdout.splitlines()]
+    assert result.stderr == ""
+    assert responses[0]["result"]["protocol"] == "sevm-debugger/1"
+    assert responses[1]["result"] is None
