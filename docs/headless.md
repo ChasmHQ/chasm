@@ -17,7 +17,7 @@ to `9`, resumes, and reads the committed storage from the finish event:
 
 ```bash
 $ uv run sevm-engine < examples/headless-session.jsonl
-{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","read_storage","write_storage","evaluate","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
+{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","step","read_storage","write_storage","evaluate","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
 {"id":2,"jsonrpc":"2.0","result":{"started":true}}
 {"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","depth":0,"gas_remaining":78994,"memory":"0x","opcode":85,"pc":4,"reason":"breakpoint","stack":["0x0","0x1"]},"type":"paused"}}
 {"id":4,"jsonrpc":"2.0","result":"0x9"}
@@ -62,6 +62,7 @@ after sending its response.
 | `write_memory` | `{"offset":64,"data":"0x1234"}` | Bytes written |
 | `set_gas` | `{"gas":50000}` | New remaining gas |
 | `set_pc` | `{"pc":16}` | New program counter, which must be a `JUMPDEST` |
+| `step` | `{"count":1}` | `null`; execution pauses before the next opcode |
 | `read_storage` | `{"key":"0x0"}` | Storage word |
 | `write_storage` | `{"key":"0x0","value":"0x9"}` | Written word |
 | `evaluate` | `{"bytecode":"0x...","keep":false}` | Returned bytes |
@@ -125,8 +126,8 @@ A pause event contains a snapshot of the frame that is still executing:
 }
 ```
 
-`reason` is `breakpoint` or `out_of_gas`. A finish event contains `success`, `gas_used`,
-`output`, and the changed storage slots. A failed event contains a `message`.
+`reason` is `breakpoint`, `step`, or `out_of_gas`. A finish event contains `success`,
+`gas_used`, `output`, and the changed storage slots. A failed event contains a `message`.
 
 Errors use the JSON-RPC error shape. The server stays alive after parse, request, method,
 parameter, engine, and session-state errors:
