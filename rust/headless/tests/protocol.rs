@@ -238,3 +238,40 @@ fn delegates_foundry_host_calls_over_json_rpc() {
     assert_eq!(responses[11]["result"]["storage"][0]["key"], "0x7");
     assert_eq!(responses[11]["result"]["storage"][0]["value"], "0x8");
 }
+
+#[test]
+fn evaluates_with_frame_inputs_over_json_rpc() {
+    let responses = run(&[
+        request(
+            1,
+            "start",
+            json!({
+                "entry": TARGET,
+                "accounts": [{ "address": TARGET, "code": "0x00" }],
+                "breakpoints": [{ "address": TARGET, "pc": 0 }],
+            }),
+        ),
+        request(2, "wait_event", json!({})),
+        request(
+            3,
+            "evaluate_call",
+            json!({
+                "bytecode": "0x365f5260205ff3",
+                "data": "0x01020304",
+                "caller": CALLER,
+                "value": "0x2a"
+            }),
+        ),
+        request(4, "resume", json!({})),
+        request(5, "wait_event", json!({})),
+        request(6, "shutdown", json!({})),
+    ]);
+
+    assert_eq!(responses[2]["result"]["success"], true);
+    assert_eq!(
+        responses[2]["result"]["output"],
+        format!("0x{}04", "00".repeat(31))
+    );
+    assert!(responses[2]["result"]["gas_used"].as_u64().unwrap() > 0);
+    assert_eq!(responses[4]["result"]["type"], "finished");
+}

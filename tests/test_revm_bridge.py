@@ -119,6 +119,14 @@ def test_persistent_chain_deploys_and_reuses_state():
             assert chain.snapshot()["memory"][3:5] == b"\xaa\xbb"
             assert chain.write_storage(7, 8) == "0x8"
             assert chain.evaluate(bytes.fromhex("602a5f5260205ff3"))[-1] == 42
+            evaluated = chain.evaluate_call(
+                bytes.fromhex("365f5260205ff3"),
+                b"\x01\x02\x03\x04",
+                "0x2000000000000000000000000000000000000002",
+            )
+            assert evaluated["success"]
+            assert int.from_bytes(evaluated["output"], "big") == 4
+            assert evaluated["gas_used"] > 0
             assert chain.write_balance(address, 99) == "0x63"
             assert chain.read_balance(address) == "0x63"
             assert chain.read_code_at(address) == runtime

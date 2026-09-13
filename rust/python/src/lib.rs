@@ -611,6 +611,35 @@ impl RevmChain {
         Ok(PyBytes::new(py, &output))
     }
 
+    #[pyo3(signature = (bytecode, data, caller, value=None, gas_limit=1_000_000, keep=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_call<'py>(
+        &self,
+        py: Python<'py>,
+        bytecode: &Bound<'_, PyBytes>,
+        data: &Bound<'_, PyBytes>,
+        caller: &str,
+        value: Option<&Bound<'_, PyAny>>,
+        gas_limit: u64,
+        keep: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let bytecode = Bytes::copy_from_slice(bytecode.as_bytes());
+        let data = Bytes::copy_from_slice(data.as_bytes());
+        let caller = parse_address(caller)?;
+        let value = value.map(parse_word).transpose()?.unwrap_or(U256::ZERO);
+        let result = py
+            .detach(|| {
+                self.inner
+                    .evaluate_call(bytecode, data, caller, value, gas_limit, keep)
+            })
+            .map_err(python_error)?;
+        let output = PyDict::new(py);
+        output.set_item("success", result.success)?;
+        output.set_item("output", PyBytes::new(py, &result.output))?;
+        output.set_item("gas_used", result.gas_used)?;
+        Ok(output)
+    }
+
     #[pyo3(signature = (output=None, revert=false))]
     fn respond_host(
         &self,

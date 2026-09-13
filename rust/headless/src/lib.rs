@@ -193,6 +193,21 @@ struct EvaluateParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct EvaluateCallParams {
+    bytecode: String,
+    #[serde(default = "empty_bytes")]
+    data: String,
+    caller: String,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default = "default_evaluation_gas_limit")]
+    gas_limit: u64,
+    #[serde(default)]
+    keep: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HostResponseParams {
     #[serde(default = "empty_bytes")]
     output: String,
@@ -307,6 +322,10 @@ fn default_transaction_gas_limit() -> u64 {
     30_000_000
 }
 
+fn default_evaluation_gas_limit() -> u64 {
+    1_000_000
+}
+
 fn empty_bytes() -> String {
     "0x".to_owned()
 }
@@ -378,6 +397,7 @@ impl ProtocolServer {
                         "write_storage",
                         "state",
                         "evaluate",
+                        "evaluate_call",
                         "set_prank",
                         "respond_host",
                         "resume",
@@ -448,6 +468,22 @@ impl ProtocolServer {
                 let params: EvaluateParams = parse_params(params)?;
                 self.execute(DebugCommand::Evaluate {
                     code: decode_bytes(&params.bytecode)?,
+                    keep: params.keep,
+                })
+            }
+            "evaluate_call" => {
+                let params: EvaluateCallParams = parse_params(params)?;
+                self.execute(DebugCommand::EvaluateCall {
+                    code: decode_bytes(&params.bytecode)?,
+                    data: decode_bytes(&params.data)?,
+                    caller: parse_address(&params.caller)?,
+                    value: params
+                        .value
+                        .as_deref()
+                        .map(parse_word)
+                        .transpose()?
+                        .unwrap_or(U256::ZERO),
+                    gas_limit: params.gas_limit,
                     keep: params.keep,
                 })
             }
@@ -819,6 +855,11 @@ fn command_value_json(value: CommandValue) -> Value {
         CommandValue::Word(value) => Value::String(word(value)),
         CommandValue::Number(value) => Value::from(value),
         CommandValue::Bytes(value) => Value::String(hex_bytes(&value)),
+        CommandValue::Evaluation(value) => json!({
+            "success": value.success,
+            "output": hex_bytes(&value.output),
+            "gas_used": value.gas_used,
+        }),
     }
 }
 
