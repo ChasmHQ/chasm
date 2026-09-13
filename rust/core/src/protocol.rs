@@ -26,6 +26,12 @@ impl AccountSpec {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ChainConfig {
+    pub accounts: Vec<AccountSpec>,
+    pub breakpoints: Vec<Breakpoint>,
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
     pub entry: Address,
@@ -33,6 +39,43 @@ pub struct SessionConfig {
     pub gas_limit: u64,
     pub accounts: Vec<AccountSpec>,
     pub breakpoints: Vec<Breakpoint>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransactionKind {
+    Call(Address),
+    Create,
+}
+
+#[derive(Clone, Debug)]
+pub struct TransactionRequest {
+    pub caller: Address,
+    pub kind: TransactionKind,
+    pub gas_limit: u64,
+    pub value: U256,
+    pub data: Bytes,
+}
+
+impl TransactionRequest {
+    pub fn call(caller: Address, target: Address, data: impl Into<Bytes>) -> Self {
+        Self {
+            caller,
+            kind: TransactionKind::Call(target),
+            gas_limit: 100_000,
+            value: U256::ZERO,
+            data: data.into(),
+        }
+    }
+
+    pub fn create(caller: Address, init_code: impl Into<Bytes>) -> Self {
+        Self {
+            caller,
+            kind: TransactionKind::Create,
+            gas_limit: 3_000_000,
+            value: U256::ZERO,
+            data: init_code.into(),
+        }
+    }
 }
 
 impl SessionConfig {
@@ -87,6 +130,7 @@ pub struct Finished {
     pub success: bool,
     pub gas_used: u64,
     pub output: Bytes,
+    pub created_address: Option<Address>,
     pub storage: Vec<StorageSlot>,
 }
 

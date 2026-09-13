@@ -3,8 +3,8 @@ use revm::{
     primitives::{Address, Bytes, U256, address, keccak256},
 };
 use sevm_revm_core::{
-    AccountSpec, CHEATCODE_ADDRESS, DEFAULT_TARGET, DebugEvent, PauseReason, PrototypeSession,
-    SessionConfig,
+    AccountSpec, Breakpoint, CHEATCODE_ADDRESS, ChainConfig, DEFAULT_CALLER, DEFAULT_TARGET,
+    DebugEngine, DebugEvent, PauseReason, PrototypeSession, SessionConfig, TransactionRequest,
 };
 use std::time::Duration;
 
@@ -176,6 +176,72 @@ fn speculative_execution_reverts_its_journal_checkpoint() {
 }
 
 #[test]
+fn persists_state_across_create_and_call_transactions() {
+    let runtime = [
+        &[opcode::JUMPDEST; 16][..],
+        &[
+            opcode::PUSH0,
+            opcode::SLOAD,
+            opcode::PUSH1,
+            1,
+            opcode::ADD,
+            opcode::PUSH0,
+            opcode::SSTORE,
+            opcode::STOP,
+        ],
+    ]
+    .concat();
+    let mut init_code = vec![
+        opcode::PUSH1,
+        runtime.len() as u8,
+        opcode::PUSH1,
+        10,
+        opcode::PUSH0,
+        opcode::CODECOPY,
+        opcode::PUSH1,
+        runtime.len() as u8,
+        opcode::PUSH0,
+        opcode::RETURN,
+    ];
+    init_code.extend(runtime);
+    let created = DEFAULT_CALLER.create(0);
+    let engine = DebugEngine::new(ChainConfig {
+        accounts: vec![AccountSpec {
+            address: DEFAULT_CALLER,
+            code: Bytes::new(),
+            balance: U256::MAX,
+            storage: Vec::new(),
+        }],
+        breakpoints: vec![Breakpoint {
+            address: created,
+            pc: 22,
+        }],
+    });
+
+    engine
+        .transact(TransactionRequest::create(DEFAULT_CALLER, init_code))
+        .unwrap();
+    let deployment = finished(&engine);
+    assert!(deployment.success);
+    assert_eq!(deployment.created_address, Some(created));
+
+    for expected in [U256::from(1), U256::from(2)] {
+        engine
+            .transact(TransactionRequest::call(
+                DEFAULT_CALLER,
+                created,
+                Bytes::new(),
+            ))
+            .unwrap();
+        assert_eq!(paused(&engine).pc, 22);
+        engine.resume().unwrap();
+        let result = finished(&engine);
+        assert!(result.success);
+        assert_eq!(result.storage_at(created, U256::ZERO), expected);
+    }
+}
+
+#[test]
 fn foundry_style_prank_changes_the_next_nested_caller() {
     let child = address!("3000000000000000000000000000000000000003");
     let pranked = address!("4000000000000000000000000000000000000004");
@@ -202,7 +268,7 @@ fn foundry_style_prank_changes_the_next_nested_caller() {
 
     let snapshot = paused(&session);
     assert_eq!(snapshot.address, child);
-    assert_eq!(snapshot.depth, 2);
+    assert_eq!(snapshot.depth, 1);
     session.resume().unwrap();
 
     let result = finished(&session);

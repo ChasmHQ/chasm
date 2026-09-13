@@ -1,10 +1,10 @@
 use crate::protocol::{
-    CommandValue, DebugCommand, DebugEvent, Finished, PauseReason, SessionConfig, SessionError,
-    Snapshot, StorageSlot,
+    ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished, PauseReason, SessionConfig,
+    SessionError, Snapshot, StorageSlot, TransactionKind, TransactionRequest,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use revm::{
-    Context, InspectEvm, Inspector, MainBuilder, MainContext,
+    Context, ExecuteCommitEvm, InspectEvm, Inspector, MainBuilder, MainContext,
     context::{ContextTr, TxEnv},
     context_interface::JournalTr,
     database::InMemoryDB,
@@ -18,15 +18,28 @@ use revm::{
     primitives::{Address, Bytes, TxKind, U256, address, hardfork::SpecId, keccak256},
     state::{AccountInfo, Bytecode},
 };
-use std::{collections::HashSet, thread::JoinHandle, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    thread::JoinHandle,
+    time::Duration,
+};
 
 pub const DEFAULT_TARGET: Address = address!("1000000000000000000000000000000000000001");
 pub const DEFAULT_CALLER: Address = address!("2000000000000000000000000000000000000002");
 pub const CHEATCODE_ADDRESS: Address = address!("7109709ECfa91a80626fF3989D68f67F5b1DD12D");
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const STATE_IDLE: u8 = 0;
+const STATE_RUNNING: u8 = 1;
+const STATE_PAUSED: u8 = 2;
+const STATE_STOPPED: u8 = 3;
 
 enum EngineCommand {
+    Transact(TransactionRequest),
     Debug(DebugCommand),
     Abort,
 }
@@ -53,6 +66,8 @@ struct SevmInspector {
     instruction_checkpoint: Option<revm::context_interface::journaled_state::JournalCheckpoint>,
     skip_breakpoint_once: bool,
     next_prank: Option<Address>,
+    state: Arc<AtomicU8>,
+    abort_requested: bool,
 }
 
 impl SevmInspector {
@@ -60,7 +75,7 @@ impl SevmInspector {
         Snapshot {
             reason,
             address: interpreter.input.target_address(),
-            depth: self.depth,
+            depth: self.depth.saturating_sub(1),
             pc: interpreter.bytecode.pc(),
             opcode: interpreter.bytecode.opcode(),
             gas_remaining: interpreter.gas.remaining(),
@@ -80,6 +95,7 @@ impl SevmInspector {
         CTX::Journal: JournalTr,
         <CTX::Journal as JournalTr>::Database: revm::Database,
     {
+        self.state.store(STATE_PAUSED, Ordering::Release);
         if self
             .events
             .send(DebugEvent::Paused(self.snapshot(interpreter, reason)))
@@ -197,7 +213,11 @@ impl SevmInspector {
                     resume = true;
                     Ok(CommandValue::None)
                 }
+                EngineCommand::Transact(_) => Err(SessionError::InvalidCommand(
+                    "a transaction is already running".to_owned(),
+                )),
                 EngineCommand::Abort => {
+                    self.abort_requested = true;
                     interpreter.halt(InstructionResult::Stop);
                     resume = true;
                     Ok(CommandValue::None)
@@ -205,6 +225,7 @@ impl SevmInspector {
             };
             let _ = command.reply.send(result);
             if resume {
+                self.state.store(STATE_RUNNING, Ordering::Release);
                 return gas_changed;
             }
         }
@@ -329,23 +350,69 @@ where
 pub struct DebugEngine {
     commands: Sender<Command>,
     events: Receiver<DebugEvent>,
+    state: Arc<AtomicU8>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl DebugEngine {
     pub fn start(config: SessionConfig) -> Self {
+        let transaction = TransactionRequest {
+            caller: config.caller,
+            kind: TransactionKind::Call(config.entry),
+            gas_limit: config.gas_limit,
+            value: U256::ZERO,
+            data: Bytes::new(),
+        };
+        let engine = Self::new(ChainConfig {
+            accounts: config.accounts,
+            breakpoints: config.breakpoints,
+        });
+        engine
+            .transact(transaction)
+            .expect("a newly created REVM worker must accept its first transaction");
+        engine
+    }
+
+    pub fn new(config: ChainConfig) -> Self {
         let (command_tx, command_rx) = unbounded();
         let (event_tx, event_rx) = unbounded();
+        let state = Arc::new(AtomicU8::new(STATE_IDLE));
+        let worker_state = Arc::clone(&state);
         let worker_events = event_tx.clone();
         let worker = std::thread::spawn(move || {
-            if let Err(error) = run_worker(config, command_rx, event_tx) {
+            if let Err(error) = run_worker(config, command_rx, event_tx, &worker_state) {
                 let _ = worker_events.send(DebugEvent::Failed(error));
             }
+            worker_state.store(STATE_STOPPED, Ordering::Release);
         });
         Self {
             commands: command_tx,
             events: event_rx,
+            state,
             worker: Some(worker),
+        }
+    }
+
+    pub fn transact(&self, transaction: TransactionRequest) -> Result<(), SessionError> {
+        self.state
+            .compare_exchange(
+                STATE_IDLE,
+                STATE_RUNNING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|state| match state {
+                STATE_RUNNING | STATE_PAUSED => {
+                    SessionError::InvalidCommand("a transaction is already running".to_owned())
+                }
+                _ => SessionError::EngineStopped,
+            })?;
+        match self.command(EngineCommand::Transact(transaction)) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                self.state.store(STATE_IDLE, Ordering::Release);
+                Err(error)
+            }
         }
     }
 
@@ -418,6 +485,9 @@ impl DebugEngine {
     }
 
     pub fn execute(&self, command: DebugCommand) -> Result<CommandValue, SessionError> {
+        if self.state.load(Ordering::Acquire) != STATE_PAUSED {
+            return Err(SessionError::NotPaused);
+        }
         self.command(EngineCommand::Debug(command))
     }
 
@@ -453,9 +523,10 @@ impl Drop for DebugEngine {
 pub type PrototypeSession = DebugEngine;
 
 fn run_worker(
-    config: SessionConfig,
+    config: ChainConfig,
     commands: Receiver<Command>,
     events: Sender<DebugEvent>,
+    state: &Arc<AtomicU8>,
 ) -> Result<(), String> {
     let mut db = InMemoryDB::default();
     for account in config.accounts {
@@ -472,16 +543,8 @@ fn run_worker(
                 .map_err(|error| format!("{error:?}"))?;
         }
     }
-    db.insert_account_info(
-        config.caller,
-        AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        },
-    );
-
     let inspector = SevmInspector {
-        commands,
+        commands: commands.clone(),
         events: events.clone(),
         breakpoints: config
             .breakpoints
@@ -493,39 +556,94 @@ fn run_worker(
         instruction_checkpoint: None,
         skip_breakpoint_once: false,
         next_prank: None,
+        state: Arc::clone(state),
+        abort_requested: false,
     };
-    let context = Context::mainnet()
-        .with_db(db)
-        .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN));
+    let context = Context::mainnet().with_db(db).modify_cfg_chained(|cfg| {
+        cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN);
+        cfg.disable_nonce_check = true;
+    });
     let mut evm = context.build_mainnet_with_inspector(inspector);
-    let outcome = evm
-        .inspect_tx(
-            TxEnv::builder()
-                .caller(config.caller)
-                .kind(TxKind::Call(config.entry))
-                .gas_limit(config.gas_limit)
-                .build()
-                .map_err(|error| format!("{error:?}"))?,
-        )
-        .map_err(|error| format!("{error:?}"))?;
 
-    let mut storage = Vec::new();
-    for (address, account) in outcome.state {
-        for (key, value) in account.storage {
-            storage.push(StorageSlot {
-                address,
-                key,
-                value: value.present_value,
-            });
+    while let Ok(command) = commands.recv() {
+        match command.action {
+            EngineCommand::Transact(transaction) => {
+                let tx = match transaction_env(transaction) {
+                    Ok(tx) => tx,
+                    Err(error) => {
+                        state.store(STATE_IDLE, Ordering::Release);
+                        let _ = command.reply.send(Err(SessionError::InvalidCommand(error)));
+                        continue;
+                    }
+                };
+                evm.inspector.abort_requested = false;
+                let _ = command.reply.send(Ok(CommandValue::None));
+                let outcome = evm.inspect_tx(tx).map_err(|error| format!("{error:?}"));
+                if evm.inspector.abort_requested {
+                    break;
+                }
+                state.store(STATE_IDLE, Ordering::Release);
+                match outcome {
+                    Ok(outcome) => {
+                        let finished = finished_event(&outcome.result, &outcome.state);
+                        evm.commit(outcome.state);
+                        events
+                            .send(DebugEvent::Finished(finished))
+                            .map_err(|_| "debug event receiver closed".to_owned())?;
+                    }
+                    Err(error) => {
+                        events
+                            .send(DebugEvent::Failed(error))
+                            .map_err(|_| "debug event receiver closed".to_owned())?;
+                    }
+                }
+            }
+            EngineCommand::Debug(_) => {
+                let _ = command.reply.send(Err(SessionError::NotPaused));
+            }
+            EngineCommand::Abort => {
+                let _ = command.reply.send(Ok(CommandValue::None));
+                break;
+            }
         }
     }
-    let finished = Finished {
-        success: outcome.result.is_success(),
-        gas_used: outcome.result.tx_gas_used(),
-        output: outcome.result.into_output().unwrap_or_default(),
-        storage,
+    Ok(())
+}
+
+fn transaction_env(request: TransactionRequest) -> Result<TxEnv, String> {
+    let kind = match request.kind {
+        TransactionKind::Call(address) => TxKind::Call(address),
+        TransactionKind::Create => TxKind::Create,
     };
-    events
-        .send(DebugEvent::Finished(finished))
-        .map_err(|_| "debug event receiver closed".to_owned())
+    TxEnv::builder()
+        .caller(request.caller)
+        .kind(kind)
+        .gas_limit(request.gas_limit)
+        .value(request.value)
+        .data(request.data)
+        .build()
+        .map_err(|error| format!("{error:?}"))
+}
+
+fn finished_event(
+    result: &revm::context::result::ExecutionResult,
+    state: &revm::state::EvmState,
+) -> Finished {
+    let storage = state
+        .iter()
+        .flat_map(|(address, account)| {
+            account.storage.iter().map(|(key, value)| StorageSlot {
+                address: *address,
+                key: *key,
+                value: value.present_value,
+            })
+        })
+        .collect();
+    Finished {
+        success: result.is_success(),
+        gas_used: result.tx_gas_used(),
+        output: result.output().cloned().unwrap_or_default(),
+        created_address: result.created_address(),
+        storage,
+    }
 }
