@@ -40,6 +40,7 @@ fn snapshot_dict<'py>(py: Python<'py>, snapshot: Snapshot) -> PyResult<Bound<'py
         match snapshot.reason {
             PauseReason::Breakpoint => "breakpoint",
             PauseReason::OutOfGas => "out_of_gas",
+            PauseReason::Step => "step",
         },
     )?;
     result.set_item("address", format!("{:#x}", snapshot.address))?;
@@ -206,6 +207,11 @@ impl RevmChain {
     fn resume(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.inner.resume()).map_err(python_error)
     }
+
+    #[pyo3(signature = (count=1))]
+    fn step(&self, py: Python<'_>, count: usize) -> PyResult<()> {
+        py.detach(|| self.inner.step(count)).map_err(python_error)
+    }
 }
 
 #[pyclass(module = "sevm._revm")]
@@ -313,6 +319,11 @@ impl RevmSession {
 
     fn resume(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.inner.resume()).map_err(python_error)
+    }
+
+    #[pyo3(signature = (count=1))]
+    fn step(&self, py: Python<'_>, count: usize) -> PyResult<()> {
+        py.detach(|| self.inner.step(count)).map_err(python_error)
     }
 }
 

@@ -22,6 +22,12 @@ def test_live_mutation_crosses_the_python_bridge():
     assert session.write_memory(3, b"\xaa\xbb") == 2
     assert session.write_storage(7, 8) == "0x8"
     assert session.snapshot()["memory"][3:5] == b"\xaa\xbb"
+    session.step()
+
+    stepped = session.wait()
+    assert stepped["type"] == "paused"
+    assert stepped["reason"] == "step"
+    assert stepped["pc"] == 4
     session.resume()
 
     finished = session.wait()

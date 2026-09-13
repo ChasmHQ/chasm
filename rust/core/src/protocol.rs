@@ -104,6 +104,7 @@ impl SessionConfig {
 pub enum PauseReason {
     Breakpoint,
     OutOfGas,
+    Step,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,6 +161,7 @@ pub enum DebugCommand {
     ReadStorage(U256),
     WriteStorage { key: U256, value: U256 },
     Evaluate { code: Bytes, keep: bool },
+    Step { count: usize },
     Resume,
 }
 

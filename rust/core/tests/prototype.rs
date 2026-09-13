@@ -120,6 +120,28 @@ fn rewrites_the_operand_before_sstore_consumes_it() {
 }
 
 #[test]
+fn steps_by_opcode_without_preconfigured_breakpoints() {
+    let session = PrototypeSession::start(
+        SessionConfig::new(
+            DEFAULT_TARGET,
+            Bytes::from_static(&[opcode::JUMPDEST, opcode::PUSH1, 1, opcode::STOP]),
+        )
+        .with_breakpoint(DEFAULT_TARGET, 0),
+    );
+    assert_eq!(paused(&session).pc, 0);
+
+    session.step(1).unwrap();
+    let snapshot = paused(&session);
+    assert_eq!(snapshot.reason, PauseReason::Step);
+    assert_eq!(snapshot.pc, 1);
+
+    session.step(1).unwrap();
+    assert_eq!(paused(&session).pc, 3);
+    session.resume().unwrap();
+    assert!(finished(&session).success);
+}
+
+#[test]
 fn rescues_out_of_gas_and_retries_the_failed_opcode() {
     let code = Bytes::from_static(&[
         opcode::PUSH1,

@@ -165,6 +165,13 @@ struct PcParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct StepParams {
+    #[serde(default = "default_step_count")]
+    count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StorageKeyParams {
     key: String,
 }
@@ -190,6 +197,10 @@ fn default_gas_limit() -> u64 {
 
 fn default_timeout_ms() -> u64 {
     5_000
+}
+
+fn default_step_count() -> usize {
+    1
 }
 
 fn default_transaction_gas_limit() -> u64 {
@@ -262,6 +273,7 @@ impl ProtocolServer {
                         "write_memory",
                         "set_gas",
                         "set_pc",
+                        "step",
                         "read_storage",
                         "write_storage",
                         "evaluate",
@@ -307,6 +319,12 @@ impl ProtocolServer {
             "set_pc" => {
                 let params: PcParams = parse_params(params)?;
                 self.execute(DebugCommand::SetPc(params.pc))
+            }
+            "step" => {
+                let params: StepParams = parse_params(params)?;
+                self.execute(DebugCommand::Step {
+                    count: params.count,
+                })
             }
             "read_storage" => {
                 let params: StorageKeyParams = parse_params(params)?;
@@ -617,6 +635,7 @@ fn snapshot_json(snapshot: Snapshot) -> Value {
         "reason": match snapshot.reason {
             PauseReason::Breakpoint => "breakpoint",
             PauseReason::OutOfGas => "out_of_gas",
+            PauseReason::Step => "step",
         },
         "address": format!("{:#x}", snapshot.address),
         "depth": snapshot.depth,

@@ -69,6 +69,7 @@ struct SevmInspector {
     next_prank: Option<Address>,
     state: Arc<AtomicU8>,
     abort_requested: bool,
+    steps_until_pause: Option<usize>,
 }
 
 impl SevmInspector {
@@ -210,7 +211,13 @@ impl SevmInspector {
                     }
                     result
                 }
+                EngineCommand::Debug(DebugCommand::Step { count }) => {
+                    self.steps_until_pause = Some(count.max(1));
+                    resume = true;
+                    Ok(CommandValue::None)
+                }
                 EngineCommand::Debug(DebugCommand::Resume) => {
+                    self.steps_until_pause = None;
                     resume = true;
                     Ok(CommandValue::None)
                 }
@@ -280,10 +287,20 @@ where
     fn step(&mut self, interpreter: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
         let address = interpreter.input.target_address();
         let pc = interpreter.bytecode.pc();
+        let mut paused_here = false;
         if self.skip_breakpoint_once {
             self.skip_breakpoint_once = false;
         } else if self.breakpoints.contains(&(address, pc)) {
             self.pause(interpreter, context, PauseReason::Breakpoint);
+            paused_here = true;
+        }
+        if !paused_here && let Some(remaining) = self.steps_until_pause {
+            if remaining <= 1 {
+                self.steps_until_pause = None;
+                self.pause(interpreter, context, PauseReason::Step);
+            } else {
+                self.steps_until_pause = Some(remaining - 1);
+            }
         }
 
         self.backup = Some(StepBackup {
@@ -511,6 +528,10 @@ impl DebugEngine {
         self.execute(DebugCommand::Resume).map(|_| ())
     }
 
+    pub fn step(&self, count: usize) -> Result<(), SessionError> {
+        self.execute(DebugCommand::Step { count }).map(|_| ())
+    }
+
     pub fn execute(&self, command: DebugCommand) -> Result<CommandValue, SessionError> {
         if self.state.load(Ordering::Acquire) != STATE_PAUSED {
             return Err(SessionError::NotPaused);
@@ -585,6 +606,7 @@ fn run_worker(
         next_prank: None,
         state: Arc::clone(state),
         abort_requested: false,
+        steps_until_pause: None,
     };
     let context = Context::mainnet().with_db(db).modify_cfg_chained(|cfg| {
         cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN);

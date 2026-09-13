@@ -44,12 +44,14 @@ fn drives_a_live_session_over_json_rpc() {
         ),
         request(2, "wait_event", json!({})),
         request(3, "set_stack", json!({ "index": 1, "value": "0x9" })),
-        request(4, "resume", json!({})),
+        request(4, "step", json!({})),
         request(5, "wait_event", json!({})),
-        request(6, "shutdown", json!({})),
+        request(6, "resume", json!({})),
+        request(7, "wait_event", json!({})),
+        request(8, "shutdown", json!({})),
     ]);
 
-    assert_eq!(responses.len(), 6);
+    assert_eq!(responses.len(), 8);
     assert_eq!(responses[0]["result"]["started"], true);
     assert_eq!(responses[1]["result"]["type"], "paused");
     assert_eq!(responses[1]["result"]["snapshot"]["pc"], 4);
@@ -59,10 +61,12 @@ fn drives_a_live_session_over_json_rpc() {
     );
     assert_eq!(responses[2]["result"], "0x9");
     assert_eq!(responses[3]["result"], Value::Null);
-    assert_eq!(responses[4]["result"]["type"], "finished");
-    assert_eq!(responses[4]["result"]["success"], true);
-    assert_eq!(responses[4]["result"]["storage"][0]["key"], "0x0");
-    assert_eq!(responses[4]["result"]["storage"][0]["value"], "0x9");
+    assert_eq!(responses[4]["result"]["snapshot"]["reason"], "step");
+    assert_eq!(responses[4]["result"]["snapshot"]["pc"], 5);
+    assert_eq!(responses[6]["result"]["type"], "finished");
+    assert_eq!(responses[6]["result"]["success"], true);
+    assert_eq!(responses[6]["result"]["storage"][0]["key"], "0x0");
+    assert_eq!(responses[6]["result"]["storage"][0]["value"], "0x9");
 }
 
 #[test]
