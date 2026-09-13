@@ -85,12 +85,54 @@ def test_revm_foundry_session_honors_breakpoint_conditions(token_project):
     assert breakpoint.condition_error is None
 
 
+def test_revm_foundry_session_rewrites_a_live_local(solo_project):
+    session = RevmDebugSession(solo_project)
+    source = solo_project.sources["AllCheats.t.sol"].text.splitlines()
+    line = next(index for index, text in enumerate(source, 1) if "assertTrue(a1" in text)
+    session.break_at_line("AllCheats.t.sol", line)
+    session.start(_driver(solo_project, "AllCheatsTest", "testStorageAndKeys"))
+    try:
+        event = session.wait(timeout=TIMEOUT)
+        assert isinstance(event, Paused)
+        assert event.snapshot.contract_name == "AllCheatsTest"
+        locals_before = {item["name"]: item for item in session.inspect("locals")}
+        original = int(locals_before["a1"]["value"], 16)
+
+        changed = session.inspect("write_local", "a1", 7)
+        assert changed["display"] == "0x0000000000000000000000000000000000000007"
+        session.inspect("write_local", "a1", original)
+
+        event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        assert isinstance(event, Finished)
+        assert event.ok
+    finally:
+        session.detach(timeout=TIMEOUT)
+
+
 def test_revm_foundry_session_applies_prank(token_project):
     session = RevmDebugSession(token_project)
     session.start(_driver(token_project, "TokenTest", "testMintPrankRevertsForNonOwner"))
     event = session.wait(timeout=TIMEOUT)
     assert isinstance(event, Finished)
     assert event.ok
+
+
+def test_revm_foundry_session_breaks_in_a_contract_created_during_setup(token_project):
+    session = RevmDebugSession(token_project)
+    session.break_at_function("Token.mint")
+    session.start(_driver(token_project, "TokenTest", "testMintAsOwner"))
+    try:
+        event = session.wait(timeout=TIMEOUT)
+        assert isinstance(event, Paused)
+        assert event.snapshot.contract_name == "Token"
+        assert event.snapshot.function is not None
+        assert event.snapshot.function.name == "mint"
+
+        event = session.resume(StepMode.RUN, timeout=TIMEOUT)
+        assert isinstance(event, Finished)
+        assert event.ok
+    finally:
+        session.detach(timeout=TIMEOUT)
 
 
 def test_revm_foundry_session_returns_assertion_reverts(failing_project):

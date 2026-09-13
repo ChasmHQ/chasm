@@ -687,7 +687,9 @@ impl Inspector<SevmContext> for SevmInspector {
         let mut paused_here = false;
         if self.skip_breakpoint_once {
             self.skip_breakpoint_once = false;
-        } else if self.breakpoints.contains(&(address, pc)) {
+        } else if self.breakpoints.contains(&(address, pc))
+            || self.breakpoints.contains(&(Address::ZERO, pc))
+        {
             self.pause(interpreter, context, PauseReason::Breakpoint);
             paused_here = true;
         }

@@ -37,6 +37,7 @@ from .code import CodeIndex
 from .events import Finished, Paused, Resume, SessionError, StepMode
 
 _ERROR_SELECTOR = bytes.fromhex("08c379a0")
+_ANY_ADDRESS = "0x" + "00" * 20
 _JUMP_MNEMONICS = frozenset({"JUMP", "JUMPI"})
 
 
@@ -744,35 +745,41 @@ class RevmDebugSession:
 
     def _sync_breakpoints(self) -> None:
         points: set[tuple[str, int]] = set()
-        for address, artifact in self._deployed.items():
-            pc_map = self.code.pcmap_for(
-                artifact.deployed_bytecode,
-                artifact,
-                is_create=False,
-            )
-            disassembly = self.code.disassembly_for(artifact.deployed_bytecode)
-            for breakpoint in self.breakpoints.breakpoints.values():
-                if not breakpoint.enabled:
+        for artifact in self.project.artifacts.values():
+            for code, is_create in (
+                (artifact.deployed_bytecode, False),
+                (artifact.bytecode, True),
+            ):
+                if not code:
                     continue
-                if breakpoint.contract and breakpoint.contract != artifact.name:
-                    continue
-                if breakpoint.kind == BP_OPCODE:
-                    pcs = [
-                        instruction.pc
-                        for instruction in disassembly.instructions
-                        if instruction.mnemonic == breakpoint.opcode
-                    ]
-                else:
-                    pcs = list(breakpoint.pcs)
-                for pc in pcs:
-                    if breakpoint.kind not in {BP_PC, BP_OPCODE}:
-                        loc = pc_map.at(pc) if pc_map else None
-                        if loc is None or (
-                            loc.file_id,
-                            loc.line,
-                        ) != (breakpoint.file_id, breakpoint.line):
-                            continue
-                    points.add((address, pc))
+                pc_map = self.code.pcmap_for(code, artifact, is_create)
+                disassembly = self.code.disassembly_for(code)
+                points.update(
+                    (_ANY_ADDRESS, pc)
+                    for pc in self.code.declpcs_for(code, pc_map, is_create)
+                )
+                for breakpoint in self.breakpoints.breakpoints.values():
+                    if not breakpoint.enabled:
+                        continue
+                    if breakpoint.contract and breakpoint.contract != artifact.name:
+                        continue
+                    if breakpoint.kind == BP_OPCODE:
+                        pcs = [
+                            instruction.pc
+                            for instruction in disassembly.instructions
+                            if instruction.mnemonic == breakpoint.opcode
+                        ]
+                    else:
+                        pcs = list(breakpoint.pcs)
+                    for pc in pcs:
+                        if breakpoint.kind not in {BP_PC, BP_OPCODE}:
+                            loc = pc_map.at(pc) if pc_map else None
+                            if loc is None or (
+                                loc.file_id,
+                                loc.line,
+                            ) != (breakpoint.file_id, breakpoint.line):
+                                continue
+                        points.add((_ANY_ADDRESS, pc))
         self._chain.set_breakpoints(sorted(points))
 
     @property
@@ -895,14 +902,128 @@ class RevmDebugSession:
             address, value = bytes(args[0]), int(args[1])
             self._state.set_balance(address, value)
             return self._state.get_balance(address)
+        if op == "write_local":
+            name, value = str(args[0]), int(args[1])
+            internal = kwargs.get("internal_index")
+            for local in self.frame_locals(frame, frame.computation, internal):
+                if local.name != name:
+                    continue
+                if not local.available or local.position is None:
+                    raise SessionError(
+                        f"`{name}` is not writable here: {local.reason or 'unavailable'}"
+                    )
+                if not local.writable:
+                    raise SessionError(
+                        f"`{name}` is a {local.type_label}; its stack slot is a "
+                        "reference, not the value. Writing it would corrupt the pointer, "
+                        "so it is refused"
+                    )
+                values = frame.computation._stack.values
+                stack_index = len(values) - 1 - local.position
+                self._chain.set_stack(stack_index, value)
+                values[local.position] = value
+                updated = [
+                    item
+                    for item in self.frame_locals(frame, frame.computation, internal)
+                    if item.name == name
+                ]
+                return {
+                    "name": name,
+                    "display": updated[0].display if updated else str(value),
+                }
+            raise SessionError(f"no local named `{name}` in scope here")
         if op == "write_stack":
-            return int(self._chain.set_stack(int(args[0]), int(args[1])), 16)
+            index, value = int(args[0]), int(args[1])
+            written = int(self._chain.set_stack(index, value), 16)
+            values = frame.computation._stack.values
+            values[len(values) - 1 - index] = written
+            return written
         if op == "write_memory":
             return self._chain.write_memory(int(args[0]), bytes(args[1]))
         if op == "set_gas":
             return self._chain.set_gas(int(args[0]))
         if op == "set_pc":
             return self._chain.set_pc(int(args[0]))
+        if op == "reseat_frame":
+            pc = max(0, frame.computation.code.program_counter - 1)
+            function = self.functions.at_location(frame.location(pc))
+            if function is None:
+                raise SessionError(
+                    f"no Solidity function at pc 0x{pc:x}; nothing to reseat to"
+                )
+            entry_sp = kwargs.get("entry_sp")
+            base = (
+                int(entry_sp)
+                if entry_sp is not None
+                else len(frame.computation._stack.values)
+            )
+            seat = InternalFrame(
+                function=function,
+                entry_pc=pc,
+                call_site_pc=-1,
+                entry_sp=base,
+            )
+            if kwargs.get("push") or not frame.internal:
+                frame.internal.append(seat)
+            else:
+                frame.internal[-1] = seat
+            return {
+                "name": function.signature,
+                "entry_sp": base,
+                "depth": len(frame.internal),
+            }
+        if op == "bind_local":
+            name, stack_index = str(args[0]), int(args[1])
+            internals = frame.internal
+            if not internals:
+                raise SessionError("no Solidity frame here; `reseat` to a function first")
+            requested = kwargs.get("internal_index")
+            internal_index = (
+                int(requested) if requested is not None else len(internals) - 1
+            )
+            if not 0 <= internal_index < len(internals):
+                raise SessionError(f"no such internal frame: {internal_index}")
+            internal = internals[internal_index]
+            function = internal.function
+            if function is None:
+                raise SessionError("this frame has no function; `reseat` first")
+            pc = max(0, frame.computation.code.program_counter - 1)
+            location = frame.location(pc)
+            offset = (
+                location.entry.start
+                if location is not None and not location.is_generated
+                else -1
+            )
+            matches = [
+                var
+                for var in self.locals.visible(function.ast_id, offset)
+                if var.name == name
+            ]
+            if not matches:
+                raise SessionError(
+                    f"no local named `{name}` in scope in {function.signature} here"
+                )
+            stack_depth = len(frame.computation._stack.values)
+            if not 0 <= stack_index < stack_depth:
+                raise SessionError(
+                    f"stack index {stack_index} out of range (depth {stack_depth})"
+                )
+            internal.slots[matches[0].ast_id] = stack_depth - 1 - stack_index
+            reread = [
+                value
+                for value in self.frame_locals(
+                    frame,
+                    frame.computation,
+                    internal_index,
+                )
+                if value.name == name
+            ]
+            return {
+                "name": name,
+                "stack_index": stack_index,
+                "display": reread[0].display if reread else "<unavailable>",
+                "available": bool(reread and reread[0].available),
+            }
         if op == "resnapshot":
             fresh, _ = self._snapshot_from_raw(
                 self._chain.snapshot(),

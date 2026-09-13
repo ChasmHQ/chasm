@@ -275,3 +275,26 @@ fn evaluates_with_frame_inputs_over_json_rpc() {
     assert!(responses[2]["result"]["gas_used"].as_u64().unwrap() > 0);
     assert_eq!(responses[4]["result"]["type"], "finished");
 }
+
+#[test]
+fn supports_address_independent_breakpoints() {
+    let responses = run(&[
+        request(
+            1,
+            "start",
+            json!({
+                "entry": TARGET,
+                "accounts": [{ "address": TARGET, "code": "0x600100" }],
+                "breakpoints": [{ "pc": 0 }],
+            }),
+        ),
+        request(2, "wait_event", json!({})),
+        request(3, "resume", json!({})),
+        request(4, "wait_event", json!({})),
+        request(5, "shutdown", json!({})),
+    ]);
+
+    assert_eq!(responses[1]["result"]["type"], "paused");
+    assert_eq!(responses[1]["result"]["snapshot"]["pc"], 0);
+    assert_eq!(responses[3]["result"]["type"], "finished");
+}

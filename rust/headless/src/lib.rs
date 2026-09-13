@@ -120,7 +120,8 @@ struct StorageParams {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BreakpointParams {
-    address: String,
+    #[serde(default)]
+    address: Option<String>,
     pc: usize,
 }
 
@@ -674,11 +675,12 @@ fn empty_params(params: Value) -> Result<(), ProtocolError> {
 fn breakpoint_specs(params: Vec<BreakpointParams>) -> Result<Vec<Breakpoint>, ProtocolError> {
     params
         .into_iter()
-        .map(|point| {
-            Ok(Breakpoint {
-                address: parse_address(&point.address)?,
+        .map(|point| match point.address {
+            Some(address) => Ok(Breakpoint {
+                address: parse_address(&address)?,
                 pc: point.pc,
-            })
+            }),
+            None => Ok(Breakpoint::at_any_address(point.pc)),
         })
         .collect()
 }

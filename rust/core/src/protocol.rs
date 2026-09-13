@@ -7,6 +7,15 @@ pub struct Breakpoint {
     pub pc: usize,
 }
 
+impl Breakpoint {
+    pub fn at_any_address(pc: usize) -> Self {
+        Self {
+            address: Address::ZERO,
+            pc,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AccountSpec {
     pub address: Address,
