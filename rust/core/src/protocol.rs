@@ -107,16 +107,55 @@ pub enum PauseReason {
     Step,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameKind {
+    Call,
+    CallCode,
+    DelegateCall,
+    StaticCall,
+    Create,
+    Create2,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameContext {
+    pub depth: usize,
+    pub kind: FrameKind,
+    pub address: Address,
+    pub code_address: Address,
+    pub caller: Address,
+    pub value: U256,
+    pub calldata: Bytes,
+    pub is_static: bool,
+    pub pc: usize,
+    pub opcode: u8,
+    pub gas_limit: u64,
+    pub gas_remaining: u64,
+    pub code: Bytes,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub reason: PauseReason,
     pub address: Address,
+    pub code_address: Address,
+    pub caller: Address,
+    pub origin: Address,
+    pub value: U256,
+    pub calldata: Bytes,
+    pub is_static: bool,
     pub depth: usize,
     pub pc: usize,
     pub opcode: u8,
+    pub mnemonic: String,
+    pub gas_limit: u64,
     pub gas_remaining: u64,
+    pub gas_used: u64,
+    pub gas_refund: i64,
     pub stack: Vec<U256>,
+    pub memory_size: usize,
     pub memory: Bytes,
+    pub frames: Vec<FrameContext>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,7 +185,7 @@ impl Finished {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DebugEvent {
-    Paused(Snapshot),
+    Paused(Box<Snapshot>),
     Finished(Finished),
     Failed(String),
 }
@@ -168,7 +207,7 @@ pub enum DebugCommand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandValue {
     None,
-    Snapshot(Snapshot),
+    Snapshot(Box<Snapshot>),
     Word(U256),
     Number(u64),
     Bytes(Bytes),

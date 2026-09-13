@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sevm_revm_core::{
     AccountSpec, Breakpoint, ChainConfig, CommandValue, DEFAULT_CALLER, DebugCommand, DebugEngine,
-    DebugEvent, PauseReason, SessionConfig, SessionError, Snapshot, TransactionKind,
-    TransactionRequest,
+    DebugEvent, FrameContext, FrameKind, PauseReason, SessionConfig, SessionError, Snapshot,
+    TransactionKind, TransactionRequest,
 };
 use std::{
     fmt,
@@ -598,7 +598,7 @@ fn engine_error(error: SessionError) -> ProtocolError {
 fn command_value_json(value: CommandValue) -> Value {
     match value {
         CommandValue::None => Value::Null,
-        CommandValue::Snapshot(snapshot) => snapshot_json(snapshot),
+        CommandValue::Snapshot(snapshot) => snapshot_json(*snapshot),
         CommandValue::Word(value) => Value::String(word(value)),
         CommandValue::Number(value) => Value::from(value),
         CommandValue::Bytes(value) => Value::String(hex_bytes(&value)),
@@ -609,7 +609,7 @@ fn event_json(event: DebugEvent) -> Value {
     match event {
         DebugEvent::Paused(snapshot) => json!({
             "type": "paused",
-            "snapshot": snapshot_json(snapshot),
+            "snapshot": snapshot_json(*snapshot),
         }),
         DebugEvent::Finished(finished) => json!({
             "type": "finished",
@@ -638,13 +638,54 @@ fn snapshot_json(snapshot: Snapshot) -> Value {
             PauseReason::Step => "step",
         },
         "address": format!("{:#x}", snapshot.address),
+        "code_address": format!("{:#x}", snapshot.code_address),
+        "caller": format!("{:#x}", snapshot.caller),
+        "origin": format!("{:#x}", snapshot.origin),
+        "value": word(snapshot.value),
+        "calldata": hex_bytes(&snapshot.calldata),
+        "is_static": snapshot.is_static,
         "depth": snapshot.depth,
         "pc": snapshot.pc,
         "opcode": snapshot.opcode,
+        "mnemonic": snapshot.mnemonic,
+        "gas_limit": snapshot.gas_limit,
         "gas_remaining": snapshot.gas_remaining,
+        "gas_used": snapshot.gas_used,
+        "gas_refund": snapshot.gas_refund,
         "stack": snapshot.stack.into_iter().map(word).collect::<Vec<_>>(),
+        "memory_size": snapshot.memory_size,
         "memory": hex_bytes(&snapshot.memory),
+        "frames": snapshot.frames.into_iter().map(frame_json).collect::<Vec<_>>(),
     })
+}
+
+fn frame_json(frame: FrameContext) -> Value {
+    json!({
+        "depth": frame.depth,
+        "kind": frame_kind(frame.kind),
+        "address": format!("{:#x}", frame.address),
+        "code_address": format!("{:#x}", frame.code_address),
+        "caller": format!("{:#x}", frame.caller),
+        "value": word(frame.value),
+        "calldata": hex_bytes(&frame.calldata),
+        "is_static": frame.is_static,
+        "pc": frame.pc,
+        "opcode": frame.opcode,
+        "gas_limit": frame.gas_limit,
+        "gas_remaining": frame.gas_remaining,
+        "code": hex_bytes(&frame.code),
+    })
+}
+
+fn frame_kind(kind: FrameKind) -> &'static str {
+    match kind {
+        FrameKind::Call => "call",
+        FrameKind::CallCode => "callcode",
+        FrameKind::DelegateCall => "delegatecall",
+        FrameKind::StaticCall => "staticcall",
+        FrameKind::Create => "create",
+        FrameKind::Create2 => "create2",
+    }
 }
 
 fn word(value: U256) -> String {

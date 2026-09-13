@@ -4,7 +4,8 @@ use revm::{
 };
 use sevm_revm_core::{
     AccountSpec, Breakpoint, CHEATCODE_ADDRESS, ChainConfig, DEFAULT_CALLER, DEFAULT_TARGET,
-    DebugEngine, DebugEvent, PauseReason, PrototypeSession, SessionConfig, TransactionRequest,
+    DebugEngine, DebugEvent, FrameKind, PauseReason, PrototypeSession, SessionConfig,
+    TransactionRequest,
 };
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 
 fn paused(session: &PrototypeSession) -> sevm_revm_core::Snapshot {
     match session.wait(TIMEOUT).unwrap() {
-        DebugEvent::Paused(snapshot) => snapshot,
+        DebugEvent::Paused(snapshot) => *snapshot,
         event => panic!("expected pause, got {event:?}"),
     }
 }
@@ -75,6 +76,15 @@ fn mutates_live_stack_memory_storage_gas_and_pc() {
     let snapshot = paused(&session);
     assert_eq!(snapshot.reason, PauseReason::Breakpoint);
     assert_eq!(snapshot.pc, 0);
+    assert_eq!(snapshot.mnemonic, "JUMPDEST");
+    assert_eq!(snapshot.address, DEFAULT_TARGET);
+    assert_eq!(snapshot.code_address, DEFAULT_TARGET);
+    assert_eq!(snapshot.caller, DEFAULT_CALLER);
+    assert_eq!(snapshot.origin, DEFAULT_CALLER);
+    assert_eq!(snapshot.gas_limit, 79_000);
+    assert_eq!(snapshot.gas_used, 0);
+    assert_eq!(snapshot.frames.len(), 1);
+    assert_eq!(snapshot.frames[0].kind, FrameKind::Call);
     session
         .write_memory(3, Bytes::from_static(&[0xaa, 0xbb]))
         .unwrap();
@@ -270,6 +280,40 @@ fn persists_state_across_create_and_call_transactions() {
 }
 
 #[test]
+fn describes_contract_creation_frames() {
+    let created = DEFAULT_CALLER.create(0);
+    let init_code = Bytes::from_static(&[opcode::JUMPDEST, opcode::STOP]);
+    let engine = DebugEngine::new(ChainConfig {
+        accounts: vec![AccountSpec {
+            address: DEFAULT_CALLER,
+            code: Bytes::new(),
+            balance: U256::MAX,
+            storage: Vec::new(),
+        }],
+        breakpoints: vec![Breakpoint {
+            address: created,
+            pc: 0,
+        }],
+    });
+    engine
+        .transact(TransactionRequest::create(
+            DEFAULT_CALLER,
+            init_code.clone(),
+        ))
+        .unwrap();
+
+    let snapshot = paused(&engine);
+    assert_eq!(snapshot.address, created);
+    assert_eq!(snapshot.code_address, created);
+    assert_eq!(snapshot.calldata, init_code);
+    assert_eq!(snapshot.frames.len(), 1);
+    assert_eq!(snapshot.frames[0].kind, FrameKind::Create);
+    assert_eq!(snapshot.frames[0].code, snapshot.calldata);
+    engine.resume().unwrap();
+    assert_eq!(finished(&engine).created_address, Some(created));
+}
+
+#[test]
 fn foundry_style_prank_changes_the_next_nested_caller() {
     let child = address!("3000000000000000000000000000000000000003");
     let pranked = address!("4000000000000000000000000000000000000004");
@@ -297,6 +341,16 @@ fn foundry_style_prank_changes_the_next_nested_caller() {
     let snapshot = paused(&session);
     assert_eq!(snapshot.address, child);
     assert_eq!(snapshot.depth, 1);
+    assert_eq!(snapshot.code_address, child);
+    assert_eq!(snapshot.caller, pranked);
+    assert_eq!(snapshot.origin, DEFAULT_CALLER);
+    assert_eq!(snapshot.frames.len(), 2);
+    assert_eq!(snapshot.frames[0].address, DEFAULT_TARGET);
+    assert_eq!(snapshot.frames[0].caller, DEFAULT_CALLER);
+    assert_eq!(snapshot.frames[0].kind, FrameKind::Call);
+    assert_eq!(snapshot.frames[1].address, child);
+    assert_eq!(snapshot.frames[1].caller, pranked);
+    assert_eq!(snapshot.frames[1].kind, FrameKind::Call);
     session.resume().unwrap();
 
     let result = finished(&session);

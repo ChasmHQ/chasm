@@ -55,6 +55,17 @@ fn drives_a_live_session_over_json_rpc() {
     assert_eq!(responses[0]["result"]["started"], true);
     assert_eq!(responses[1]["result"]["type"], "paused");
     assert_eq!(responses[1]["result"]["snapshot"]["pc"], 4);
+    assert_eq!(responses[1]["result"]["snapshot"]["mnemonic"], "SSTORE");
+    assert_eq!(responses[1]["result"]["snapshot"]["caller"], CALLER);
+    assert_eq!(responses[1]["result"]["snapshot"]["origin"], CALLER);
+    assert_eq!(
+        responses[1]["result"]["snapshot"]["frames"][0]["kind"],
+        "call"
+    );
+    assert_eq!(
+        responses[1]["result"]["snapshot"]["frames"][0]["code"],
+        "0x600160005500"
+    );
     assert_eq!(
         responses[1]["result"]["snapshot"]["stack"],
         json!(["0x0", "0x1"])

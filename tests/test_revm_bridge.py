@@ -17,6 +17,27 @@ def test_live_mutation_crosses_the_python_bridge():
     assert paused["type"] == "paused"
     assert paused["reason"] == "breakpoint"
     assert paused["stack"] == ["0x0", "0x1"]
+    assert paused["mnemonic"] == "SSTORE"
+    assert paused["code_address"] == paused["address"]
+    assert paused["caller"] == paused["origin"]
+    assert paused["calldata"] == b""
+    assert paused["frames"] == [
+        {
+            "depth": 0,
+            "kind": "call",
+            "address": paused["address"],
+            "code_address": paused["address"],
+            "caller": paused["caller"],
+            "value": "0x0",
+            "calldata": b"",
+            "is_static": False,
+            "pc": 3,
+            "opcode": 0x55,
+            "gas_limit": paused["gas_limit"],
+            "gas_remaining": paused["gas_remaining"],
+            "code": bytes.fromhex("60015f5500"),
+        }
+    ]
 
     assert session.set_stack(1, 9) == "0x9"
     assert session.write_memory(3, b"\xaa\xbb") == 2

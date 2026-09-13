@@ -1,17 +1,18 @@
 use crate::protocol::{
-    ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished, PauseReason, SessionConfig,
-    SessionError, Snapshot, StorageSlot, TransactionKind, TransactionRequest,
+    ChainConfig, CommandValue, DebugCommand, DebugEvent, Finished, FrameContext, FrameKind,
+    PauseReason, SessionConfig, SessionError, Snapshot, StorageSlot, TransactionKind,
+    TransactionRequest,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use revm::{
     Context, ExecuteCommitEvm, InspectEvm, Inspector, MainBuilder, MainContext,
     context::{ContextTr, TxEnv},
-    context_interface::JournalTr,
+    context_interface::{CreateScheme, JournalTr},
     database::InMemoryDB,
     handler::instructions::EthInstructions,
     interpreter::{
-        CallInput, CallInputs, CallOutcome, Gas, InstructionResult, Interpreter, InterpreterAction,
-        InterpreterResult,
+        CallInput, CallInputs, CallOutcome, CallScheme, FrameInput, Gas, InstructionResult,
+        Interpreter, InterpreterAction, InterpreterResult,
         interpreter::{EthInterpreter, ExtBytecode, InputsImpl, SharedMemory},
         interpreter_types::{InputsTr, Jumps, LegacyBytecode, LoopControl},
     },
@@ -62,7 +63,8 @@ struct SevmInspector {
     commands: Receiver<Command>,
     events: Sender<DebugEvent>,
     breakpoints: HashSet<(Address, usize)>,
-    depth: usize,
+    frames: Vec<FrameContext>,
+    origin: Address,
     backup: Option<StepBackup>,
     instruction_checkpoint: Option<revm::context_interface::journaled_state::JournalCheckpoint>,
     skip_breakpoint_once: bool,
@@ -74,16 +76,62 @@ struct SevmInspector {
 
 impl SevmInspector {
     fn snapshot(&self, interpreter: &Interpreter<EthInterpreter>, reason: PauseReason) -> Snapshot {
+        let address = interpreter.input.target_address();
+        let code_address = interpreter
+            .input
+            .bytecode_address()
+            .copied()
+            .unwrap_or(address);
+        let opcode = interpreter.bytecode.opcode();
+        let calldata = self
+            .frames
+            .last()
+            .map(|frame| frame.calldata.clone())
+            .unwrap_or_default();
+        let is_static = self.frames.last().is_some_and(|frame| frame.is_static);
+        let mut frames = self.frames.clone();
+        if let Some(frame) = frames.last_mut() {
+            Self::update_frame(frame, interpreter);
+        }
         Snapshot {
             reason,
-            address: interpreter.input.target_address(),
-            depth: self.depth.saturating_sub(1),
+            address,
+            code_address,
+            caller: interpreter.input.caller_address(),
+            origin: self.origin,
+            value: interpreter.input.call_value(),
+            calldata,
+            is_static,
+            depth: interpreter.input.depth(),
             pc: interpreter.bytecode.pc(),
-            opcode: interpreter.bytecode.opcode(),
+            opcode,
+            mnemonic: revm::bytecode::OpCode::name_by_op(opcode).to_owned(),
+            gas_limit: interpreter.gas.limit(),
             gas_remaining: interpreter.gas.remaining(),
+            gas_used: interpreter.gas.total_gas_spent(),
+            gas_refund: interpreter.gas.refunded(),
             stack: interpreter.stack.data().iter().rev().copied().collect(),
+            memory_size: interpreter.memory.len(),
             memory: Bytes::copy_from_slice(&interpreter.memory.context_memory()),
+            frames,
         }
+    }
+
+    fn update_frame(frame: &mut FrameContext, interpreter: &Interpreter<EthInterpreter>) {
+        frame.depth = interpreter.input.depth();
+        frame.address = interpreter.input.target_address();
+        frame.code_address = interpreter
+            .input
+            .bytecode_address()
+            .copied()
+            .unwrap_or(frame.address);
+        frame.caller = interpreter.input.caller_address();
+        frame.value = interpreter.input.call_value();
+        frame.pc = interpreter.bytecode.pc();
+        frame.opcode = interpreter.bytecode.opcode();
+        frame.gas_limit = interpreter.gas.limit();
+        frame.gas_remaining = interpreter.gas.remaining();
+        frame.code = Bytes::copy_from_slice(interpreter.bytecode.bytecode_slice());
     }
 
     fn pause<CTX>(
@@ -100,7 +148,9 @@ impl SevmInspector {
         self.state.store(STATE_PAUSED, Ordering::Release);
         if self
             .events
-            .send(DebugEvent::Paused(self.snapshot(interpreter, reason)))
+            .send(DebugEvent::Paused(Box::new(
+                self.snapshot(interpreter, reason),
+            )))
             .is_err()
         {
             return false;
@@ -110,9 +160,9 @@ impl SevmInspector {
         while let Ok(command) = self.commands.recv() {
             let mut resume = false;
             let result = match command.action {
-                EngineCommand::Debug(DebugCommand::Snapshot) => {
-                    Ok(CommandValue::Snapshot(self.snapshot(interpreter, reason)))
-                }
+                EngineCommand::Debug(DebugCommand::Snapshot) => Ok(CommandValue::Snapshot(
+                    Box::new(self.snapshot(interpreter, reason)),
+                )),
                 EngineCommand::Debug(DebugCommand::SetStack { index, value }) => interpreter
                     .stack
                     .set(index, value)
@@ -268,23 +318,78 @@ where
 {
     fn frame_start(
         &mut self,
-        _context: &mut CTX,
-        _frame_input: &mut revm::interpreter::FrameInput,
+        context: &mut CTX,
+        frame_input: &mut FrameInput,
     ) -> Option<revm::handler::FrameResult> {
-        self.depth += 1;
+        let depth = self.frames.len();
+        let frame = match frame_input {
+            FrameInput::Call(inputs) => FrameContext {
+                depth,
+                kind: match inputs.scheme {
+                    CallScheme::Call => FrameKind::Call,
+                    CallScheme::CallCode => FrameKind::CallCode,
+                    CallScheme::DelegateCall => FrameKind::DelegateCall,
+                    CallScheme::StaticCall => FrameKind::StaticCall,
+                },
+                address: inputs.target_address,
+                code_address: inputs.bytecode_address,
+                caller: inputs.caller,
+                value: inputs.call_value(),
+                calldata: inputs.input.bytes(context),
+                is_static: inputs.is_static,
+                pc: 0,
+                opcode: 0,
+                gas_limit: inputs.gas_limit,
+                gas_remaining: inputs.gas_limit,
+                code: Bytes::new(),
+            },
+            FrameInput::Create(inputs) => FrameContext {
+                depth,
+                kind: match inputs.scheme() {
+                    CreateScheme::Create | CreateScheme::Custom { .. } => FrameKind::Create,
+                    CreateScheme::Create2 { .. } => FrameKind::Create2,
+                },
+                address: Address::ZERO,
+                code_address: Address::ZERO,
+                caller: inputs.caller(),
+                value: inputs.value(),
+                calldata: inputs.init_code().clone(),
+                is_static: false,
+                pc: 0,
+                opcode: 0,
+                gas_limit: inputs.gas_limit(),
+                gas_remaining: inputs.gas_limit(),
+                code: inputs.init_code().clone(),
+            },
+            FrameInput::Empty => return None,
+        };
+        self.frames.push(frame);
         None
+    }
+
+    fn initialize_interp(
+        &mut self,
+        interpreter: &mut Interpreter<EthInterpreter>,
+        _context: &mut CTX,
+    ) {
+        if let Some(frame) = self.frames.last_mut() {
+            Self::update_frame(frame, interpreter);
+        }
     }
 
     fn frame_end(
         &mut self,
         _context: &mut CTX,
-        _frame_input: &revm::interpreter::FrameInput,
+        _frame_input: &FrameInput,
         _frame_result: &mut revm::handler::FrameResult,
     ) {
-        self.depth = self.depth.saturating_sub(1);
+        self.frames.pop();
     }
 
     fn step(&mut self, interpreter: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
+        if let Some(frame) = self.frames.last_mut() {
+            Self::update_frame(frame, interpreter);
+        }
         let address = interpreter.input.target_address();
         let pc = interpreter.bytecode.pc();
         let mut paused_here = false;
@@ -470,7 +575,7 @@ impl DebugEngine {
 
     pub fn snapshot(&self) -> Result<Snapshot, SessionError> {
         match self.execute(DebugCommand::Snapshot)? {
-            CommandValue::Snapshot(snapshot) => Ok(snapshot),
+            CommandValue::Snapshot(snapshot) => Ok(*snapshot),
             _ => unreachable!(),
         }
     }
@@ -599,7 +704,8 @@ fn run_worker(
             .into_iter()
             .map(|point| (point.address, point.pc))
             .collect(),
-        depth: 0,
+        frames: Vec::new(),
+        origin: Address::ZERO,
         backup: None,
         instruction_checkpoint: None,
         skip_breakpoint_once: false,
@@ -617,6 +723,7 @@ fn run_worker(
     while let Ok(command) = commands.recv() {
         match command.action {
             EngineCommand::Transact(transaction) => {
+                evm.inspector.origin = transaction.caller;
                 let tx = match transaction_env(transaction) {
                     Ok(tx) => tx,
                     Err(error) => {

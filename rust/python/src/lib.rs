@@ -1,12 +1,13 @@
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
-    types::{PyAny, PyBytes, PyDict},
+    types::{PyAny, PyBytes, PyDict, PyList},
 };
 use revm::primitives::{Address, Bytes, U256};
 use sevm_revm_core::{
     AccountSpec, Breakpoint, ChainConfig, DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine, DebugEvent,
-    PauseReason, SessionConfig, SessionError, Snapshot, TransactionRequest,
+    FrameContext, FrameKind, PauseReason, SessionConfig, SessionError, Snapshot,
+    TransactionRequest,
 };
 use std::{io, str::FromStr, time::Duration};
 
@@ -32,6 +33,35 @@ fn word(value: U256) -> String {
     format!("0x{value:x}")
 }
 
+fn frame_kind(kind: FrameKind) -> &'static str {
+    match kind {
+        FrameKind::Call => "call",
+        FrameKind::CallCode => "callcode",
+        FrameKind::DelegateCall => "delegatecall",
+        FrameKind::StaticCall => "staticcall",
+        FrameKind::Create => "create",
+        FrameKind::Create2 => "create2",
+    }
+}
+
+fn frame_dict<'py>(py: Python<'py>, frame: FrameContext) -> PyResult<Bound<'py, PyDict>> {
+    let result = PyDict::new(py);
+    result.set_item("depth", frame.depth)?;
+    result.set_item("kind", frame_kind(frame.kind))?;
+    result.set_item("address", format!("{:#x}", frame.address))?;
+    result.set_item("code_address", format!("{:#x}", frame.code_address))?;
+    result.set_item("caller", format!("{:#x}", frame.caller))?;
+    result.set_item("value", word(frame.value))?;
+    result.set_item("calldata", PyBytes::new(py, &frame.calldata))?;
+    result.set_item("is_static", frame.is_static)?;
+    result.set_item("pc", frame.pc)?;
+    result.set_item("opcode", frame.opcode)?;
+    result.set_item("gas_limit", frame.gas_limit)?;
+    result.set_item("gas_remaining", frame.gas_remaining)?;
+    result.set_item("code", PyBytes::new(py, &frame.code))?;
+    Ok(result)
+}
+
 fn snapshot_dict<'py>(py: Python<'py>, snapshot: Snapshot) -> PyResult<Bound<'py, PyDict>> {
     let result = PyDict::new(py);
     result.set_item("type", "paused")?;
@@ -44,21 +74,37 @@ fn snapshot_dict<'py>(py: Python<'py>, snapshot: Snapshot) -> PyResult<Bound<'py
         },
     )?;
     result.set_item("address", format!("{:#x}", snapshot.address))?;
+    result.set_item("code_address", format!("{:#x}", snapshot.code_address))?;
+    result.set_item("caller", format!("{:#x}", snapshot.caller))?;
+    result.set_item("origin", format!("{:#x}", snapshot.origin))?;
+    result.set_item("value", word(snapshot.value))?;
+    result.set_item("calldata", PyBytes::new(py, &snapshot.calldata))?;
+    result.set_item("is_static", snapshot.is_static)?;
     result.set_item("depth", snapshot.depth)?;
     result.set_item("pc", snapshot.pc)?;
     result.set_item("opcode", snapshot.opcode)?;
+    result.set_item("mnemonic", snapshot.mnemonic)?;
+    result.set_item("gas_limit", snapshot.gas_limit)?;
     result.set_item("gas_remaining", snapshot.gas_remaining)?;
+    result.set_item("gas_used", snapshot.gas_used)?;
+    result.set_item("gas_refund", snapshot.gas_refund)?;
     result.set_item(
         "stack",
         snapshot.stack.into_iter().map(word).collect::<Vec<_>>(),
     )?;
+    result.set_item("memory_size", snapshot.memory_size)?;
     result.set_item("memory", PyBytes::new(py, &snapshot.memory))?;
+    let frames = PyList::empty(py);
+    for frame in snapshot.frames {
+        frames.append(frame_dict(py, frame)?)?;
+    }
+    result.set_item("frames", frames)?;
     Ok(result)
 }
 
 fn event_dict<'py>(py: Python<'py>, event: DebugEvent) -> PyResult<Bound<'py, PyDict>> {
     match event {
-        DebugEvent::Paused(snapshot) => snapshot_dict(py, snapshot),
+        DebugEvent::Paused(snapshot) => snapshot_dict(py, *snapshot),
         DebugEvent::Finished(finished) => {
             let result = PyDict::new(py);
             result.set_item("type", "finished")?;
