@@ -717,8 +717,22 @@ class RevmDebugSession:
         )
         hits = []
         for breakpoint in matches:
-            if breakpoint.condition:
-                breakpoint.condition_error = "conditions are not available on REVM yet"
+            if breakpoint.condition and self._eval_hook is not None:
+                try:
+                    holds = self._eval_hook(
+                        self,
+                        frame,
+                        frame.computation,
+                        breakpoint.condition,
+                        want_bool=True,
+                        bindings=self.frame_locals(frame, frame.computation),
+                    )
+                except Exception as exc:
+                    breakpoint.condition_error = str(exc)
+                else:
+                    breakpoint.condition_error = None
+                    if not holds:
+                        continue
             breakpoint.hit_count += 1
             if breakpoint.ignore_count:
                 breakpoint.ignore_count -= 1
@@ -776,6 +790,23 @@ class RevmDebugSession:
             frame,
             computation,
             internal_index,
+        )
+
+    def evaluate_code(
+        self,
+        frame: EvmFrame,
+        computation: Any,
+        code: bytes,
+        data: bytes,
+        keep: bool,
+    ) -> dict[str, Any]:
+        return self._chain.evaluate_call(
+            code,
+            data,
+            _address_hex(frame.sender),
+            value=frame.value,
+            gas_limit=max(computation.get_gas_remaining(), 1_000_000),
+            keep=keep,
         )
 
     def inspect(
@@ -895,6 +926,21 @@ class RevmDebugSession:
                 return output
             except CheatError as exc:
                 raise SessionError(str(exc)) from exc
+        if op == "evaluate":
+            if self._eval_hook is None:
+                raise SessionError("no evaluator installed")
+            return self._eval_hook(
+                self,
+                frame,
+                frame.computation,
+                str(args[0]),
+                keep=bool(kwargs.get("keep", False)),
+                bindings=self.frame_locals(
+                    frame,
+                    frame.computation,
+                    kwargs.get("internal_index"),
+                ),
+            )
         raise SessionError(f"inspect {op!r} is not available on REVM yet")
 
     def refresh_snapshot(self) -> FrameSnapshot | None:

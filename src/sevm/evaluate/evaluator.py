@@ -327,28 +327,43 @@ class Evaluator:
         code, return_type = self._compiled(artifact, compiled, parameters, bound)
         compile_ms = (time.time() - started) * 1000.0
 
-        state = computation.state
-        address = frame.address
-        original_code = state.get_code(address)
-        snapshot = state.snapshot()
-        gas_before = 0
-        try:
-            state.set_code(address, code)
-            message = _build_message(frame, computation, code, _call_data(bound))
-            txctx = computation.transaction_context
-            with session.suspended():
-                sub = state.computation_class.apply_message(state, message, txctx)
-            gas_before = message.gas - sub.get_gas_remaining()
-            if sub.is_error:
-                reason = decode_revert(bytes(sub.output or b""), artifact.abi)
+        execute = getattr(session, "evaluate_code", None)
+        if execute is not None:
+            outcome = execute(
+                frame,
+                computation,
+                code,
+                _call_data(bound),
+                keep,
+            )
+            gas_before = int(outcome["gas_used"])
+            raw = bytes(outcome["output"])
+            if not outcome["success"]:
+                reason = decode_revert(raw, artifact.abi)
                 raise EvalError(f"expression {reason}")
-            raw = bytes(sub.output)
-        finally:
-            if keep:
-                state.set_code(address, original_code)
-                state.commit(snapshot)
-            else:
-                state.revert(snapshot)
+        else:
+            state = computation.state
+            address = frame.address
+            original_code = state.get_code(address)
+            snapshot = state.snapshot()
+            gas_before = 0
+            try:
+                state.set_code(address, code)
+                message = _build_message(frame, computation, code, _call_data(bound))
+                txctx = computation.transaction_context
+                with session.suspended():
+                    sub = state.computation_class.apply_message(state, message, txctx)
+                gas_before = message.gas - sub.get_gas_remaining()
+                if sub.is_error:
+                    reason = decode_revert(bytes(sub.output or b""), artifact.abi)
+                    raise EvalError(f"expression {reason}")
+                raw = bytes(sub.output)
+            finally:
+                if keep:
+                    state.set_code(address, original_code)
+                    state.commit(snapshot)
+                else:
+                    state.revert(snapshot)
 
         if return_type is None:
             result = EvalResult(
