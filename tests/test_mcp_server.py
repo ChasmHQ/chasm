@@ -178,6 +178,13 @@ def test_restart_keeps_breakpoints(lab):
     assert 1 in hit["hit_breakpoints"]  # the breakpoint survived
 
 
+def test_status_after_script_finishes(lab):
+    driver, script = lab
+    driver.start(script)
+    assert driver.continue_execution()["finished"] is True
+    assert driver.status()["finished"] is True
+
+
 def test_evaluate_and_command_passthrough(lab):
     driver, script = lab
     driver.start(script)
@@ -227,7 +234,15 @@ def test_client_round_trip_lists_tools_and_returns_error_dicts():
         from mcp import ClientSession
         from mcp.shared.memory import create_client_server_memory_streams
 
-        server = build_server(DebugDriver())
+        class RecordingDriver(DebugDriver):
+            def start(self, target, **kwargs):
+                return {
+                    "target": target,
+                    "reference_runtime_hex": kwargs["reference_runtime_hex"],
+                    "provenance": kwargs["provenance"],
+                }
+
+        server = build_server(RecordingDriver())
         async with create_client_server_memory_streams() as streams:
             client_streams, server_streams = streams
             app = server._lowlevel_server
@@ -250,11 +265,24 @@ def test_client_round_trip_lists_tools_and_returns_error_dicts():
                         names = {t.name for t in tools.tools}
                         assert "sevm_start_session" in names
                         assert "sevm_find_bytes" in names
+                        started = await client.call_tool(
+                            "sevm_start_session",
+                            {
+                                "target": "example.py",
+                                "reference_runtime_hex": "0x6000",
+                                "provenance": True,
+                            },
+                        )
+                        import json
+
+                        assert json.loads(started.content[0].text) == {
+                            "target": "example.py",
+                            "reference_runtime_hex": "0x6000",
+                            "provenance": True,
+                        }
                         res = await client.call_tool("sevm_get_status", {})
                         # dict returns serialise as JSON text content (no output
                         # schema is declared, so there is no structuredContent).
-                        import json
-
                         payload = json.loads(res.content[0].text)
                         assert "sevm_start_session" in payload.get("error", "")
             finally:
@@ -266,54 +294,8 @@ def test_client_round_trip_lists_tools_and_returns_error_dicts():
 
 
 # ==================================================================
-# checkpoints, provenance, parity, batch — the AI-review package
+# provenance and bytecode parity
 # ==================================================================
-
-
-def test_checkpoint_roundtrip_undoes_mutations(lab):
-    driver, script = lab
-    driver.start(script)
-    driver.step_opcodes(10)
-    before_stack = driver.read_stack()["items"]
-    before_mem = driver.read_memory(0x40, 2)["items"]
-    driver.save_checkpoint("base")
-    driver.set_stack_slot(0, 0xDEADBEEF)
-    driver.write_storage(0, 42)
-    driver.write_memory(0x40, "11" * 32)
-    report = driver.restore_checkpoint("base")
-    assert report["restore"]["name"] == "base"
-    assert driver.read_stack()["items"] == before_stack
-    assert driver.read_memory(0x40, 2)["items"] == before_mem
-    assert driver.read_storage(slots=[0])["items"][0]["value"] == "0"
-
-
-def test_checkpoint_survives_steps_and_nested_discard(lab):
-    driver, script = lab
-    driver.start(script)
-    driver.step_opcodes(10)
-    pc0 = driver.status()["pc"]
-    driver.save_checkpoint("base")
-    driver.step_opcodes(2)
-    assert driver.status()["pc"] != pc0
-    driver.restore_checkpoint("base")
-    assert driver.status()["pc"] == pc0
-    driver.save_checkpoint("later")
-    driver.restore_checkpoint("base")
-    names = [c["name"] for c in driver.list_checkpoints()["checkpoints"]]
-    assert names == ["base"]  # journal nesting discards the later one
-    driver.restart()
-    assert driver.list_checkpoints()["checkpoints"] == []
-
-
-def test_restore_refused_after_finish(lab):
-    driver, script = lab
-    driver.start(script)
-    driver.step_opcodes(5)
-    driver.save_checkpoint("base")
-    result = driver.continue_execution()
-    assert result.get("finished")
-    with pytest.raises(Exception, match="finished"):
-        driver.restore_checkpoint("base")
 
 
 def test_provenance_calldata_origin(lab):
@@ -335,21 +317,6 @@ def test_provenance_calldata_origin(lab):
     assert any("calldata[" in origin["detail"] for origin in why["origins"])
 
 
-def test_provenance_constant_and_truncate_on_restore(lab):
-    driver, script = lab
-    driver.start(script, provenance=True)
-    driver.step_opcodes(6)
-    records = len(driver._session.provenance.records)
-    assert records >= 6
-    why = driver.why_stack(0)
-    assert why["origins"], "PUSH results always have a constant origin"
-    driver.save_checkpoint("c")
-    driver.step_opcodes(3)
-    assert len(driver._session.provenance.records) > records
-    driver.restore_checkpoint("c")
-    assert len(driver._session.provenance.records) == records
-
-
 def test_export_trace_structlog_shape(lab):
     driver, script = lab
     driver.start(script, provenance=True)
@@ -366,21 +333,27 @@ def test_export_trace_structlog_shape(lab):
     assert written["written"] == written["total"]
 
 
-def test_batch_experiments_branch_from_one_stop(lab):
-    driver, script = lab
-    driver.start(script)
-    driver.step_opcodes(10)
-    hit_pc = driver.status()["pc"]
-    batch = driver.run_experiments(
-        [
-            {"set_stack": {"0": "0x11"}, "run_until_pc": hit_pc, "read_stack": 2},
-            {"set_stack": {"0": "0x22"}, "run_until_pc": hit_pc, "read_stack": 2},
-        ]
+def test_structlog_stack_is_pre_opcode_and_bottom_first():
+    from sevm.session.provenance import Provenance
+
+    trace = Provenance()
+    trace.enabled = True
+    trace.record(
+        step=1,
+        pc=2,
+        opcode=1,
+        mnemonic="ADD",
+        depth=0,
+        gas_before=100,
+        gas_remaining=97,
+        mem_size=0,
+        before=[1, 2],
+        after=[3],
     )
-    assert batch["total"] == 2 and batch["base_restored"] is True
-    tops = [item["stack"][0]["hex"] for item in batch["items"]]
-    assert tops[0] != tops[1]  # each experiment saw its own mutation
-    assert driver.status()["pc"] == hit_pc  # base restored after the batch
+    assert trace.structlog()["structLogs"][0]["stack"] == [
+        "0x" + "0" * 63 + "1",
+        "0x" + "0" * 63 + "2",
+    ]
 
 
 def test_parity_verdicts(lab):

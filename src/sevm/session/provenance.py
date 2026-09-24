@@ -216,7 +216,7 @@ class Provenance:
                     _word(v)
                     if not isinstance(v, bytes)
                     else "0x" + v.hex().rjust(64, "0")
-                    for v in reversed(r.after)
+                    for v in r.before
                 ],
                 "memSize": r.mem_size,
                 "step": r.step,
