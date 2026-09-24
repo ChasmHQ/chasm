@@ -142,6 +142,9 @@ def test_loop_iterates_with_next(bank):
     dbg = Debugger(proj_, txfn)
     try:
         body = line_of(proj_, "total += history[i];")
+        jump_loc = dbg.session.current_frame.location(866)
+        jump_range = (jump_loc.entry.start, jump_loc.entry.length)
+        function_range = (dbg.snap.function.start, dbg.snap.function.length)
         hits = 0
         visited = [(dbg.snap.pc, dbg.snap.line, dbg.snap.stop_reason)]
         seen_raw = []
@@ -170,7 +173,10 @@ def test_loop_iterates_with_next(bank):
             )
             if event.snapshot.line == body:
                 hits += 1
-        assert hits >= 1, f"the loop body should be reached: {visited}; raw: {seen_raw}"
+        assert hits >= 1, (
+            f"the loop body should be reached: {visited}; raw: {seen_raw}; "
+            f"jump: {jump_range}; function: {function_range}"
+        )
     finally:
         dbg.session._should_surface = original_surface
         dbg.close()
