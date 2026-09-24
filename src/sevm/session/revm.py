@@ -995,11 +995,16 @@ class RevmDebugSession:
         if (
             function is not None
             and frame.internal
-            and frame.internal[-1].function is not None
-            and function.ast_id == frame.internal[-1].function.ast_id
             and loc.entry.start == function.start
             and loc.entry.length == function.length
+            and (
+                frame.internal[-1].function is None
+                or function.ast_id == frame.internal[-1].function.ast_id
+            )
         ):
+            # The dispatcher can reach a source-mapped wrapper through a generated
+            # frame. Its jump into the actual body is an entry, not a nested call.
+            frame.internal[-1].function = function
             frame.internal[-1].entry_pc = destination
             frame.internal[-1].entry_sp = len(raw["stack"])
             return

@@ -145,6 +145,7 @@ def test_loop_iterates_with_next(bank):
         jump_loc = dbg.session.current_frame.location(866)
         jump_range = (jump_loc.entry.start, jump_loc.entry.length)
         function_range = (dbg.snap.function.start, dbg.snap.function.length)
+        initial_frames = [item.name for item in dbg.session.current_frame.internal]
         hits = 0
         visited = [(dbg.snap.pc, dbg.snap.line, dbg.snap.stop_reason)]
         seen_raw = []
@@ -159,6 +160,7 @@ def test_loop_iterates_with_next(bank):
                         len(dbg.session.current_frame.internal),
                         dbg.session._mode_internal,
                         raw["reason"],
+                        [item.name for item in dbg.session.current_frame.internal],
                     )
                 )
             return original_surface(raw, snapshot, breakpoints)
@@ -175,7 +177,8 @@ def test_loop_iterates_with_next(bank):
                 hits += 1
         assert hits >= 1, (
             f"the loop body should be reached: {visited}; raw: {seen_raw}; "
-            f"jump: {jump_range}; function: {function_range}"
+            f"jump: {jump_range}; function: {function_range}; "
+            f"initial frames: {initial_frames}"
         )
     finally:
         dbg.session._should_surface = original_surface
