@@ -134,6 +134,7 @@ def test_loop_iterates_with_next(bank):
     receipt = w3.eth.wait_for_transaction_receipt(tx)
     assert receipt.status == 1
     assert contract.functions.history(0).call() == w3.to_wei(1, "ether")
+    assert contract.functions.sumHistory().call() == w3.to_wei(1, "ether")
 
     def txfn():
         contract.functions.sumHistory().call()
@@ -143,6 +144,23 @@ def test_loop_iterates_with_next(bank):
         body = line_of(proj_, "total += history[i];")
         hits = 0
         visited = [(dbg.snap.pc, dbg.snap.line, dbg.snap.stop_reason)]
+        seen_raw = []
+        original_surface = dbg.session._should_surface
+
+        def record_surface(raw, snapshot, breakpoints):
+            if body - 2 <= snapshot.line <= body and len(seen_raw) < 60:
+                seen_raw.append(
+                    (
+                        snapshot.pc,
+                        snapshot.line,
+                        len(dbg.session.current_frame.internal),
+                        dbg.session._mode_internal,
+                        raw["reason"],
+                    )
+                )
+            return original_surface(raw, snapshot, breakpoints)
+
+        dbg.session._should_surface = record_surface
         for _ in range(24):
             event = dbg.step(StepMode.NEXT)
             if isinstance(event, Finished):
@@ -152,8 +170,9 @@ def test_loop_iterates_with_next(bank):
             )
             if event.snapshot.line == body:
                 hits += 1
-        assert hits >= 1, f"the loop body should be reached: {visited}"
+        assert hits >= 1, f"the loop body should be reached: {visited}; raw: {seen_raw}"
     finally:
+        dbg.session._should_surface = original_surface
         dbg.close()
 
 
