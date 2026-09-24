@@ -141,31 +141,10 @@ def test_loop_iterates_with_next(bank):
 
     dbg = Debugger(proj_, txfn)
     try:
+        assert dbg.snap.backtrace[0].name.startswith("Bank.sumHistory")
         body = line_of(proj_, "total += history[i];")
-        jump_loc = dbg.session.current_frame.location(866)
-        jump_range = (jump_loc.entry.start, jump_loc.entry.length)
-        function_range = (dbg.snap.function.start, dbg.snap.function.length)
-        initial_frames = [item.name for item in dbg.session.current_frame.internal]
         hits = 0
         visited = [(dbg.snap.pc, dbg.snap.line, dbg.snap.stop_reason)]
-        seen_raw = []
-        original_surface = dbg.session._should_surface
-
-        def record_surface(raw, snapshot, breakpoints):
-            if body - 2 <= snapshot.line <= body and len(seen_raw) < 60:
-                seen_raw.append(
-                    (
-                        snapshot.pc,
-                        snapshot.line,
-                        len(dbg.session.current_frame.internal),
-                        dbg.session._mode_internal,
-                        raw["reason"],
-                        [item.name for item in dbg.session.current_frame.internal],
-                    )
-                )
-            return original_surface(raw, snapshot, breakpoints)
-
-        dbg.session._should_surface = record_surface
         for _ in range(24):
             event = dbg.step(StepMode.NEXT)
             if isinstance(event, Finished):
@@ -175,13 +154,8 @@ def test_loop_iterates_with_next(bank):
             )
             if event.snapshot.line == body:
                 hits += 1
-        assert hits >= 1, (
-            f"the loop body should be reached: {visited}; raw: {seen_raw}; "
-            f"jump: {jump_range}; function: {function_range}; "
-            f"initial frames: {initial_frames}"
-        )
+        assert hits >= 1, f"the loop body should be reached: {visited}"
     finally:
-        dbg.session._should_surface = original_surface
         dbg.close()
 
 

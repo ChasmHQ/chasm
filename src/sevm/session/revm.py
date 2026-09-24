@@ -46,6 +46,7 @@ from ..srcmap import build_line_indexes
 from . import framelocals, snapshots
 from .code import CodeIndex
 from .events import Finished, Paused, Resume, SessionError, StepMode
+from .provenance import Provenance
 
 _ERROR_SELECTOR = bytes.fromhex("08c379a0")
 _ANY_ADDRESS = "0x" + "00" * 20
@@ -259,6 +260,7 @@ class RevmDebugSession:
         self.project = project
         self.breakpoints = breakpoints or BreakpointSet()
         self.cheats = CheatState()
+        self.provenance = Provenance()
         self.functions = FunctionIndex(project.asts)
         self.locals = LocalsIndex(project.asts)
         self.line_indexes = build_line_indexes(project.sources.values())
@@ -406,6 +408,7 @@ class RevmDebugSession:
         self.step_index = 0
         self.gas_by_line.clear()
         self.gas_by_opcode.clear()
+        self.provenance.clear()
         self._mode = StepMode.RUN
         self._mode_depth = 0
         self._mode_internal = 0
@@ -496,6 +499,12 @@ class RevmDebugSession:
         raise TestFailed(f"{what} reverted: {self.last_revert}")
 
     def _drive_transaction(self) -> dict[str, Any]:
+        # REVM starts a fresh EVM call stack for every transaction. A prior call's
+        # Solidity internal frames must not be reused for this transaction's pc.
+        self._frames.clear()
+        self._last_raw = None
+        self._raw_snapshot = None
+        self.provenance.clear()
         while True:
             event = self._chain.wait(timeout=30.0)
             kind = event.get("type")
@@ -507,6 +516,7 @@ class RevmDebugSession:
             if kind != "paused":
                 raise SessionError(f"unknown REVM event: {kind!r}")
             snapshot, hits = self._snapshot_from_raw(event)
+            self._record_provenance(event)
             self._last_raw = event
             self._raw_snapshot = snapshot
             if self._detached:
@@ -589,7 +599,7 @@ class RevmDebugSession:
         self._pending_count = command.count
 
     def _continue_raw(self) -> None:
-        if self._prepare_write_watch():
+        if self._prepare_write_watch() or self.provenance.enabled:
             self._chain.step()
         elif self._mode is StepMode.RUN:
             self._sync_breakpoints()
@@ -886,6 +896,28 @@ class RevmDebugSession:
             key = (location.file_id, location.line)
             self.gas_by_line[key] = self.gas_by_line.get(key, 0) + spent
 
+    def _record_provenance(self, raw: dict[str, Any]) -> None:
+        previous = self._last_raw
+        if (
+            not self.provenance.enabled
+            or previous is None
+            or int(previous["depth"]) != int(raw["depth"])
+            or int(previous["step"]) >= int(raw["step"])
+        ):
+            return
+        self.provenance.record(
+            step=int(previous["step"]),
+            pc=int(previous["pc"]),
+            opcode=int(previous["opcode"]),
+            mnemonic=str(previous["mnemonic"]),
+            depth=int(previous["depth"]),
+            gas_before=int(previous["gas_remaining"]),
+            gas_remaining=int(raw["gas_remaining"]),
+            mem_size=int(previous["memory_size"]),
+            before=[int(value, 16) for value in reversed(previous["stack"])],
+            after=[int(value, 16) for value in reversed(raw["stack"])],
+        )
+
     def _sync_frames(self, raw: dict[str, Any]) -> None:
         old = self._frames
         origin = _address_bytes(raw["origin"])
@@ -995,16 +1027,11 @@ class RevmDebugSession:
         if (
             function is not None
             and frame.internal
+            and frame.internal[-1].function is not None
+            and function.ast_id == frame.internal[-1].function.ast_id
             and loc.entry.start == function.start
             and loc.entry.length == function.length
-            and (
-                frame.internal[-1].function is None
-                or function.ast_id == frame.internal[-1].function.ast_id
-            )
         ):
-            # The dispatcher can reach a source-mapped wrapper through a generated
-            # frame. Its jump into the actual body is an entry, not a nested call.
-            frame.internal[-1].function = function
             frame.internal[-1].entry_pc = destination
             frame.internal[-1].entry_sp = len(raw["stack"])
             return
@@ -1261,6 +1288,42 @@ class RevmDebugSession:
             return self._chain.is_storage_warm(_address_hex(address), int(args[0]))
         if not current:
             raise SessionError(f"inspect {op!r} requires the innermost REVM frame")
+        if op == "find_needle":
+            needle = bytes.fromhex(str(args[0]))
+            limit = max(1, int(args[1])) if len(args) > 1 else 200
+            code = frame.disassembly.code
+            aligned = frame.disassembly.by_pc
+            jumpdests = sorted(frame.disassembly.jumpdests)
+            hits: list[dict[str, Any]] = []
+            start = 0
+            while len(hits) < limit:
+                pc = code.find(needle, start)
+                if pc < 0:
+                    break
+                instruction = aligned.get(pc)
+                location = frame.location(pc) if instruction is not None else None
+                hits.append(
+                    {
+                        "pc": pc,
+                        "instruction_aligned": instruction is not None,
+                        "jumpdest": pc in frame.disassembly.jumpdests,
+                        "nearest_jumpdest": next(
+                            (dest for dest in reversed(jumpdests) if dest <= pc), None
+                        ),
+                        "text": (
+                            instruction.render()
+                            if instruction is not None
+                            else code[pc : pc + len(needle)].hex()
+                        ),
+                        "line": (
+                            location.line
+                            if location is not None and not location.is_generated
+                            else 0
+                        ),
+                    }
+                )
+                start = pc + 1
+            return {"hits": hits, "total": code.count(needle), "code_size": len(code)}
         if op == "read_storage":
             address = bytes(args[1]) if len(args) > 1 and args[1] else frame.address
             return self._state.get_storage(address, int(args[0]))
