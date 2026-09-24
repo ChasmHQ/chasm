@@ -131,7 +131,9 @@ def test_loop_iterates_with_next(bank):
     tx = contract.functions.deposit().transact(
         {"from": alice.address, "value": w3.to_wei(1, "ether"), "gas": 300_000}
     )
-    w3.eth.wait_for_transaction_receipt(tx)
+    receipt = w3.eth.wait_for_transaction_receipt(tx)
+    assert receipt.status == 1
+    assert contract.functions.history(0).call() == w3.to_wei(1, "ether")
 
     def txfn():
         contract.functions.sumHistory().call()
