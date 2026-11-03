@@ -6,8 +6,8 @@ import pytest
 
 
 def test_assembly_parses_literals_and_nesting():
-    from sevm.assembly import parse
-    from sevm.assembly.parser import Call, Literal
+    from chasm_debugger.assembly import parse
+    from chasm_debugger.assembly.parser import Call, Literal
 
     (node,) = parse("sstore(3, add(sload(3), 1))")
     assert isinstance(node, Call) and node.name == "sstore"
@@ -18,7 +18,7 @@ def test_assembly_parses_literals_and_nesting():
 
 
 def test_assembly_parses_hex_units_bools_and_strings():
-    from sevm.assembly import parse
+    from chasm_debugger.assembly import parse
 
     assert parse("mstore(0x80, 0xdeadBEEF)")[0].args[1].value == 0xDEADBEEF
     assert parse("mstore(0x80, 1 ether)")[0].args[1].value == 10**18
@@ -31,7 +31,7 @@ def test_assembly_parses_hex_units_bools_and_strings():
 
 
 def test_assembly_parses_several_statements():
-    from sevm.assembly import parse
+    from chasm_debugger.assembly import parse
 
     nodes = parse("mstore(0x80, 1); mstore8(0xa0, 0x61); mload(0x80)")
     assert [n.name for n in nodes] == ["mstore", "mstore8", "mload"]
@@ -40,7 +40,7 @@ def test_assembly_parses_several_statements():
 
 
 def test_assembly_rejects_bad_input_with_a_reason():
-    from sevm.assembly import AsmError, parse
+    from chasm_debugger.assembly import AsmError, parse
 
     cases = {
         "mstore(1)": "takes 2 argument",
@@ -61,7 +61,7 @@ def test_assembly_rejects_bad_input_with_a_reason():
 
 
 def test_assembly_head_detection_leaves_solidity_alone():
-    from sevm.assembly import has_builtin_head, lexes
+    from chasm_debugger.assembly import has_builtin_head, lexes
 
     assert has_builtin_head("mstore(0x80, 1)")
     assert has_builtin_head("REVERT(0, 0)")  # blocked names claim the line too
@@ -162,7 +162,7 @@ def test_assembly_failure_does_not_disturb_the_frame(deposit_debugger):
 
 
 def test_assembly_help_is_generated_from_the_builtin_table(deposit_debugger):
-    from sevm.assembly import listing
+    from chasm_debugger.assembly import listing
 
     body = " ".join(deposit_debugger.run("help assembly").lines)
     for builtin in listing():

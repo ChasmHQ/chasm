@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.4.22 <0.9.0;
 
-// Minimal `console` bundled with sevm. Each `log` overload ABI-encodes a `log(...)` call
+// Minimal `console` bundled with chasm_debugger. Each `log` overload ABI-encodes a `log(...)` call
 // and forwards it via staticcall to the console address
-// (0x000000000000000000636F6e736F6c652e6c6f67, the ASCII of "console.log"). sevm's engine
+// (0x000000000000000000636F6e736F6c652e6c6f67, the ASCII of "console.log"). chasm's engine
 // intercepts that address, decodes the payload, and prints it. On a real EVM the call hits
 // empty code and is a no-op, exactly like forge-std's console.
 library console {

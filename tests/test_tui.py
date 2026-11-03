@@ -14,8 +14,8 @@ from harness import (
 )
 from tui_harness import run_tui, screen_text, stop_at_credit, tui_app
 
-from sevm.commands import CommandResult
-from sevm.evaluate import Evaluator, make_eval_hook
+from chasm_debugger.commands import CommandResult
+from chasm_debugger.evaluate import Evaluator, make_eval_hook
 
 
 def test_tui_renders_every_pane(bank):
@@ -27,7 +27,7 @@ def test_tui_renders_every_pane(bank):
         )
         w3.eth.wait_for_transaction_receipt(tx)
 
-    from sevm.tui.app import SevmApp
+    from chasm_debugger.tui.app import ChasmApp
 
     session = w3.provider.session
     session.stop_at_start = True
@@ -36,7 +36,7 @@ def test_tui_renders_every_pane(bank):
     session.set_eval_hook(make_eval_hook(evaluator))
     session.start(txfn)
     first = session.wait(timeout=TIMEOUT)
-    app = SevmApp(session, evaluator, first_event=first)
+    app = ChasmApp(session, evaluator, first_event=first)
 
     async def drive():
         async with app.run_test(size=(150, 46)) as pilot:
@@ -93,7 +93,7 @@ def test_tui_startup_commands_run_in_sequence(bank):
         )
         w3.eth.wait_for_transaction_receipt(tx)
 
-    from sevm.tui.app import SevmApp
+    from chasm_debugger.tui.app import ChasmApp
 
     session = w3.provider.session
     session.stop_at_start = True
@@ -102,7 +102,7 @@ def test_tui_startup_commands_run_in_sequence(bank):
     session.set_eval_hook(make_eval_hook(evaluator))
     session.start(txfn)
     first = session.wait(timeout=TIMEOUT)
-    app = SevmApp(
+    app = ChasmApp(
         session,
         evaluator,
         first_event=first,
@@ -141,8 +141,8 @@ def test_tui_startup_commands_run_in_sequence(bank):
 
 
 def test_tui_pane_helpers():
-    from sevm.tui.layout import _hex_compact, memory_region
-    from sevm.tui.opcodes import operand_count, operand_name
+    from chasm_debugger.tui.layout import _hex_compact, memory_region
+    from chasm_debugger.tui.opcodes import operand_count, operand_name
 
     assert _hex_compact(0xFF) == "0xff"
     assert ".." in _hex_compact(2**255, budget=12)
@@ -156,7 +156,7 @@ def test_tui_pane_helpers():
 
 
 def test_stack_labels_name_the_frames_locals(deposit_debugger):
-    from sevm.tui.layout import local_stack_labels
+    from chasm_debugger.tui.layout import local_stack_labels
 
     dbg = deposit_debugger
     stop_at(dbg, 46, "Bank.sol")
@@ -170,7 +170,7 @@ def test_stack_labels_name_the_frames_locals(deposit_debugger):
 
 
 def test_stack_labels_carry_the_declaration_kind(locals_contract):
-    from sevm.tui.layout import local_stack_labels
+    from chasm_debugger.tui.layout import local_stack_labels
 
     dbg = locals_debugger(*locals_contract, "loop", 3)
     try:
@@ -185,7 +185,7 @@ def test_stack_labels_carry_the_declaration_kind(locals_contract):
 
 def test_stack_labels_span_a_multi_word_local(locals_contract):
     """A calldata reference is offset plus length; neither word is anonymous."""
-    from sevm.tui.layout import local_stack_labels
+    from chasm_debugger.tui.layout import local_stack_labels
 
     dbg = locals_debugger(*locals_contract, "calldataTypes", b"\xaa\xbb\xcc")
     try:
@@ -197,7 +197,7 @@ def test_stack_labels_span_a_multi_word_local(locals_contract):
 
 
 def test_stack_labels_are_empty_without_locals(deposit_debugger):
-    from sevm.tui.layout import local_stack_labels
+    from chasm_debugger.tui.layout import local_stack_labels
 
     assert local_stack_labels(None) == {}
 
@@ -208,7 +208,7 @@ def test_panes_do_not_overflow_their_border(bank):
 
     async def body(pilot):
         await stop_at_credit(app, pilot, proj_)
-        from sevm.tui.pane import Pane
+        from chasm_debugger.tui.pane import Pane
 
         return {
             pane.id: (
@@ -441,7 +441,7 @@ def test_memory_preview_is_never_cut_short(bank):
 
 def test_mouse_is_on_by_default_and_can_be_turned_off():
     """Panes render Content, which Textual can select, so the mouse is worth having."""
-    from sevm.cli import build_parser
+    from chasm_debugger.cli import build_parser
 
     args = build_parser().parse_args(["run", "--contracts", "x", "script.py"])
     assert args.no_mouse is False
@@ -502,7 +502,7 @@ def test_console_escapes_error_text_before_rendering(deposit_debugger):
     """
     from rich.console import Console
 
-    from sevm.console import ConsoleFrontend
+    from chasm_debugger.console import ConsoleFrontend
 
     frontend = ConsoleFrontend(deposit_debugger.session, deposit_debugger.evaluator)
     frontend.console = Console(file=io.StringIO(), width=200, highlight=False)
@@ -517,7 +517,7 @@ def test_console_survives_a_bad_command_end_to_end(deposit_debugger):
     """The whole path a typo takes: execute -> CommandResult -> console render."""
     from rich.console import Console
 
-    from sevm.console import ConsoleFrontend
+    from chasm_debugger.console import ConsoleFrontend
 
     frontend = ConsoleFrontend(deposit_debugger.session, deposit_debugger.evaluator)
     frontend.console = Console(file=io.StringIO(), width=200, highlight=False)

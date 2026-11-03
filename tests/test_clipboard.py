@@ -71,7 +71,7 @@ def test_copy_with_nothing_to_copy_says_so(deposit_debugger, fake_clipboard):
 
 
 def test_copy_surfaces_a_missing_clipboard_tool(deposit_debugger, monkeypatch):
-    from sevm import clipboard
+    from chasm_debugger import clipboard
 
     def boom(text: str) -> str:
         raise clipboard.ClipboardError("no system clipboard command found")
@@ -85,7 +85,7 @@ def test_copy_surfaces_a_missing_clipboard_tool(deposit_debugger, monkeypatch):
 
 
 def test_clipboard_module_picks_a_tool_or_says_none(monkeypatch):
-    from sevm import clipboard
+    from chasm_debugger import clipboard
 
     monkeypatch.setattr(clipboard.shutil, "which", lambda name: None)
     assert clipboard.available_tool() is None
@@ -108,7 +108,7 @@ def test_every_pane_renders_content_so_textual_can_select_it(bank):
 
     async def body(pilot):
         await stop_at_credit(app, pilot, proj_)
-        from sevm.tui.pane import Pane
+        from chasm_debugger.tui.pane import Pane
 
         out = {}
         for pane in app.query(Pane):
@@ -128,7 +128,7 @@ def test_dragging_a_pane_selects_characters_and_ctrl_c_copies(bank):
     copied: list = []
 
     async def body(pilot):
-        from sevm import clipboard
+        from chasm_debugger import clipboard
 
         monkey = clipboard.copy
         clipboard.copy = lambda text: (copied.append(text), "pbcopy")[1]
@@ -195,7 +195,7 @@ def test_clipboard_falls_back_to_osc52_when_no_tool_exists(bank):
     session, proj_, app, size = tui_app(bank)
 
     async def body(pilot):
-        from sevm import clipboard
+        from chasm_debugger import clipboard
 
         monkey = clipboard.copy
 
@@ -235,7 +235,7 @@ def test_every_colour_constant_parses_as_a_textual_style():
     """
     from textual.style import Style
 
-    from sevm.tui import theme
+    from chasm_debugger.tui import theme
 
     bad = []
     for name in dir(theme):
@@ -286,7 +286,7 @@ def test_memory_dims_zero_words_and_brightens_real_data(bank):
     seen = run_tui(session, app, size, body)
     from textual.style import Style
 
-    from sevm.tui.theme import C_MEMORY_TEXT, C_MEMORY_ZERO
+    from chasm_debugger.tui.theme import C_MEMORY_TEXT, C_MEMORY_ZERO
 
     def rendered(style: str) -> str:
         # ANSI names resolve to palette indices by render time, so compare like for like.
@@ -304,7 +304,7 @@ def test_copying_raises_a_toast_and_leaves_the_log_alone(bank):
     session, proj_, app, size = tui_app(bank)
 
     async def body(pilot):
-        from sevm import clipboard
+        from chasm_debugger import clipboard
 
         monkey = clipboard.copy
         clipboard.copy = lambda text: "pbcopy"
@@ -344,7 +344,7 @@ def test_cmd_c_copies_on_macos_and_ctrl_c_still_quits(bank):
     copied: list = []
 
     async def body(pilot):
-        from sevm import clipboard
+        from chasm_debugger import clipboard
 
         monkey = clipboard.copy
         clipboard.copy = lambda text: (copied.append(text), "pbcopy")[1]
@@ -444,9 +444,9 @@ def test_no_footer_and_no_pane_focus_binding(bank):
 
 def test_super_key_bindings_exist_for_mac(bank):
     """Cmd is `super` in Textual; the mac chords are bound alongside the ctrl ones."""
-    from sevm.tui.app import SevmApp
+    from chasm_debugger.tui.app import ChasmApp
 
-    keys = {b.key: b.action for b in SevmApp.BINDINGS}
+    keys = {b.key: b.action for b in ChasmApp.BINDINGS}
     assert keys.get("super+c") == "copy_selection"
     assert keys.get("super+p") == "command_palette"
     assert keys.get("super+q") == "quit"
@@ -475,7 +475,7 @@ def test_theme_follows_the_terminal(bank):
 
 
 def test_pane_colours_are_ansi_so_they_match_the_terminal():
-    from sevm.tui import theme
+    from chasm_debugger.tui import theme
 
     accents = {
         name: getattr(theme, name)

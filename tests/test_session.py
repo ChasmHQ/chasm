@@ -10,7 +10,7 @@ from harness import (
     make_web3,
 )
 
-from sevm.session import DebugSession, Finished, Paused, SessionError, StepMode
+from chasm_debugger.session import DebugSession, Finished, Paused, SessionError, StepMode
 
 
 def test_gas_estimation_is_not_debugged(bank):
@@ -71,8 +71,8 @@ def test_debugs_inline_assembly_in_the_original_vault():
 
     from eth_account import Account
 
-    from sevm.compile import DEFAULT_SOLC_VERSION
-    from sevm.compile import compile_project as _compile
+    from chasm_debugger.compile import DEFAULT_SOLC_VERSION
+    from chasm_debugger.compile import compile_project as _compile
 
     here = _os.path.dirname(_os.path.abspath(__file__))
     vault_project = _compile(

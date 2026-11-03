@@ -7,9 +7,9 @@ from harness import (
     line_of,
 )
 
-from sevm.disasm import CALL_OPCODES, OPCODES, Disassembly, disassemble
-from sevm.frames import FunctionIndex
-from sevm.srcmap import (
+from chasm_debugger.disasm import CALL_OPCODES, OPCODES, Disassembly, disassemble
+from chasm_debugger.frames import FunctionIndex
+from chasm_debugger.srcmap import (
     LineIndex,
     PcMap,
     instruction_pcs,

@@ -10,9 +10,9 @@ from __future__ import annotations
 from eth_utils import keccak
 from harness import line_of
 
-from sevm.disasm import Disassembly
-from sevm.dispatch import entries, find_selector
-from sevm.srcmap import PcMap, build_line_indexes
+from chasm_debugger.disasm import Disassembly
+from chasm_debugger.dispatch import entries, find_selector
+from chasm_debugger.srcmap import PcMap, build_line_indexes
 
 DEPOSIT = 0xD0E30DB0
 

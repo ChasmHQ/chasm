@@ -10,14 +10,14 @@ from __future__ import annotations
 import pytest
 from packaging.version import Version
 
-from sevm.compile import (
+from chasm_debugger.compile import (
     DEFAULT_SOLC_VERSION,
     CompileError,
     SourceFile,
     resolve_solc_version,
     solcbin,
 )
-from sevm.compile.versions import _extract_pragmas, _pragma_matches
+from chasm_debugger.compile.versions import _extract_pragmas, _pragma_matches
 
 # A stand-in for what this platform's release index would offer, spanning the versions the
 # tests care about (a pinned 0.8.21, a caret range, and a couple of neighbours to pick

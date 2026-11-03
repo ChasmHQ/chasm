@@ -14,7 +14,7 @@ import sys
 import pytest
 from conftest import FAKE_NEWEST, FIXTURES, make_repo
 
-from sevm import libs
+from chasm_debugger import libs
 
 
 def remove_tree(path: str) -> None:
@@ -40,7 +40,7 @@ def read_text(path: str) -> str:
 
 
 # Marked tests reach the real repositories; conftest skips them without
-# SEVM_NETWORK_TESTS=1.
+# CHASM_NETWORK_TESTS=1.
 NETWORK = pytest.mark.network
 
 

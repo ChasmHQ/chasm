@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from web3 import Web3
 
-from sevm.provider import RevmWeb3Driver
-from sevm.session import Finished, Paused, RevmDebugSession, StepMode
+from chasm_debugger.provider import RevmWeb3Driver
+from chasm_debugger.session import Finished, Paused, RevmDebugSession, StepMode
 
 TIMEOUT = 30.0
 

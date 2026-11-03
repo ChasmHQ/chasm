@@ -2,7 +2,7 @@ use revm::{
     bytecode::opcode,
     primitives::{Address, B256, Bytes, U256, address, keccak256},
 };
-use sevm_revm_core::{
+use chasm_revm_core::{
     AccountSpec, Breakpoint, CHEATCODE_ADDRESS, ChainConfig, CommandValue, DEFAULT_CALLER,
     DEFAULT_TARGET, DebugEngine, DebugEvent, FrameKind, PauseReason, PrankConfig, PrototypeSession,
     SessionConfig, StateCommand, TransactionRequest,
@@ -11,14 +11,14 @@ use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-fn paused(session: &PrototypeSession) -> sevm_revm_core::Snapshot {
+fn paused(session: &PrototypeSession) -> chasm_revm_core::Snapshot {
     match session.wait(TIMEOUT).unwrap() {
         DebugEvent::Paused(snapshot) => *snapshot,
         event => panic!("expected pause, got {event:?}"),
     }
 }
 
-fn finished(session: &PrototypeSession) -> sevm_revm_core::Finished {
+fn finished(session: &PrototypeSession) -> chasm_revm_core::Finished {
     match session.wait(TIMEOUT).unwrap() {
         DebugEvent::Finished(result) => result,
         event => panic!("expected finish, got {event:?}"),

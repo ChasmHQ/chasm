@@ -4,7 +4,7 @@ It is what runs where no native binary can: musl, NixOS, an architecture Solidit
 publish for. These tests drive the JS runtime with a stub script instead of node, so the
 plumbing (arguments, stdin, exit codes, error severity) is exercised offline; the
 end-to-end test that a real soljson.js agrees with the native compiler is marked
-`network` and skipped unless SEVM_NETWORK_TESTS=1.
+`network` and skipped unless CHASM_NETWORK_TESTS=1.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ import os
 
 import pytest
 
-from sevm.compile import CompileError, solcbin, wasm
-from sevm.compile.solc import _OUTPUT_SELECTION
+from chasm_debugger.compile import CompileError, solcbin, wasm
+from chasm_debugger.compile.solc import _OUTPUT_SELECTION
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="stubs a runtime with sh")
 
@@ -37,24 +37,24 @@ def choosing_afresh():
 
 
 def _stub_runtime(tmp_path, monkeypatch, body: str) -> str:
-    """A stand-in for node: `SEVM_NODE` points at it, and it prints `body` on stdout."""
+    """A stand-in for node: `CHASM_NODE` points at it, and it prints `body` on stdout."""
     path = tmp_path / "fake-node"
     path.write_text(f"#!/bin/sh\ncat > /dev/null\n{body}\n")
     path.chmod(0o755)
-    monkeypatch.setenv("SEVM_NODE", str(path))
+    monkeypatch.setenv("CHASM_NODE", str(path))
     return str(path)
 
 
 # -- the runtime -------------------------------------------------------------
 
 
-def test_sevm_node_names_the_runtime(tmp_path, monkeypatch):
+def test_chasm_node_names_the_runtime(tmp_path, monkeypatch):
     path = _stub_runtime(tmp_path, monkeypatch, "true")
     assert wasm.runtime() == path
 
 
 def test_no_runtime_says_what_to_install(monkeypatch):
-    monkeypatch.delenv("SEVM_NODE", raising=False)
+    monkeypatch.delenv("CHASM_NODE", raising=False)
     monkeypatch.setattr(wasm.shutil, "which", lambda name: None)
     assert wasm.runtime() is None
     with pytest.raises(CompileError, match="Install node"):
@@ -151,7 +151,7 @@ def test_without_a_runtime_the_native_failure_stands(choosing_afresh, monkeypatc
 
     with pytest.raises(CompileError) as caught:
         solcbin.compiler("0.8.28")
-    assert "riscv64" in str(caught.value) and "SEVM_NODE" in str(caught.value)
+    assert "riscv64" in str(caught.value) and "CHASM_NODE" in str(caught.value)
 
 
 # -- against the real thing --------------------------------------------------

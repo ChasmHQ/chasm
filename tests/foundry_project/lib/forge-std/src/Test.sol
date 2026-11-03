@@ -4,12 +4,12 @@ pragma solidity >=0.6.2 <0.9.0;
 import {Vm} from "./Vm.sol";
 import {console} from "./console.sol";
 
-// Minimal forge-std `Test` bundled with sevm. Enough to write and debug a standalone test:
+// Minimal forge-std `Test` bundled with chasm_debugger. Enough to write and debug a standalone test:
 // the `vm` cheatcode handle and revert-on-failure assertions.
 //
 // NOTE: unlike real forge-std, these assertions REVERT on failure rather than recording a
 // `failed` flag and continuing. That is deliberate for a debugger: a failed assertion stops
-// the transaction on the spot with a clear reason. Point sevm at a real Foundry project to
+// the transaction on the spot with a clear reason. Point chasm at a real Foundry project to
 // get real forge-std semantics.
 abstract contract Test {
     Vm internal constant vm = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);

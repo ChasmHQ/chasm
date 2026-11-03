@@ -1,6 +1,6 @@
 use revm::primitives::keccak256;
 use serde_json::{Value, json};
-use sevm_revm_headless::{PROTOCOL_VERSION, serve};
+use chasm_revm_headless::{PROTOCOL_VERSION, serve};
 use std::{
     io::{Cursor, Read, Write},
     process::{Command, Stdio},
@@ -102,7 +102,7 @@ fn reports_protocol_and_recovers_after_bad_input() {
 
 #[test]
 fn binary_serves_the_protocol_on_stdio() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sevm-revm-headless"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_chasm-revm-headless"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

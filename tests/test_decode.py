@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sevm.decode import (
+from chasm_debugger.decode import (
     StorageDecoder,
     decode_calldata,
     decode_revert,
@@ -20,7 +20,7 @@ def test_storage_decoder_reads_every_shape(deposit_debugger):
     assert values["owner"].value.startswith("0x")
     assert values["feeBps"].value == 25  # packed after owner in slot 0
     assert values["totalDeposits"].value == 10**18
-    assert values["name"].display == '"sevm-bank"'
+    assert values["name"].display == '"chasm-bank"'
     assert "mapping" in values["balances"].display
     assert values["history"].display.startswith("[0 items]")
 

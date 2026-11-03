@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 from eth_utils import keccak
 
-from sevm.breakpoints import WATCH_ACCESS, WATCH_READ, WATCH_WRITE
-from sevm.evaluate import Evaluator, make_eval_hook
-from sevm.foundry import RevmTestsDriver, discover_tests, select_test
-from sevm.session import Finished, Paused, RevmDebugSession, StepMode
+from chasm_debugger.breakpoints import WATCH_ACCESS, WATCH_READ, WATCH_WRITE
+from chasm_debugger.evaluate import Evaluator, make_eval_hook
+from chasm_debugger.foundry import RevmTestsDriver, discover_tests, select_test
+from chasm_debugger.session import Finished, Paused, RevmDebugSession, StepMode
 
 TIMEOUT = 30.0
 

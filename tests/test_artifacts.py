@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sevm.compile.model import _strip_metadata
+from chasm_debugger.compile.model import _strip_metadata
 
 
 def test_project_compiles_both_contracts(proj):

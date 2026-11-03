@@ -8,7 +8,7 @@ from harness import (
     locals_debugger,
 )
 
-from sevm.session import Finished, Paused, StepMode
+from chasm_debugger.session import Finished, Paused, StepMode
 
 
 def test_session_opens_on_the_called_function(deposit_debugger):

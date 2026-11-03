@@ -11,9 +11,13 @@ import re
 
 import pytest
 
-from sevm.compile import CompileError, compile_foundry_project, read_foundry_config
-from sevm.compile.build import _build_project
-from sevm.foundry import discover_tests, prepare_project
+from chasm_debugger.compile import (
+    CompileError,
+    compile_foundry_project,
+    read_foundry_config,
+)
+from chasm_debugger.compile.build import _build_project
+from chasm_debugger.foundry import discover_tests, prepare_project
 
 
 def read_text(path: str) -> str:
@@ -22,7 +26,7 @@ def read_text(path: str) -> str:
 
 
 # Marked tests reach the real repositories; conftest skips them without
-# SEVM_NETWORK_TESTS=1.
+# CHASM_NETWORK_TESTS=1.
 NETWORK = pytest.mark.network
 
 
@@ -176,7 +180,7 @@ def test_standalone_end_to_end_install_and_compile(tmp_path, local_forge_std):
     )
     assert project.artifact("DemoTest") is not None
     assert "forge-std/=lib/forge-std/src/" in project.remappings
-    # What sevm resolved is written down, so `forge` resolves the project the same way.
+    # What chasm resolved is written down, so `forge` resolves the project the same way.
     written = read_text(os.path.join(root, "remappings.txt")).splitlines()
     assert "forge-std/=lib/forge-std/src/" in written
     assert any("installing forge-std" in n for n in notices)
@@ -226,7 +230,7 @@ def test_unlinked_bytecode_does_not_break_the_project():
 def test_python_run_resolves_libraries_and_enables_cheatcodes(
     tmp_path, local_forge_std, monkeypatch
 ):
-    import sevm.cli as cli
+    import chasm_debugger.cli as cli
 
     contracts = tmp_path / "contracts"
     contracts.mkdir()

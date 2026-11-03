@@ -3,9 +3,9 @@ requires = ["maturin>=1.10,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "sevm"
+name = "chasm-debugger"
 version = "0.1.0"
-description = "sevm is an interactive, gdb-style Solidity/EVM debugger on REVM, built for red-team dynamic analysis."
+description = "Chasm is an interactive, gdb-style Solidity/EVM debugger on REVM, built for red-team dynamic analysis."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -21,13 +21,13 @@ classifiers = [
 ]
 
 # Runtime dependencies. Every third-party package imported by the sources under
-# src/sevm is declared here (not left to transitive resolution). `eth`, `eth_abi`,
-# `eth_utils` and `eth_account` all arrive with web3, but sevm imports them directly,
+# src/chasm_debugger is declared here (not left to transitive resolution). `eth`, `eth_abi`,
+# `eth_utils` and `eth_account` all arrive with web3, but chasm imports them directly,
 # so they are named explicitly.
 #
-# Do not use `web3[tester]`: sevm supplies its own REVM provider, and the tester extra
+# Do not use `web3[tester]`: chasm supplies its own REVM provider, and the tester extra
 # would restore the archived Py-EVM stack. The pycryptodome backend is named directly so
-# the keccak implementation sevm relies on is not left to a transitive dependency.
+# the keccak implementation chasm relies on is not left to a transitive dependency.
 dependencies = [
     "web3>=7.0",
     "eth-hash[pycryptodome]>=0.5.1",
@@ -47,16 +47,16 @@ dependencies = [
 ]
 
 [project.scripts]
-sevm = "sevm.cli:main"
-sevm-engine = "sevm.revm_server:main"
+chasm = "chasm_debugger.cli:main"
+chasm-engine = "chasm_debugger.revm_server:main"
 
 [project.urls]
-Homepage = "https://github.com/your-org/sevm"
-Documentation = "https://github.com/your-org/sevm/blob/main/README.md"
+Homepage = "https://github.com/ChasmHQ/debugger"
+Documentation = "https://github.com/ChasmHQ/debugger/blob/main/README.md"
 
 [tool.maturin]
 manifest-path = "rust/python/Cargo.toml"
-module-name = "sevm._revm"
+module-name = "chasm_debugger._revm"
 python-source = "src"
 
 [dependency-groups]
@@ -70,10 +70,10 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-markers = ["network: hits the network; run with SEVM_NETWORK_TESTS=1"]
+markers = ["network: hits the network; run with CHASM_NETWORK_TESTS=1"]
 testpaths = ["tests"]
 # Put tests/ on sys.path so the shared `harness` module imports cleanly, and rely
-# on the installed (editable) `sevm` package for `import sevm.*` - no sys.path hacks.
+# on the installed (editable) `chasm_debugger` package - no sys.path hacks.
 pythonpath = ["tests"]
 addopts = "-ra"
 

@@ -10,5 +10,5 @@ license = "MIT"
 
 [workspace.dependencies]
 revm = { version = "=43.0.2", default-features = false, features = ["std"] }
-sevm-revm-core = { path = "rust/core" }
-sevm-revm-headless = { path = "rust/headless" }
+chasm-revm-core = { path = "rust/core" }
+chasm-revm-headless = { path = "rust/headless" }

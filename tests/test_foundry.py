@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from sevm.cheatcodes import (
+from chasm_debugger.cheatcodes import (
     CheatError,
     CheatState,
     all_specs,
@@ -22,14 +22,14 @@ from sevm.cheatcodes import (
     parse_cheat_arg,
     spec_by_name,
 )
-from sevm.evaluate import Evaluator, make_eval_hook
-from sevm.foundry import (
+from chasm_debugger.evaluate import Evaluator, make_eval_hook
+from chasm_debugger.foundry import (
     discover_tests,
     make_test_driver,
     prepare_project,
     select_test,
 )
-from sevm.session import DebugSession, Finished, Paused, StepMode
+from chasm_debugger.session import DebugSession, Finished, Paused, StepMode
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.join(HERE, "foundry_project")
@@ -123,7 +123,7 @@ def test_cheats_take_effect(fn, solo_project):
 
 def test_failed_assertion_reverts_with_its_message(failing_project):
     # forge-std routes a failed assertEq through vm.assertEq, so the revert reason has to
-    # come out of sevm's cheat engine, not out of a plain Solidity require.
+    # come out of chasm's cheat engine, not out of a plain Solidity require.
     session, event = run_to_finish(failing_project, "DemoTest", "testFails")
     assert isinstance(event, Finished) and not event.ok
     assert "DemoTest.testFails reverted" in str(session.exit_error)
@@ -145,7 +145,7 @@ def test_project_prank_reverts_non_owner(token_project):
 
 
 def test_multi_test_stops_at_each_test(solo_project):
-    from sevm.foundry import make_tests_driver
+    from chasm_debugger.foundry import make_tests_driver
 
     project = solo_project
     targets = discover_tests(project)
@@ -336,8 +336,8 @@ def _cheat(sig, arg_types, args, ret_types, state=None, caller=None):
     ],
 )
 def test_env_scalar_reads_the_process_environment(monkeypatch, value, sol, abi, expected):
-    monkeypatch.setenv("SEVM_T", value)
-    got = _cheat(f"env{sol}(string)", ["string"], ["SEVM_T"], [abi])[0]
+    monkeypatch.setenv("CHASM_T", value)
+    got = _cheat(f"env{sol}(string)", ["string"], ["CHASM_T"], [abi])[0]
     if isinstance(got, str):
         assert got.lower() == expected.lower()
     else:
@@ -345,16 +345,16 @@ def test_env_scalar_reads_the_process_environment(monkeypatch, value, sol, abi, 
 
 
 def test_env_array_splits_on_the_delimiter(monkeypatch):
-    monkeypatch.setenv("SEVM_NUMS", "1,2,3")
+    monkeypatch.setenv("CHASM_NUMS", "1,2,3")
     got = _cheat(
-        "envUint(string,string)", ["string", "string"], ["SEVM_NUMS", ","], ["uint256[]"]
+        "envUint(string,string)", ["string", "string"], ["CHASM_NUMS", ","], ["uint256[]"]
     )
     assert got[0] == (1, 2, 3)
 
 
 def test_env_missing_variable_reverts():
     with pytest.raises(CheatError, match="not found"):
-        _cheat("envUint(string)", ["string"], ["SEVM_DOES_NOT_EXIST"], ["uint256"])
+        _cheat("envUint(string)", ["string"], ["CHASM_DOES_NOT_EXIST"], ["uint256"])
 
 
 def test_env_or_returns_default_on_miss_and_value_on_hit(monkeypatch):
@@ -362,17 +362,17 @@ def test_env_or_returns_default_on_miss_and_value_on_hit(monkeypatch):
         _cheat(
             "envOr(string,uint256)",
             ["string", "uint256"],
-            ["SEVM_ABSENT", 7],
+            ["CHASM_ABSENT", 7],
             ["uint256"],
         )[0]
         == 7
     )
-    monkeypatch.setenv("SEVM_PRESENT", "99")
+    monkeypatch.setenv("CHASM_PRESENT", "99")
     assert (
         _cheat(
             "envOr(string,uint256)",
             ["string", "uint256"],
-            ["SEVM_PRESENT", 7],
+            ["CHASM_PRESENT", 7],
             ["uint256"],
         )[0]
         == 99
@@ -383,16 +383,18 @@ def test_env_or_array_default(monkeypatch):
     got = _cheat(
         "envOr(string,string,uint256[])",
         ["string", "string", "uint256[]"],
-        ["SEVM_ABSENT_ARR", ",", [4, 5]],
+        ["CHASM_ABSENT_ARR", ",", [4, 5]],
         ["uint256[]"],
     )
     assert got[0] == (4, 5)
 
 
 def test_env_exists(monkeypatch):
-    monkeypatch.setenv("SEVM_EXISTS", "x")
-    assert _cheat("envExists(string)", ["string"], ["SEVM_EXISTS"], ["bool"])[0] is True
-    assert _cheat("envExists(string)", ["string"], ["SEVM_MISSING"], ["bool"])[0] is False
+    monkeypatch.setenv("CHASM_EXISTS", "x")
+    assert _cheat("envExists(string)", ["string"], ["CHASM_EXISTS"], ["bool"])[0] is True
+    assert (
+        _cheat("envExists(string)", ["string"], ["CHASM_MISSING"], ["bool"])[0] is False
+    )
 
 
 @pytest.mark.parametrize(

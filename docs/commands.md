@@ -19,7 +19,7 @@ expressions are Solidity and the machine underneath is the EVM.
 | `u` / `until LOC` | run to a line or `*PC` |
 
 `step` and `next` understand *internal* Solidity calls. Those compile to `JUMP`, so EVM
-depth never changes, and sevm tracks them through the source map's `i` and `o` jump
+depth never changes, and chasm tracks them through the source map's `i` and `o` jump
 markers.
 
 Every stop ends with a one-line machine echo, so opcode-level stepping always shows what
@@ -27,7 +27,7 @@ the last step did to the machine — the stack height as old->new when it change
 reads `sp 13->12`), plus pc, opcode, gas remaining and step count:
 
 ```bash
-(sevm) si
+(chasm) si
 pc 0x0077  POP     sp 13->12  gas 2,843,413  step 5
 ```
 
@@ -38,7 +38,7 @@ tester chain — a genuine clean slate for iterating on calldata. An argument of
 `@path` (at launch, or to `run`) is replaced by that file's whitespace-stripped contents:
 payload hex runs to thousands of characters, past what a Windows console or command line
 will carry. The same `@file` syntax works at launch
-(`sevm run ... script.py @payload.hex`), at the prompt (`run @payload.hex`) and anywhere
+(`chasm run ... script.py @payload.hex`), at the prompt (`run @payload.hex`) and anywhere
 else the script's arguments are set.
 
 ## Breakpoints
@@ -58,7 +58,7 @@ else the script's arguments are set.
 Watchpoints work on state variables, on mapping elements (`watch balances[msg.sender]`),
 and on memory (`watch *0x80`).
 
-sevm also stops on reverts by default, at the failing instruction, and decodes the reason
+chasm also stops on reverts by default, at the failing instruction, and decodes the reason
 as `reverted: "..."`, `panic 0x11`, or a custom error with its arguments.
 
 ## Inspection
@@ -86,7 +86,7 @@ as `reverted: "..."`, `panic 0x11`, or a custom error with its arguments.
 `info storage` decodes the whole layout, packed slots included:
 
 ```bash
-(sevm) info storage
+(chasm) info storage
 Bank at 0x4f9da333dcf4e5a53772791b95c161b2fc041859
   slot   0+0  owner            address                = 0xf2e246bb...5b (cold)
   slot   0+20 feeBps           uint96                 = 25 (cold)
@@ -105,22 +105,22 @@ three, and the implementation's JUMPDEST is the pc every caller converges on, so
 there catches a proxy, a raw-calldata call and an internal call alike:
 
 ```bash
-(sevm) sig balances
+(chasm) sig balances
 balances(address)  0x27e235e3
-(sevm) info address balances
+(chasm) info address balances
 Bank.balances(address)
 selector     0x27e235e3
 dispatch     0x0096  where the dispatcher compares it
 wrapper      0x0167  the external entry: guards, then decodes calldata
 internal     0x052f  src/Bank.sol:17
 break there with `b *0x52f`
-(sevm) b *0x52f
+(chasm) b *0x52f
 Breakpoint 4 at pc 0x52f
-(sevm) c
+(chasm) c
 Breakpoint 4, Bank at src/Bank.sol:17
   17      mapping(address => uint256) public balances;   // slot 2
 pc 0x052f  JUMPDEST sp 3  gas 29,400,111  step 2027
-(sevm) bt
+(chasm) bt
 -> #0 <compiler-generated> at src/Bank.sol:17
    #1 Bank at pc 0x18c
    #2 BankTest.testDeposit() at test/Bank.t.sol:19
@@ -135,9 +135,9 @@ Neither needs an ABI. A signature this contract does not declare is hashed, as `
 does, and the selector is looked for in the bytecode anyway:
 
 ```bash
-(sevm) sig transfer(address,uint256)
+(chasm) sig transfer(address,uint256)
 transfer(address,uint256)  0xa9059cbb  (hashed here; not in this ABI)
-(sevm) info address 0xa9059cbb
+(chasm) info address 0xa9059cbb
 selector     0xa9059cbb
 the dispatcher never tests this selector: a call carrying it lands in the fallback
 ```
@@ -170,5 +170,5 @@ They bypass solc, so they work on contracts with no source and still mix into a 
 expression:
 
 ```bash
-(sevm) p $storage[1] + 1 ether
+(chasm) p $storage[1] + 1 ether
 ```

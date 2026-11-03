@@ -1,0 +1,1680 @@
+"""Source-level debugger session backed by the in-process REVM bridge."""
+
+from __future__ import annotations
+
+import queue
+import threading
+import traceback
+from collections.abc import Callable, Sequence
+from contextlib import contextmanager
+from dataclasses import replace
+from typing import Any, cast
+
+from eth_abi import encode as abi_encode
+
+from .. import assembly
+from .._revm import RevmChain
+from ..breakpoints import (
+    BP_OPCODE,
+    BP_PC,
+    WATCH_ACCESS,
+    WATCH_READ,
+    WATCH_WRITE,
+    BreakpointSet,
+    Watchpoint,
+)
+from ..cheatcodes import (
+    CONSOLE_ADDRESS,
+    VM_ADDRESS,
+    CheatError,
+    CheatState,
+    apply_cheat,
+    cheat_name,
+    decode_console_log,
+)
+from ..compile import Project
+from ..decode import decode_revert
+from ..frames import (
+    EvmFrame,
+    FrameSnapshot,
+    FunctionIndex,
+    InternalFrame,
+    StackEntry,
+)
+from ..locals import LocalsIndex
+from ..srcmap import build_line_indexes
+from . import framelocals, snapshots
+from .code import CodeIndex
+from .events import Finished, Paused, Resume, SessionError, StepMode
+from .provenance import Provenance
+
+_ERROR_SELECTOR = bytes.fromhex("08c379a0")
+_ANY_ADDRESS = "0x" + "00" * 20
+_JUMP_MNEMONICS = frozenset({"JUMP", "JUMPI"})
+_MEMORY_WRITE_MNEMONICS = frozenset(
+    {
+        "MSTORE",
+        "MSTORE8",
+        "CALLDATACOPY",
+        "CODECOPY",
+        "EXTCODECOPY",
+        "RETURNDATACOPY",
+        "MCOPY",
+    }
+)
+
+
+class _StackView:
+    def __init__(self, top_first: list[str]) -> None:
+        self.values = [int(value, 16) for value in reversed(top_first)]
+
+
+class _MemoryView:
+    def __init__(self, data: bytes) -> None:
+        self._bytes = bytearray(data)
+
+    def __len__(self) -> int:
+        return len(self._bytes)
+
+
+class _GasView:
+    def __init__(self, limit: int, remaining: int, refunded: int) -> None:
+        self.start_gas = limit
+        self.gas_remaining = remaining
+        self.gas_refunded = refunded
+
+
+class _CodeView:
+    def __init__(self, pc: int) -> None:
+        self.program_counter = pc + 1
+
+
+class _TransactionView:
+    def __init__(self, origin: bytes) -> None:
+        self.origin = origin
+
+
+class _ComputationView:
+    def __init__(
+        self,
+        *,
+        pc: int,
+        stack: list[str],
+        memory: bytes,
+        gas_limit: int,
+        gas_remaining: int,
+        gas_refund: int,
+        origin: bytes,
+    ) -> None:
+        self.code = _CodeView(pc)
+        self._stack = _StackView(stack)
+        self._memory = _MemoryView(memory)
+        self._gas_meter = _GasView(gas_limit, gas_remaining, gas_refund)
+        self.transaction_context = _TransactionView(origin)
+
+    def get_gas_remaining(self) -> int:
+        return self._gas_meter.gas_remaining
+
+
+class _RevmExecutionContext:
+    def __init__(self, session: RevmDebugSession) -> None:
+        self._session = session
+
+    @property
+    def block_number(self) -> int:
+        return int(self._session._chain.read_block_number(), 16)
+
+    @property
+    def _block_number(self) -> int:
+        return self.block_number
+
+    @_block_number.setter
+    def _block_number(self, value: int) -> None:
+        self._session._chain.write_block_number(value)
+
+    @property
+    def timestamp(self) -> int:
+        return int(self._session._chain.read_timestamp(), 16)
+
+    @property
+    def _timestamp(self) -> int:
+        return self.timestamp
+
+    @_timestamp.setter
+    def _timestamp(self, value: int) -> None:
+        self._session._chain.write_timestamp(value)
+
+    @property
+    def base_fee_per_gas(self) -> int:
+        return int(self._session._chain.read_base_fee())
+
+    @property
+    def _base_fee_per_gas(self) -> int:
+        return self.base_fee_per_gas
+
+    @_base_fee_per_gas.setter
+    def _base_fee_per_gas(self, value: int) -> None:
+        self._session._chain.write_base_fee(value)
+
+    @property
+    def chain_id(self) -> int:
+        return int(self._session._chain.read_chain_id())
+
+    @property
+    def _chain_id(self) -> int:
+        return self.chain_id
+
+    @_chain_id.setter
+    def _chain_id(self, value: int) -> None:
+        self._session._chain.write_chain_id(value)
+
+    @property
+    def coinbase(self) -> bytes:
+        return _address_bytes(self._session._chain.read_coinbase())
+
+    @property
+    def _coinbase(self) -> bytes:
+        return self.coinbase
+
+    @_coinbase.setter
+    def _coinbase(self, value: bytes) -> None:
+        self._session._chain.write_coinbase(_address_hex(value))
+
+    @property
+    def mix_hash(self) -> bytes:
+        return bytes(self._session._chain.read_prevrandao())
+
+    @property
+    def _mix_hash(self) -> bytes:
+        return self.mix_hash
+
+    @_mix_hash.setter
+    def _mix_hash(self, value: bytes) -> None:
+        self._session._chain.write_prevrandao(value)
+
+    @property
+    def difficulty(self) -> int:
+        return int(self._session._chain.read_difficulty(), 16)
+
+    @property
+    def _difficulty(self) -> int:
+        return self.difficulty
+
+    @_difficulty.setter
+    def _difficulty(self, value: int) -> None:
+        self._session._chain.write_difficulty(value)
+
+
+class _RevmState:
+    def __init__(self, session: RevmDebugSession) -> None:
+        self._session = session
+        self.execution_context = _RevmExecutionContext(session)
+
+    def get_balance(self, address: bytes) -> int:
+        return int(self._session._chain.read_balance(_address_hex(address)), 16)
+
+    def set_balance(self, address: bytes, value: int) -> None:
+        self._session._chain.write_balance(_address_hex(address), value)
+
+    def get_code(self, address: bytes) -> bytes:
+        return bytes(self._session._chain.read_code_at(_address_hex(address)))
+
+    def set_code(self, address: bytes, code: bytes) -> None:
+        self._session._chain.write_code_at(_address_hex(address), code)
+
+    def get_storage(self, address: bytes, slot: int) -> int:
+        return int(self._session._chain.read_storage_at(_address_hex(address), slot), 16)
+
+    def set_storage(self, address: bytes, slot: int, value: int) -> None:
+        self._session._chain.write_storage_at(_address_hex(address), slot, value)
+
+    def get_transient_storage(self, address: bytes, slot: int) -> bytes:
+        value = int(self._session._chain.read_transient(_address_hex(address), slot), 16)
+        return value.to_bytes(32, "big")
+
+    def set_transient_storage(self, address: bytes, slot: int, value: int) -> None:
+        self._session._chain.write_transient(_address_hex(address), slot, value)
+
+    def get_nonce(self, address: bytes) -> int:
+        return int(self._session._chain.read_nonce(_address_hex(address)))
+
+    def set_nonce(self, address: bytes, value: int) -> None:
+        self._session._chain.write_nonce(_address_hex(address), value)
+
+    def mark_storage_warm(self, address: bytes, slot: int) -> None:
+        self._session._chain.warm_storage(_address_hex(address), slot)
+
+    def is_storage_warm(self, address: bytes, slot: int) -> bool:
+        return self._session._chain.is_storage_warm(_address_hex(address), slot)
+
+
+class RevmDebugSession:
+    """Drive REVM through the session interface shared by the console and TUI."""
+
+    def __init__(
+        self,
+        project: Project,
+        breakpoints: BreakpointSet | None = None,
+        stop_at_start: bool = True,
+    ) -> None:
+        self.project = project
+        self.breakpoints = breakpoints or BreakpointSet()
+        self.cheats = CheatState()
+        self.provenance = Provenance()
+        self.functions = FunctionIndex(project.asts)
+        self.locals = LocalsIndex(project.asts)
+        self.line_indexes = build_line_indexes(project.sources.values())
+        self.code = CodeIndex(project, self.line_indexes, self.locals, self.breakpoints)
+        self.stop_at_start = stop_at_start
+        self.stop_on_revert = True
+
+        self._chain = RevmChain()
+        self._state = _RevmState(self)
+        self._deployed: dict[str, Any] = {}
+        self._frames: list[EvmFrame] = []
+        self._last_raw: dict[str, Any] | None = None
+        self._raw_snapshot: FrameSnapshot | None = None
+        self._event_q: queue.Queue[Any] = queue.Queue()
+        self._cmd_q: queue.Queue[Resume] = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._eval_hook: Any = None
+        self._restart_factory: Callable[[list[str]], Any] | None = None
+        self._restart_argv: list[str] = []
+        self._mode = StepMode.RUN
+        self._mode_depth = 0
+        self._mode_internal = 0
+        self._mode_key: tuple[int, int] | None = None
+        self._mode_target_pc: int | None = None
+        self._pending_count = 1
+        self._pending_watches: dict[int, int | None] = {}
+        self._opening_stop_pending = stop_at_start
+        self._restart_opening = False
+        self._detached = False
+
+        self.armed = False
+        self.finished = False
+        self.step_index = 0
+        self.estimations = 0
+        self.gas_by_line: dict[tuple[int, int], int] = {}
+        self.gas_by_opcode: dict[str, int] = {}
+        self.last_snapshot: FrameSnapshot | None = None
+        self.exit_error: str | None = None
+        self.last_revert: str | None = None
+
+    def set_eval_hook(self, hook: Any) -> None:
+        self._eval_hook = hook
+
+    def set_restart_factory(
+        self,
+        factory: Callable[[list[str]], Any],
+        initial_argv: Sequence[str],
+    ) -> None:
+        self._restart_factory = factory
+        self._restart_argv = list(initial_argv)
+
+    def start(self, target: Any) -> None:
+        if self._thread is not None:
+            raise SessionError("session already started")
+        if not hasattr(target, "run_revm") and not callable(target):
+            raise SessionError("the REVM session target is not callable")
+        self.armed = True
+
+        def runner() -> None:
+            try:
+                if hasattr(target, "run_revm"):
+                    target.run_revm(self)
+                else:
+                    target()
+                self._event_q.put(Finished(ok=True))
+            except BaseException as exc:
+                self.exit_error = f"{type(exc).__name__}: {exc}"
+                self._event_q.put(
+                    Finished(
+                        ok=False,
+                        error=self.exit_error,
+                        traceback=traceback.format_exc(),
+                    )
+                )
+            finally:
+                self.finished = True
+                self.armed = False
+
+        self._thread = threading.Thread(target=runner, name="chasm-revm", daemon=True)
+        self._thread.start()
+
+    def wait(self, timeout: float | None = None) -> Any:
+        try:
+            event = self._event_q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if isinstance(event, Paused):
+            self.last_snapshot = event.snapshot
+        return event
+
+    def resume(
+        self,
+        mode: StepMode = StepMode.STEPI,
+        count: int = 1,
+        target_pc: int | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        if self.finished:
+            return Finished(ok=True)
+        self._sync_breakpoints()
+        self._cmd_q.put(Resume(mode=mode, count=max(1, count), target_pc=target_pc))
+        return self.wait(timeout=timeout)
+
+    def detach(self, timeout: float = 10.0) -> None:
+        if self._thread is not None and not self.finished:
+            self._cmd_q.put(Resume(mode=StepMode.RUN, detach=True))
+            while True:
+                event = self.wait(timeout=timeout)
+                if event is None or isinstance(event, Finished):
+                    break
+                self._cmd_q.put(Resume(mode=StepMode.RUN, detach=True))
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def restart(self, argv: list[str] | None = None, timeout: float = 120.0) -> Any:
+        if self._restart_factory is None:
+            raise SessionError(
+                "no restart target; the session was not started by `chasm run`"
+            )
+        if self._thread is not None and not self.finished:
+            self._cmd_q.put(Resume(mode=StepMode.RUN, detach=True))
+            while True:
+                event = self.wait(timeout=timeout)
+                if event is None:
+                    raise SessionError("the current run did not finish; restart aborted")
+                if isinstance(event, Finished):
+                    break
+                self._cmd_q.put(Resume(mode=StepMode.RUN, detach=True))
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        for events in (self._event_q, self._cmd_q):
+            while True:
+                try:
+                    events.get_nowait()
+                except queue.Empty:
+                    break
+        self._thread = None
+        self._detached = False
+        self.finished = False
+        self.armed = False
+        self.last_snapshot = None
+        self.exit_error = None
+        self.last_revert = None
+        self.estimations = 0
+        self.step_index = 0
+        self.gas_by_line.clear()
+        self.gas_by_opcode.clear()
+        self.provenance.clear()
+        self._mode = StepMode.RUN
+        self._mode_depth = 0
+        self._mode_internal = 0
+        self._mode_key = None
+        self._mode_target_pc = None
+        self._pending_count = 1
+        self._pending_watches.clear()
+        self._opening_stop_pending = self.stop_at_start
+        self._restart_opening = self.stop_at_start
+        self._frames.clear()
+        self._last_raw = None
+        self._raw_snapshot = None
+        for watchpoint in self.breakpoints.active_watchpoints():
+            watchpoint.initialised = False
+            watchpoint.old_value = None
+        if argv is not None:
+            self._restart_argv = list(argv)
+        target = self._restart_factory(self._restart_argv)
+        if getattr(target, "fresh_chain", False):
+            self.reset_chain()
+        self.start(target)
+        return self.wait(timeout=timeout)
+
+    def reset_chain(self) -> None:
+        self._chain = RevmChain()
+        self._deployed.clear()
+        self._frames.clear()
+        self._last_raw = None
+        self._raw_snapshot = None
+
+    def deploy(self, artifact: Any, what: str) -> str:
+        self._chain.create(artifact.bytecode, gas_limit=30_000_000)
+        result = self._drive_transaction()
+        self._require_success(result, what, artifact)
+        address = result.get("created_address")
+        if not address:
+            raise SessionError(f"{what} returned no contract address")
+        self._deployed[address.lower()] = artifact
+        return address
+
+    def call(self, address: str, calldata: bytes, what: str) -> dict[str, Any]:
+        self._sync_breakpoints()
+        self._chain.call(address, calldata, gas_limit=30_000_000)
+        result = self._drive_transaction()
+        artifact = self._deployed.get(address.lower())
+        self._require_success(result, what, artifact)
+        return result
+
+    def transact(
+        self,
+        *,
+        to: str | None,
+        data: bytes = b"",
+        caller: str | None = None,
+        value: int = 0,
+        gas_limit: int = 30_000_000,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        self._sync_breakpoints()
+        kwargs = {
+            "caller": caller,
+            "value": value,
+            "gas_limit": gas_limit,
+            "commit": commit,
+        }
+        if to is None:
+            self._chain.create(data, **kwargs)
+        else:
+            self._chain.call(to, data, **kwargs)
+        result = self._drive_transaction()
+        created = result.get("created_address")
+        if commit and result.get("success") and created:
+            artifact = self.code.artifact_for(data, is_create=True)
+            if artifact is not None:
+                self._deployed[created.lower()] = artifact
+        return result
+
+    def _require_success(self, result: dict[str, Any], what: str, artifact: Any) -> None:
+        if result.get("type") == "failed":
+            raise SessionError(result.get("error") or f"{what} failed")
+        if result.get("success"):
+            return
+        self.last_revert = decode_revert(
+            result.get("output", b""), artifact.abi if artifact else None
+        )
+        from ..foundry import TestFailed
+
+        raise TestFailed(f"{what} reverted: {self.last_revert}")
+
+    def _drive_transaction(self) -> dict[str, Any]:
+        # REVM starts a fresh EVM call stack for every transaction. A prior call's
+        # Solidity internal frames must not be reused for this transaction's pc.
+        self._frames.clear()
+        self._last_raw = None
+        self._raw_snapshot = None
+        self.provenance.clear()
+        while True:
+            event = self._chain.wait(timeout=30.0)
+            kind = event.get("type")
+            if kind == "host_call":
+                self._handle_host_call(event)
+                continue
+            if kind in {"finished", "failed"}:
+                return event
+            if kind != "paused":
+                raise SessionError(f"unknown REVM event: {kind!r}")
+            snapshot, hits = self._snapshot_from_raw(event)
+            self._record_provenance(event)
+            self._last_raw = event
+            self._raw_snapshot = snapshot
+            if self._detached:
+                self._chain.resume()
+                continue
+            watched = self._watchpoint_stop(snapshot, hits)
+            if watched is not None:
+                snapshot = watched
+                hits = watched.hit_breakpoints
+            if not self._should_surface(event, snapshot, hits):
+                self._continue_raw()
+                continue
+            if snapshot.stop_reason == "step" and self._mode is StepMode.FINISH:
+                snapshot = replace(snapshot, stop_reason="finish")
+            self._opening_stop_pending = False
+            self._restart_opening = False
+            self.last_snapshot = snapshot
+            self._event_q.put(Paused(snapshot))
+            command = self._cmd_q.get()
+            if command.detach:
+                self._detached = True
+                self._chain.set_breakpoints([])
+                self._chain.resume()
+                continue
+            self._set_mode(command, snapshot)
+            self._continue_raw()
+
+    def _handle_host_call(self, event: dict[str, Any]) -> None:
+        address = bytes.fromhex(event["address"][2:])
+        data = bytes(event["data"])
+        caller = bytes.fromhex(event["caller"][2:])
+        if address == CONSOLE_ADDRESS:
+            line = decode_console_log(data)
+            if line is not None:
+                self.cheats.console_lines.append(line)
+            self._chain.respond_host()
+            return
+        if address != VM_ADDRESS:
+            self._chain.respond_host(_error_payload("unknown host address"), revert=True)
+            return
+        try:
+            output = apply_cheat(self.cheats, self._state, data, caller)
+            if cheat_name(data) in {"prank", "startPrank", "stopPrank"}:
+                self._sync_prank()
+        except Exception as exc:
+            reason = (
+                str(exc)
+                if isinstance(exc, CheatError)
+                else f"{type(exc).__name__}: {exc}"
+            )
+            self._chain.respond_host(_error_payload(reason), revert=True)
+            return
+        self._chain.respond_host(output)
+
+    def _sync_prank(self) -> None:
+        prank = self.cheats.prank
+        if prank is None:
+            self._chain.configure_prank()
+            return
+        self._chain.configure_prank(
+            _address_hex(prank.new_sender),
+            caller=_address_hex(prank.caller) if prank.caller is not None else None,
+            persistent=prank.persistent,
+            new_origin=(
+                _address_hex(prank.new_origin) if prank.new_origin is not None else None
+            ),
+            delegate=prank.delegate,
+        )
+
+    def _set_mode(self, command: Resume, snapshot: FrameSnapshot) -> None:
+        self._mode = command.mode
+        self._mode_depth = snapshot.depth
+        self._mode_internal = (
+            len(self.current_frame.internal) if self.current_frame else 0
+        )
+        self._mode_key = (
+            (snapshot.file_id, snapshot.line) if snapshot.has_source else None
+        )
+        self._mode_target_pc = command.target_pc
+        self._pending_count = command.count
+
+    def _continue_raw(self) -> None:
+        if self._prepare_write_watch() or self.provenance.enabled:
+            self._chain.step()
+        elif self._mode is StepMode.RUN:
+            self._sync_breakpoints()
+            self._chain.resume()
+        else:
+            self._chain.step()
+
+    def _watchpoint_stop(
+        self,
+        snapshot: FrameSnapshot,
+        breakpoint_hits: tuple[int, ...],
+    ) -> FrameSnapshot | None:
+        if self._pending_watches:
+            pending, self._pending_watches = self._pending_watches, {}
+            triggered: list[int] = []
+            annotations: list[str] = []
+            for number, old in pending.items():
+                watchpoint = self.breakpoints.watchpoints.get(number)
+                if watchpoint is None or not watchpoint.enabled:
+                    continue
+                current = self._read_watch_value(watchpoint, snapshot)
+                watchpoint.old_value = current
+                watchpoint.initialised = True
+                if current == old:
+                    continue
+                watchpoint.hit_count += 1
+                triggered.append(number)
+                annotations.append(
+                    f"{watchpoint.expression}: {_format_watch_value(old)} -> "
+                    f"{_format_watch_value(current)}"
+                )
+            if triggered:
+                return replace(
+                    snapshot,
+                    stop_reason="watchpoint",
+                    hit_breakpoints=tuple(triggered),
+                    annotation="; ".join(annotations),
+                )
+
+        if breakpoint_hits or snapshot.mnemonic != "SLOAD" or not snapshot.stack:
+            return None
+        slot = snapshot.stack[0].value
+        triggered = []
+        annotations = []
+        for watchpoint in self.breakpoints.active_watchpoints():
+            if watchpoint.kind != "storage" or watchpoint.mode not in {
+                WATCH_READ,
+                WATCH_ACCESS,
+            }:
+                continue
+            if watchpoint.slot != slot or (
+                watchpoint.address is not None and watchpoint.address != snapshot.address
+            ):
+                continue
+            current = self._state.get_storage(snapshot.address, slot)
+            watchpoint.hit_count += 1
+            triggered.append(watchpoint.number)
+            annotations.append(f"{watchpoint.expression}: read 0x{current:x}")
+        if not triggered:
+            return None
+        return replace(
+            snapshot,
+            stop_reason="watchpoint",
+            hit_breakpoints=tuple(triggered),
+            annotation="; ".join(annotations),
+        )
+
+    def _prepare_write_watch(self) -> bool:
+        snapshot = self._raw_snapshot
+        if self._last_raw is None or snapshot is None or self._pending_watches:
+            return False
+        candidates: list[Watchpoint] = []
+        if snapshot.mnemonic == "SSTORE" and snapshot.stack:
+            slot = snapshot.stack[0].value
+            candidates = [
+                watchpoint
+                for watchpoint in self.breakpoints.active_watchpoints()
+                if watchpoint.kind == "storage"
+                and watchpoint.mode in {WATCH_WRITE, WATCH_ACCESS}
+                and watchpoint.slot == slot
+                and (watchpoint.address is None or watchpoint.address == snapshot.address)
+            ]
+        elif snapshot.mnemonic in _MEMORY_WRITE_MNEMONICS:
+            written = _memory_write_range(snapshot)
+            if written is not None:
+                start, end = written
+                candidates = [
+                    watchpoint
+                    for watchpoint in self.breakpoints.active_watchpoints()
+                    if watchpoint.kind == "memory"
+                    and watchpoint.offset is not None
+                    and start < watchpoint.offset + watchpoint.size
+                    and watchpoint.offset < end
+                ]
+        for watchpoint in candidates:
+            self._pending_watches[watchpoint.number] = self._read_watch_value(
+                watchpoint, snapshot
+            )
+        return bool(self._pending_watches)
+
+    def _read_watch_value(
+        self,
+        watchpoint: Watchpoint,
+        snapshot: FrameSnapshot,
+    ) -> int | None:
+        if watchpoint.kind == "storage" and watchpoint.slot is not None:
+            return self._state.get_storage(
+                watchpoint.address or snapshot.address,
+                watchpoint.slot,
+            )
+        if watchpoint.kind == "memory" and watchpoint.offset is not None:
+            start = watchpoint.offset
+            data = snapshot.memory[start : start + watchpoint.size]
+            return int.from_bytes(data.ljust(watchpoint.size, b"\x00"), "big")
+        return None
+
+    def _should_surface(
+        self,
+        raw: dict[str, Any],
+        snapshot: FrameSnapshot,
+        hits: tuple[int, ...],
+    ) -> bool:
+        if snapshot.stop_reason == "watchpoint":
+            return True
+        if (
+            self._opening_stop_pending
+            and (not self.breakpoints.breakpoints or self._restart_opening)
+            and snapshot.has_source
+            and not self._is_dispatcher(snapshot)
+        ):
+            self._opening_stop_pending = False
+            return True
+        reason = raw["reason"]
+        if reason == "out_of_gas":
+            return self.armed
+        if reason == "revert":
+            return self.armed and self.stop_on_revert
+        if reason == "breakpoint":
+            if hits:
+                return True
+            if not self.armed or self._mode is StepMode.RUN:
+                return False
+        if self._mode is StepMode.STEPI:
+            return self._consume_count(snapshot)
+        if self._mode is StepMode.NEXTI:
+            return snapshot.depth <= self._mode_depth and self._consume_count(snapshot)
+        if self._mode is StepMode.UNTIL:
+            return (
+                snapshot.pc == self._mode_target_pc and snapshot.depth <= self._mode_depth
+            )
+        if self._mode is StepMode.FINISH:
+            internal = len(self.current_frame.internal) if self.current_frame else 0
+            return snapshot.depth < self._mode_depth or (
+                snapshot.depth == self._mode_depth and internal < self._mode_internal
+            )
+        if not snapshot.has_source or self._is_dispatcher(snapshot):
+            return False
+        if self._mode is StepMode.NEXT:
+            internal = len(self.current_frame.internal) if self.current_frame else 0
+            if snapshot.depth > self._mode_depth or (
+                snapshot.depth == self._mode_depth and internal > self._mode_internal
+            ):
+                return False
+        if (
+            snapshot.depth != self._mode_depth
+            or (
+                snapshot.file_id,
+                snapshot.line,
+            )
+            != self._mode_key
+        ):
+            return self._consume_count(snapshot)
+        return False
+
+    def _consume_count(self, snapshot: FrameSnapshot) -> bool:
+        self._pending_count -= 1
+        if self._pending_count > 0:
+            self._mode_depth = snapshot.depth
+            self._mode_key = (
+                (snapshot.file_id, snapshot.line) if snapshot.has_source else None
+            )
+            return False
+        return True
+
+    def _is_dispatcher(self, snapshot: FrameSnapshot) -> bool:
+        if not snapshot.has_source:
+            return False
+        frame = self.current_frame
+        loc = frame.location(snapshot.pc) if frame else None
+        if loc is None:
+            return False
+        return any(
+            loc.entry.start == start and loc.entry.start + loc.entry.length == end
+            for start, end, _ in self.functions.contracts.get(loc.file_id, [])
+        )
+
+    def _snapshot_from_raw(
+        self,
+        raw: dict[str, Any],
+        *,
+        reason: str | None = None,
+        hits: tuple[int, ...] | None = None,
+        annotation: str = "",
+    ) -> tuple[FrameSnapshot, tuple[int, ...]]:
+        self._record_gas(raw)
+        self._advance_internal(raw)
+        self._sync_frames(raw)
+        frame = self.current_frame
+        if frame is None:
+            raise SessionError("REVM paused without a frame")
+        self._reconcile_internal(frame, int(raw["pc"]))
+        loc = frame.location(int(raw["pc"]))
+        actual_hits = self._breakpoint_hits(frame, raw, loc) if hits is None else hits
+        source = (
+            self.project.source_by_id(loc.file_id)
+            if loc and not loc.is_generated
+            else None
+        )
+        function = self.functions.at_location(loc)
+        computation = frame.computation
+        self.step_index = int(raw["step"])
+        failed = raw["reason"] in {"out_of_gas", "revert"}
+        stop_reason = reason or ("error" if failed else raw["reason"])
+        if raw["reason"] == "out_of_gas" and not annotation:
+            annotation = (
+                "OutOfGas: out of gas; `set $gas = N` then `c` retries this instruction"
+            )
+        elif raw["reason"] == "revert" and not annotation:
+            offset = int(raw["stack"][0], 16) if raw["stack"] else 0
+            size = int(raw["stack"][1], 16) if len(raw["stack"]) > 1 else 0
+            output = bytes(raw["memory"])[offset : offset + size]
+            self.last_revert = decode_revert(
+                output,
+                frame.artifact.abi if frame.artifact is not None else None,
+            )
+            annotation = self.last_revert
+        snapshot = FrameSnapshot(
+            step=self.step_index,
+            pc=int(raw["pc"]),
+            opcode=int(raw["opcode"]),
+            mnemonic=str(raw["mnemonic"]),
+            depth=int(raw["depth"]),
+            gas_remaining=int(raw["gas_remaining"]),
+            gas_used=int(raw["gas_used"]),
+            gas_limit=int(raw["gas_limit"]),
+            gas_refund=int(raw["gas_refund"]),
+            address=_address_bytes(raw["address"]),
+            code_address=_address_bytes(raw["code_address"]),
+            sender=_address_bytes(raw["caller"]),
+            origin=_address_bytes(raw["origin"]),
+            value=int(raw["value"], 16),
+            calldata=bytes(raw["calldata"]),
+            is_static=bool(raw["is_static"]),
+            stack=tuple(
+                StackEntry(index=index, value=int(value, 16), raw=int(value, 16))
+                for index, value in enumerate(raw["stack"])
+            ),
+            memory_size=int(raw["memory_size"]),
+            memory=bytes(raw["memory"]),
+            contract_name=frame.artifact_name,
+            source_key=source.key if source else None,
+            file_id=loc.file_id if loc else -1,
+            line=loc.line if loc and not loc.is_generated else 0,
+            col=loc.col if loc and not loc.is_generated else 0,
+            end_line=loc.end_line if loc and not loc.is_generated else 0,
+            jump=loc.jump if loc else "-",
+            function=function,
+            backtrace=tuple(snapshots.build_backtrace(self)),
+            locals=tuple(self.frame_locals(frame, computation)),
+            stop_reason=stop_reason,
+            hit_breakpoints=actual_hits,
+            annotation=annotation,
+        )
+        return snapshot, actual_hits
+
+    def _record_gas(self, raw: dict[str, Any]) -> None:
+        previous = self._last_raw
+        frame = self.current_frame
+        if previous is None or frame is None:
+            return
+        if (
+            int(previous["depth"]) != int(raw["depth"])
+            or previous["address"] != raw["address"]
+        ):
+            return
+        spent = int(raw["gas_used"]) - int(previous["gas_used"])
+        if spent <= 0:
+            return
+        self.gas_by_opcode[str(previous["mnemonic"])] = (
+            self.gas_by_opcode.get(str(previous["mnemonic"]), 0) + spent
+        )
+        location = frame.location(int(previous["pc"]))
+        if location is not None and not location.is_generated:
+            key = (location.file_id, location.line)
+            self.gas_by_line[key] = self.gas_by_line.get(key, 0) + spent
+
+    def _record_provenance(self, raw: dict[str, Any]) -> None:
+        previous = self._last_raw
+        if (
+            not self.provenance.enabled
+            or previous is None
+            or int(previous["depth"]) != int(raw["depth"])
+            or int(previous["step"]) >= int(raw["step"])
+        ):
+            return
+        self.provenance.record(
+            step=int(previous["step"]),
+            pc=int(previous["pc"]),
+            opcode=int(previous["opcode"]),
+            mnemonic=str(previous["mnemonic"]),
+            depth=int(previous["depth"]),
+            gas_before=int(previous["gas_remaining"]),
+            gas_remaining=int(raw["gas_remaining"]),
+            mem_size=int(previous["memory_size"]),
+            before=[int(value, 16) for value in reversed(previous["stack"])],
+            after=[int(value, 16) for value in reversed(raw["stack"])],
+        )
+
+    def _sync_frames(self, raw: dict[str, Any]) -> None:
+        old = self._frames
+        origin = _address_bytes(raw["origin"])
+        frames: list[EvmFrame] = []
+        for index, item in enumerate(raw["frames"]):
+            is_current = index == len(raw["frames"]) - 1
+            code = bytes(item["code"])
+            is_create = item["kind"] in {"create", "create2"}
+            artifact = self.code.artifact_for(code, is_create)
+            stack = raw["stack"] if is_current else []
+            memory = bytes(raw["memory"]) if is_current else b""
+            computation = _ComputationView(
+                pc=int(item["pc"]),
+                stack=stack,
+                memory=memory,
+                gas_limit=int(item["gas_limit"]),
+                gas_remaining=int(item["gas_remaining"]),
+                gas_refund=int(raw["gas_refund"]) if is_current else 0,
+                origin=origin,
+            )
+            address = _address_bytes(item["address"])
+            code_address = _address_bytes(item["code_address"])
+            previous = old[index] if index < len(old) else None
+            reusable = previous is not None and (
+                previous.address,
+                previous.code_address,
+                previous.kind,
+            ) == (address, code_address, item["kind"])
+            frame: EvmFrame
+            if reusable and previous is not None:
+                frame = previous
+                frame.depth = int(item["depth"])
+                frame.sender = _address_bytes(item["caller"])
+                frame.value = int(item["value"], 16)
+                frame.calldata = bytes(item["calldata"])
+                frame.is_static = bool(item["is_static"])
+                frame.computation = computation
+            else:
+                pc_map = self.code.pcmap_for(code, artifact, is_create)
+                frame = EvmFrame(
+                    depth=int(item["depth"]),
+                    address=address,
+                    code_address=code_address,
+                    sender=_address_bytes(item["caller"]),
+                    value=int(item["value"], 16),
+                    calldata=bytes(item["calldata"]),
+                    is_static=bool(item["is_static"]),
+                    is_create=is_create,
+                    kind=item["kind"],
+                    artifact_name=artifact.name if artifact else None,
+                    artifact=artifact,
+                    computation=computation,
+                    pc_map=pc_map,
+                    disassembly=self.code.disassembly_for(code),
+                    decl_pcs=cast(
+                        Any,
+                        self.code.declpcs_for(code, pc_map, is_create),
+                    ),
+                )
+            frames.append(frame)
+        self._frames = frames
+        for frame in self._frames:
+            if frame.internal:
+                continue
+            loc = frame.location(max(0, frame.computation.code.program_counter - 1))
+            function = self.functions.at_location(loc)
+            if function is not None and loc is not None:
+                frame.internal.append(
+                    InternalFrame(
+                        function=function,
+                        entry_pc=loc.pc,
+                        entry_sp=len(frame.computation._stack.values),
+                    )
+                )
+
+    def _advance_internal(self, raw: dict[str, Any]) -> None:
+        previous = self._last_raw
+        frame = self.current_frame
+        if previous is None or frame is None:
+            return
+        if (
+            int(previous["depth"]) != int(raw["depth"])
+            or previous["address"] != raw["address"]
+        ):
+            return
+        pc = int(previous["pc"])
+        self._reconcile_internal(frame, pc)
+        if frame.decl_pcs and pc in frame.decl_pcs and frame.internal:
+            var = cast(Any, frame.decl_pcs[pc])
+            internal = frame.internal[-1]
+            if internal.function is not None and (
+                internal.function.ast_id == var.function_id
+                or self.locals.owned_by_modifier(var)
+            ):
+                internal.slots[var.ast_id] = len(frame.computation._stack.values)
+        if previous["mnemonic"] not in _JUMP_MNEMONICS:
+            return
+        loc = frame.location(pc)
+        if loc is None or loc.jump not in {"i", "o"} or int(raw["pc"]) == pc + 1:
+            return
+        if loc.jump == "o":
+            if frame.internal:
+                frame.internal.pop()
+            return
+        destination = int(raw["pc"])
+        function = self.functions.at_location(frame.location(destination))
+        if (
+            function is not None
+            and frame.internal
+            and frame.internal[-1].function is not None
+            and function.ast_id == frame.internal[-1].function.ast_id
+            and loc.entry.start == function.start
+            and loc.entry.length == function.length
+        ):
+            frame.internal[-1].entry_pc = destination
+            frame.internal[-1].entry_sp = len(raw["stack"])
+            return
+        frame.internal.append(
+            InternalFrame(
+                function=function,
+                entry_pc=destination,
+                call_site_pc=pc,
+                entry_sp=len(raw["stack"]),
+            )
+        )
+
+    def _reconcile_internal(self, frame: EvmFrame, pc: int) -> None:
+        function = self.functions.at_location(frame.location(pc))
+        if function is None:
+            return
+        for index in range(len(frame.internal) - 1, -1, -1):
+            candidate = frame.internal[index].function
+            if candidate is not None and candidate.ast_id == function.ast_id:
+                del frame.internal[index + 1 :]
+                return
+
+    def _breakpoint_hits(
+        self, frame: EvmFrame, raw: dict[str, Any], loc: Any
+    ) -> tuple[int, ...]:
+        matches = self.breakpoints.match(
+            int(raw["pc"]),
+            str(raw["mnemonic"]),
+            loc.file_id if loc else -1,
+            loc.line if loc else 0,
+            frame.artifact_name,
+        )
+        hits = []
+        for breakpoint in matches:
+            if breakpoint.condition and self._eval_hook is not None:
+                try:
+                    holds = self._eval_hook(
+                        self,
+                        frame,
+                        frame.computation,
+                        breakpoint.condition,
+                        want_bool=True,
+                        bindings=self.frame_locals(frame, frame.computation),
+                    )
+                except Exception as exc:
+                    breakpoint.condition_error = str(exc)
+                else:
+                    breakpoint.condition_error = None
+                    if not holds:
+                        continue
+            breakpoint.hit_count += 1
+            if breakpoint.ignore_count:
+                breakpoint.ignore_count -= 1
+                continue
+            hits.append(breakpoint.number)
+            if breakpoint.temporary:
+                self.breakpoints.remove(breakpoint.number)
+        return tuple(hits)
+
+    def _sync_breakpoints(self) -> None:
+        points: set[tuple[str, int]] = set()
+        watched_mnemonics: set[str] = set()
+        for watchpoint in self.breakpoints.active_watchpoints():
+            if watchpoint.kind == "storage":
+                if watchpoint.mode in {WATCH_READ, WATCH_ACCESS}:
+                    watched_mnemonics.add("SLOAD")
+                if watchpoint.mode in {WATCH_WRITE, WATCH_ACCESS}:
+                    watched_mnemonics.add("SSTORE")
+            elif watchpoint.kind == "memory":
+                watched_mnemonics.update(_MEMORY_WRITE_MNEMONICS)
+        for artifact in self.project.artifacts.values():
+            for code, is_create in (
+                (artifact.deployed_bytecode, False),
+                (artifact.bytecode, True),
+            ):
+                if not code:
+                    continue
+                pc_map = self.code.pcmap_for(code, artifact, is_create)
+                disassembly = self.code.disassembly_for(code)
+                points.update(
+                    (_ANY_ADDRESS, pc)
+                    for pc in self.code.declpcs_for(code, pc_map, is_create)
+                )
+                if pc_map is not None:
+                    points.update(
+                        (_ANY_ADDRESS, pc)
+                        for pc in pc_map.pcs
+                        if (loc := pc_map.at(pc)) is not None and loc.jump in {"i", "o"}
+                    )
+                if (
+                    self._opening_stop_pending
+                    and (not self.breakpoints.breakpoints or self._restart_opening)
+                    and pc_map is not None
+                ):
+                    points.update(
+                        (_ANY_ADDRESS, pc)
+                        for pc in pc_map.pcs
+                        if (loc := pc_map.at(pc)) is not None and not loc.is_generated
+                    )
+                points.update(
+                    (_ANY_ADDRESS, instruction.pc)
+                    for instruction in disassembly.instructions
+                    if instruction.mnemonic in watched_mnemonics
+                )
+                for breakpoint in self.breakpoints.breakpoints.values():
+                    if not breakpoint.enabled:
+                        continue
+                    if breakpoint.contract and breakpoint.contract != artifact.name:
+                        continue
+                    if breakpoint.kind == BP_OPCODE:
+                        pcs = [
+                            instruction.pc
+                            for instruction in disassembly.instructions
+                            if instruction.mnemonic == breakpoint.opcode
+                        ]
+                    else:
+                        pcs = list(breakpoint.pcs)
+                    for pc in pcs:
+                        if breakpoint.kind not in {BP_PC, BP_OPCODE}:
+                            loc = pc_map.at(pc) if pc_map else None
+                            if loc is None or (
+                                loc.file_id,
+                                loc.line,
+                            ) != (breakpoint.file_id, breakpoint.line):
+                                continue
+                        points.add((_ANY_ADDRESS, pc))
+        self._chain.set_breakpoints(sorted(points))
+
+    @property
+    def current_frame(self) -> EvmFrame | None:
+        return self._frames[-1] if self._frames else None
+
+    def frame_locals(
+        self,
+        frame: EvmFrame,
+        computation: Any,
+        internal_index: int | None = None,
+    ) -> list[Any]:
+        return framelocals.read_frame_locals(
+            self.locals,
+            frame,
+            computation,
+            internal_index,
+        )
+
+    def evaluate_code(
+        self,
+        frame: EvmFrame,
+        computation: Any,
+        code: bytes,
+        data: bytes,
+        keep: bool,
+    ) -> dict[str, Any]:
+        return self._chain.evaluate_call(
+            code,
+            data,
+            _address_hex(frame.sender),
+            value=frame.value,
+            gas_limit=max(computation.get_gas_remaining(), 1_000_000),
+            keep=keep,
+        )
+
+    def execute_opcode(
+        self,
+        opcode: int,
+        arguments: list[int],
+        outputs: int,
+    ) -> dict[str, Any]:
+        result = self._chain.execute_opcode(opcode, arguments, outputs)
+        frame = self.current_frame
+        if frame is not None:
+            frame.computation._memory = _MemoryView(
+                bytes(self._chain.snapshot()["memory"])
+            )
+        return result
+
+    def inspect(
+        self,
+        op: str,
+        *args: Any,
+        frame_index: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        if self.finished or self.last_snapshot is None:
+            raise SessionError("not stopped; nothing to inspect")
+        index = len(self._frames) - 1 if frame_index is None else frame_index
+        if not 0 <= index < len(self._frames):
+            raise SessionError(f"no such frame: {index}")
+        frame = self._frames[index]
+        current = index == len(self._frames) - 1
+        if op == "frame_info":
+            return {
+                "depth": frame.depth,
+                "kind": frame.kind,
+                "address": frame.address,
+                "code_address": frame.code_address,
+                "sender": frame.sender,
+                "value": frame.value,
+                "calldata": frame.calldata,
+                "is_static": frame.is_static,
+                "artifact": frame.artifact_name,
+                "internal": [item.name for item in frame.internal],
+                "gas_remaining": frame.computation.get_gas_remaining(),
+            }
+        if op == "disassembly":
+            before, after = (*args, 6, 18)[:2]
+            pc = max(0, frame.computation.code.program_counter - 1)
+            return [
+                {
+                    "pc": instruction.pc,
+                    "text": instruction.render(),
+                    "current": instruction.pc == pc,
+                    "line": _line_at(frame, instruction.pc),
+                    "jumpdest": instruction.pc in frame.disassembly.jumpdests,
+                }
+                for instruction in frame.disassembly.window(pc, before, after)
+            ]
+        if op == "locals":
+            internal = kwargs.get("internal_index")
+            return [
+                {
+                    "name": value.name,
+                    "type": value.type_label,
+                    "value": value.display,
+                    "available": value.available,
+                    "reason": value.reason,
+                    "kind": value.kind,
+                    "position": value.position,
+                    "writable": value.writable,
+                }
+                for value in self.frame_locals(frame, frame.computation, internal)
+            ]
+        if op == "read_memory":
+            offset, size = int(args[0]), int(args[1])
+            data = bytes(frame.computation._memory._bytes[offset : offset + size])
+            return data + bytes(size - len(data))
+        if op == "read_code":
+            return self._state.get_code(bytes(args[0]))
+        if op == "read_balance":
+            return self._state.get_balance(bytes(args[0]))
+        if op == "read_nonce":
+            return self._state.get_nonce(bytes(args[0]))
+        if op == "logs":
+            return [
+                (
+                    _address_bytes(item["address"]),
+                    tuple(int(topic, 16) for topic in item["topics"]),
+                    bytes(item["data"]),
+                )
+                for item in self._chain.read_logs()
+            ]
+        if op == "is_warm":
+            address = bytes(args[1]) if len(args) > 1 and args[1] else frame.address
+            return self._chain.is_storage_warm(_address_hex(address), int(args[0]))
+        if not current:
+            raise SessionError(f"inspect {op!r} requires the innermost REVM frame")
+        if op == "find_needle":
+            needle = bytes.fromhex(str(args[0]))
+            limit = max(1, int(args[1])) if len(args) > 1 else 200
+            code = frame.disassembly.code
+            aligned = frame.disassembly.by_pc
+            jumpdests = sorted(frame.disassembly.jumpdests)
+            hits: list[dict[str, Any]] = []
+            start = 0
+            while len(hits) < limit:
+                pc = code.find(needle, start)
+                if pc < 0:
+                    break
+                instruction = aligned.get(pc)
+                location = frame.location(pc) if instruction is not None else None
+                hits.append(
+                    {
+                        "pc": pc,
+                        "instruction_aligned": instruction is not None,
+                        "jumpdest": pc in frame.disassembly.jumpdests,
+                        "nearest_jumpdest": next(
+                            (dest for dest in reversed(jumpdests) if dest <= pc), None
+                        ),
+                        "text": (
+                            instruction.render()
+                            if instruction is not None
+                            else code[pc : pc + len(needle)].hex()
+                        ),
+                        "line": (
+                            location.line
+                            if location is not None and not location.is_generated
+                            else 0
+                        ),
+                    }
+                )
+                start = pc + 1
+            return {"hits": hits, "total": code.count(needle), "code_size": len(code)}
+        if op == "read_storage":
+            address = bytes(args[1]) if len(args) > 1 and args[1] else frame.address
+            return self._state.get_storage(address, int(args[0]))
+        if op == "read_transient":
+            address = bytes(args[1]) if len(args) > 1 and args[1] else frame.address
+            return self._state.get_transient_storage(address, int(args[0]))
+        if op == "write_storage":
+            address = bytes(args[2]) if len(args) > 2 and args[2] else frame.address
+            self._state.set_storage(address, int(args[0]), int(args[1]))
+            return self._state.get_storage(address, int(args[0]))
+        if op == "write_balance":
+            address, value = bytes(args[0]), int(args[1])
+            self._state.set_balance(address, value)
+            return self._state.get_balance(address)
+        if op == "write_local":
+            name, value = str(args[0]), int(args[1])
+            internal = kwargs.get("internal_index")
+            for local in self.frame_locals(frame, frame.computation, internal):
+                if local.name != name:
+                    continue
+                if not local.available or local.position is None:
+                    raise SessionError(
+                        f"`{name}` is not writable here: {local.reason or 'unavailable'}"
+                    )
+                if not local.writable:
+                    raise SessionError(
+                        f"`{name}` is a {local.type_label}; its stack slot is a "
+                        "reference, not the value. Writing it would corrupt the pointer, "
+                        "so it is refused"
+                    )
+                values = frame.computation._stack.values
+                stack_index = len(values) - 1 - local.position
+                self._chain.set_stack(stack_index, value)
+                values[local.position] = value
+                updated = [
+                    item
+                    for item in self.frame_locals(frame, frame.computation, internal)
+                    if item.name == name
+                ]
+                return {
+                    "name": name,
+                    "display": updated[0].display if updated else str(value),
+                }
+            raise SessionError(f"no local named `{name}` in scope here")
+        if op == "write_stack":
+            index, value = int(args[0]), int(args[1])
+            written = int(self._chain.set_stack(index, value), 16)
+            values = frame.computation._stack.values
+            values[len(values) - 1 - index] = written
+            return written
+        if op == "write_memory":
+            offset, data = int(args[0]), bytes(args[1])
+            written = self._chain.write_memory(offset, data)
+            memory = frame.computation._memory._bytes
+            end = offset + len(data)
+            if end > len(memory):
+                memory.extend(bytes(end - len(memory)))
+            memory[offset:end] = data
+            return written
+        if op == "set_gas":
+            value = self._chain.set_gas(int(args[0]))
+            frame.computation._gas_meter.gas_remaining = value
+            return value
+        if op == "set_pc":
+            try:
+                value = self._chain.set_pc(int(args[0]))
+            except RuntimeError as exc:
+                raise SessionError(str(exc)) from exc
+            frame.computation.code.program_counter = value + 1
+            return value
+        if op == "reseat_frame":
+            pc = max(0, frame.computation.code.program_counter - 1)
+            function = self.functions.at_location(frame.location(pc))
+            if function is None:
+                raise SessionError(
+                    f"no Solidity function at pc 0x{pc:x}; nothing to reseat to"
+                )
+            entry_sp = kwargs.get("entry_sp")
+            base = (
+                int(entry_sp)
+                if entry_sp is not None
+                else len(frame.computation._stack.values)
+            )
+            seat = InternalFrame(
+                function=function,
+                entry_pc=pc,
+                call_site_pc=-1,
+                entry_sp=base,
+            )
+            if kwargs.get("push") or not frame.internal:
+                frame.internal.append(seat)
+            else:
+                frame.internal[-1] = seat
+            return {
+                "name": function.signature,
+                "entry_sp": base,
+                "depth": len(frame.internal),
+            }
+        if op == "bind_local":
+            name, stack_index = str(args[0]), int(args[1])
+            internals = frame.internal
+            if not internals:
+                raise SessionError("no Solidity frame here; `reseat` to a function first")
+            requested = kwargs.get("internal_index")
+            internal_index = (
+                int(requested) if requested is not None else len(internals) - 1
+            )
+            if not 0 <= internal_index < len(internals):
+                raise SessionError(f"no such internal frame: {internal_index}")
+            internal = internals[internal_index]
+            function = internal.function
+            if function is None:
+                raise SessionError("this frame has no function; `reseat` first")
+            pc = max(0, frame.computation.code.program_counter - 1)
+            location = frame.location(pc)
+            offset = (
+                location.entry.start
+                if location is not None and not location.is_generated
+                else -1
+            )
+            matches = [
+                var
+                for var in self.locals.visible(function.ast_id, offset)
+                if var.name == name
+            ]
+            if not matches:
+                raise SessionError(
+                    f"no local named `{name}` in scope in {function.signature} here"
+                )
+            stack_depth = len(frame.computation._stack.values)
+            if not 0 <= stack_index < stack_depth:
+                raise SessionError(
+                    f"stack index {stack_index} out of range (depth {stack_depth})"
+                )
+            internal.slots[matches[0].ast_id] = stack_depth - 1 - stack_index
+            reread = [
+                value
+                for value in self.frame_locals(
+                    frame,
+                    frame.computation,
+                    internal_index,
+                )
+                if value.name == name
+            ]
+            return {
+                "name": name,
+                "stack_index": stack_index,
+                "display": reread[0].display if reread else "<unavailable>",
+                "available": bool(reread and reread[0].available),
+            }
+        if op == "resnapshot":
+            fresh, _ = self._snapshot_from_raw(
+                self._chain.snapshot(),
+                reason=self.last_snapshot.stop_reason,
+                hits=self.last_snapshot.hit_breakpoints,
+                annotation=self.last_snapshot.annotation,
+            )
+            self.last_snapshot = fresh
+            return fresh
+        if op == "cheat":
+            try:
+                output = apply_cheat(
+                    self.cheats, self._state, bytes(args[0]), frame.address
+                )
+                if cheat_name(bytes(args[0])) in {
+                    "prank",
+                    "startPrank",
+                    "stopPrank",
+                }:
+                    self._sync_prank()
+                return output
+            except CheatError as exc:
+                raise SessionError(str(exc)) from exc
+        if op == "assembly":
+            try:
+                return assembly.run(self, frame.computation, str(args[0]))
+            except assembly.AsmError as exc:
+                raise SessionError(str(exc)) from exc
+        if op == "evaluate":
+            if self._eval_hook is None:
+                raise SessionError("no evaluator installed")
+            try:
+                return self._eval_hook(
+                    self,
+                    frame,
+                    frame.computation,
+                    str(args[0]),
+                    keep=bool(kwargs.get("keep", False)),
+                    bindings=self.frame_locals(
+                        frame,
+                        frame.computation,
+                        kwargs.get("internal_index"),
+                    ),
+                )
+            except Exception as exc:
+                raise SessionError(str(exc)) from exc
+        raise SessionError(f"inspect {op!r} is not available on REVM yet")
+
+    def refresh_snapshot(self) -> FrameSnapshot | None:
+        if self.finished or self.last_snapshot is None:
+            return self.last_snapshot
+        self.inspect("resnapshot")
+        return self.last_snapshot
+
+    def file_id_for(self, source_key: str) -> int | None:
+        return self.code.file_id_for(source_key)
+
+    def resolve_line(self, file_id: int, line: int) -> tuple[int, list[int]]:
+        return self.code.resolve_line(file_id, line)
+
+    def break_at_line(
+        self,
+        source_key: str,
+        line: int,
+        temporary: bool = False,
+        condition: str | None = None,
+    ) -> tuple[Any, int]:
+        file_id = self.file_id_for(source_key)
+        if file_id is None:
+            raise SessionError(f"no source file matching {source_key!r}")
+        snapped, pcs = self.resolve_line(file_id, line)
+        return (
+            self.breakpoints.add_line(
+                f"{source_key}:{snapped}",
+                file_id,
+                snapped,
+                pcs,
+                temporary=temporary,
+                condition=condition,
+            ),
+            snapped,
+        )
+
+    def break_at_function(
+        self,
+        name: str,
+        temporary: bool = False,
+        condition: str | None = None,
+    ) -> tuple[Any, int]:
+        matches = self.functions.find(name)
+        if not matches:
+            raise SessionError(f"no function named {name!r}")
+        if len(matches) > 1:
+            names = ", ".join(sorted({match.display_name for match in matches}))
+            raise SessionError(f"{name!r} is ambiguous; try one of: {names}")
+        function = matches[0]
+        index = self.line_indexes.get(function.file_id)
+        line = index.line_col(function.start)[0] if index else 0
+        body_line, pcs = self.resolve_line(function.file_id, line + 1)
+        if not pcs:
+            body_line, pcs = self.resolve_line(function.file_id, line)
+        return (
+            self.breakpoints.add_function(
+                function.display_name,
+                function.file_id,
+                body_line,
+                pcs,
+                temporary=temporary,
+                condition=condition,
+                contract=function.contract,
+            ),
+            body_line,
+        )
+
+    def break_at_opcode(
+        self,
+        mnemonic: str,
+        temporary: bool = False,
+        condition: str | None = None,
+    ) -> Any:
+        return self.breakpoints.add_opcode(
+            mnemonic,
+            temporary=temporary,
+            condition=condition,
+        )
+
+    def break_at_pc(
+        self,
+        pc: int,
+        temporary: bool = False,
+        condition: str | None = None,
+    ) -> Any:
+        return self.breakpoints.add_pc(
+            pc,
+            temporary=temporary,
+            condition=condition,
+        )
+
+    def watch_storage(
+        self,
+        expression: str,
+        slot: int,
+        address: bytes | None = None,
+        mode: str = WATCH_WRITE,
+    ) -> Any:
+        return self.breakpoints.add_watch(
+            expression,
+            kind="storage",
+            slot=slot,
+            address=address,
+            mode=mode,
+        )
+
+    def watch_memory(self, expression: str, offset: int, size: int = 32) -> Any:
+        return self.breakpoints.add_watch(
+            expression,
+            kind="memory",
+            offset=offset,
+            size=size,
+        )
+
+    @contextmanager
+    def suspended(self):
+        yield
+
+
+def _memory_write_range(snapshot: FrameSnapshot) -> tuple[int, int] | None:
+    stack = snapshot.stack
+    mnemonic = snapshot.mnemonic
+    if mnemonic == "MSTORE" and stack:
+        start, size = stack[0].value, 32
+    elif mnemonic == "MSTORE8" and stack:
+        start, size = stack[0].value, 1
+    elif mnemonic == "EXTCODECOPY" and len(stack) >= 4:
+        start, size = stack[1].value, stack[3].value
+    elif (
+        mnemonic in {"CALLDATACOPY", "CODECOPY", "RETURNDATACOPY", "MCOPY"}
+        and len(stack) >= 3
+    ):
+        start, size = stack[0].value, stack[2].value
+    else:
+        return None
+    return start, start + size
+
+
+def _format_watch_value(value: int | None) -> str:
+    return "<unset>" if value is None else f"0x{value:x}"
+
+
+def _address_bytes(value: str) -> bytes:
+    return bytes.fromhex(value.removeprefix("0x"))
+
+
+def _address_hex(value: bytes) -> str:
+    return "0x" + value.hex()
+
+
+def _line_at(frame: EvmFrame, pc: int) -> int:
+    location = frame.location(pc)
+    return location.line if location is not None else 0
+
+
+def _error_payload(reason: str) -> bytes:
+    return _ERROR_SELECTOR + abi_encode(["string"], [reason])

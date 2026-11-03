@@ -9,11 +9,11 @@ from harness import (
     line_of,
 )
 
-from sevm.breakpoints import BreakpointSet
-from sevm.decode import (
+from chasm_debugger.breakpoints import BreakpointSet
+from chasm_debugger.decode import (
     StorageDecoder,
 )
-from sevm.session import Finished, Paused, StepMode
+from chasm_debugger.session import Finished, Paused, StepMode
 
 
 def test_line_breakpoint_stops_there(deposit_debugger):

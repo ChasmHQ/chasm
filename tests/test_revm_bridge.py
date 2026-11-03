@@ -8,10 +8,10 @@ import sys
 import threading
 import time
 
+from chasm_debugger._revm import RevmChain, RevmSession, opcode_names, revm_version
 from eth_utils import function_signature_to_4byte_selector
-from sevm._revm import RevmChain, RevmSession, opcode_names, revm_version
 
-from sevm.cheatcodes import VM_ADDRESS, CheatState, apply_cheat
+from chasm_debugger.cheatcodes import VM_ADDRESS, CheatState, apply_cheat
 
 
 def test_bridge_exports_revm_opcode_names():
@@ -94,7 +94,7 @@ def test_installed_headless_launcher_uses_json_rpc():
         {"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}},
     ]
     result = subprocess.run(
-        [sys.executable, "-m", "sevm.revm_server"],
+        [sys.executable, "-m", "chasm_debugger.revm_server"],
         input="".join(json.dumps(request) + "\n" for request in requests),
         capture_output=True,
         text=True,
@@ -102,7 +102,7 @@ def test_installed_headless_launcher_uses_json_rpc():
     )
     responses = [json.loads(line) for line in result.stdout.splitlines()]
     assert result.stderr == ""
-    assert responses[0]["result"]["protocol"] == "sevm-debugger/1"
+    assert responses[0]["result"]["protocol"] == "chasm-debugger/1"
     assert responses[1]["result"] is None
 
 

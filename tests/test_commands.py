@@ -8,8 +8,8 @@ from harness import (
     line_of,
 )
 
-from sevm.commands.render import _calldata
-from sevm.session import Finished, Paused, StepMode
+from chasm_debugger.commands.render import _calldata
+from chasm_debugger.session import Finished, Paused, StepMode
 
 
 def test_command_break_and_continue(deposit_debugger):
@@ -120,7 +120,7 @@ def test_info_locals_names_and_values_the_frames_locals(deposit_debugger):
 
 def test_info_storage_decodes_names(deposit_debugger):
     lines = " ".join(deposit_debugger.run("info storage").lines)
-    assert "totalDeposits" in lines and "sevm-bank" in lines
+    assert "totalDeposits" in lines and "chasm-bank" in lines
 
 
 def test_info_gas_profiles_by_line(deposit_debugger):
@@ -234,7 +234,7 @@ def test_markup_in_source_is_escaped(deposit_debugger):
 
 
 def test_cheatcode_help_is_generated_from_the_registry(deposit_debugger):
-    from sevm.cheatcodes import listing
+    from chasm_debugger.cheatcodes import listing
 
     specs = listing()
     assert specs

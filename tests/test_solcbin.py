@@ -14,7 +14,7 @@ import os
 
 import pytest
 
-from sevm.compile import CompileError, solcbin
+from chasm_debugger.compile import CompileError, solcbin
 
 # Shaped like binaries.soliditylang.org: filenames live on the build entries, and the
 # digest is 0x-prefixed. The versions are the ones the platform boundaries turn on.
@@ -47,7 +47,7 @@ def install_root(tmp_path, monkeypatch):
     root = tmp_path / "solcx"
     root.mkdir()
     monkeypatch.setenv("SOLCX_BINARY_PATH", str(root))
-    monkeypatch.delenv("SEVM_SOLC", raising=False)
+    monkeypatch.delenv("CHASM_SOLC", raising=False)
     monkeypatch.setattr(solcbin, "install_dir", lambda: str(root))
     solcbin.ensure.cache_clear()
     yield str(root)
@@ -168,7 +168,7 @@ def test_a_version_this_platform_cannot_download_says_where_to_look(
     install_root, lists, monkeypatch
 ):
     monkeypatch.setattr(solcbin, "platform_key", lambda: "linux-arm64")
-    with pytest.raises(CompileError, match="SEVM_SOLC"):
+    with pytest.raises(CompileError, match="CHASM_SOLC"):
         solcbin.ensure("0.4.24")
 
 
@@ -235,9 +235,9 @@ def test_a_binary_reporting_another_version_is_not_used(install_root, monkeypatc
 
 
 @pytest.mark.skipif(os.name != "posix", reason="writes a shell script")
-def test_sevm_solc_overrides_everything(install_root, tmp_path, monkeypatch):
+def test_chasm_solc_overrides_everything(install_root, tmp_path, monkeypatch):
     path = _fake_solc(str(tmp_path / "own-solc"), "0.8.28")
-    monkeypatch.setenv("SEVM_SOLC", path)
+    monkeypatch.setenv("CHASM_SOLC", path)
     # Even a version this platform has no build for at all.
     assert solcbin.find("0.4.24") == path
     assert solcbin.ensure("0.4.24") == path
