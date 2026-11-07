@@ -58,6 +58,7 @@ Documentation = "https://github.com/ChasmHQ/debugger/blob/main/README.md"
 manifest-path = "rust/python/Cargo.toml"
 module-name = "chasm_debugger._revm"
 python-source = "src"
+include = ["src/chasm_debugger/web.html"]
 
 [dependency-groups]
 # uv-native dev group: `uv sync` installs these by default.

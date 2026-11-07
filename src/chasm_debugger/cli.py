@@ -87,6 +87,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--console", action="store_true", help="plain text frontend instead of the TUI"
     )
     run.add_argument(
+        "--web", action="store_true", help="serve the debugger at a local web address"
+    )
+    run.add_argument(
+        "--web-port", type=int, default=8765, help="local port for --web (default: 8765)"
+    )
+    run.add_argument(
+        "--no-browser", action="store_true", help="do not open the --web address"
+    )
+    run.add_argument(
         "--optimize",
         action="store_true",
         help="compile with the optimizer on (degrades source maps; not recommended)",
@@ -262,6 +271,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         and a.lstrip("-").split("=")[0]
         in {
             "console",
+            "web",
+            "web-port",
+            "no-browser",
             "contracts",
             "solc",
             "optimize",
@@ -506,6 +518,16 @@ def _debug(
         for command in startup_commands:
             frontend._emit(frontend.commands.execute(command))
         frontend.run(first_event=first)
+        return 0 if session.exit_error is None else 1
+
+    if args.web:
+        from .web import WebFrontend, serve
+
+        serve(
+            WebFrontend(session, evaluator, first, startup_commands),
+            port=args.web_port,
+            open_browser=not args.no_browser,
+        )
         return 0 if session.exit_error is None else 1
 
     try:

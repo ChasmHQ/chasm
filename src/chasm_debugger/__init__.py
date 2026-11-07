@@ -27,6 +27,7 @@ Where things live:
   provider.py    the REVM-backed Web3 provider for Python driver scripts
   revm_server.py the headless REVM JSON-RPC process (`chasm-engine`)
   srcmap.py      solc source maps: pc <-> source location
+  web.py         local browser frontend for a live debug session
 """
 
 __version__ = "0.1.0"
