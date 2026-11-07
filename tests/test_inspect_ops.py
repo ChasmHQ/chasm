@@ -7,7 +7,7 @@ from harness import (
     Debugger,
 )
 
-from sevm.session import Paused, SessionError, StepMode
+from chasm_debugger.session import Paused, SessionError, StepMode
 
 
 def test_write_storage_takes_effect(deposit_debugger):

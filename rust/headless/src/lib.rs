@@ -1,7 +1,7 @@
 use revm::primitives::{Address, B256, Bytes, U256};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use sevm_revm_core::{
+use chasm_revm_core::{
     AccountSpec, Breakpoint, ChainConfig, CommandValue, DEFAULT_CALLER, DebugCommand, DebugEngine,
     DebugEvent, FrameContext, FrameKind, PauseReason, PrankConfig, SessionConfig, SessionError,
     Snapshot, StateCommand, TransactionKind, TransactionRequest,
@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-pub const PROTOCOL_VERSION: &str = "sevm-debugger/1";
+pub const PROTOCOL_VERSION: &str = "chasm-debugger/1";
 
 const PARSE_ERROR: i32 = -32700;
 const INVALID_REQUEST: i32 = -32600;

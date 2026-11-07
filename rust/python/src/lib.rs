@@ -7,7 +7,7 @@ use revm::{
     bytecode::OpCode,
     primitives::{Address, B256, Bytes, U256},
 };
-use sevm_revm_core::{
+use chasm_revm_core::{
     AccountSpec, Breakpoint, CHEATCODE_ADDRESS, CONSOLE_ADDRESS, ChainConfig, CommandValue,
     DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine, DebugEvent, FrameContext, FrameKind, PauseReason,
     PrankConfig, SessionConfig, SessionError, Snapshot, StateCommand, TransactionRequest,
@@ -212,7 +212,7 @@ fn event_dict<'py>(py: Python<'py>, event: DebugEvent) -> PyResult<Bound<'py, Py
     }
 }
 
-#[pyclass(module = "sevm._revm")]
+#[pyclass(module = "chasm_debugger._revm")]
 struct RevmChain {
     inner: DebugEngine,
 }
@@ -753,7 +753,7 @@ impl RevmChain {
     }
 }
 
-#[pyclass(module = "sevm._revm")]
+#[pyclass(module = "chasm_debugger._revm")]
 struct RevmSession {
     inner: DebugEngine,
 }
@@ -902,7 +902,7 @@ fn serve_stdio(py: Python<'_>) -> PyResult<()> {
     py.detach(|| {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        sevm_revm_headless::serve(stdin.lock(), stdout.lock())
+        chasm_revm_headless::serve(stdin.lock(), stdout.lock())
     })
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }

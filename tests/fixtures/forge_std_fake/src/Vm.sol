@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.6.2 <0.9.0;
 
-// Stand-in for forge-std's Vm, shaped like the real one: the cheats sevm implements plus
+// Stand-in for forge-std's Vm, shaped like the real one: the cheats chasm implements plus
 // the assertion overloads Test.sol below delegates to. Only used by the test suite, so it
 // stays small; the real interface is fetched from foundry-rs/forge-std at run time.
 interface Vm {

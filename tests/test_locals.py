@@ -9,15 +9,15 @@ from harness import (
     stop_at,
 )
 
-from sevm.session import Finished, StepMode
-from sevm.srcmap import (
+from chasm_debugger.session import Finished, StepMode
+from chasm_debugger.srcmap import (
     PcMap,
     build_line_indexes,
 )
 
 
 def test_locals_index_finds_every_declaration(proj):
-    from sevm.locals import LocalsIndex
+    from chasm_debugger.locals import LocalsIndex
 
     index = LocalsIndex(proj.asts)
     credit = [
@@ -31,7 +31,7 @@ def test_locals_index_finds_every_declaration(proj):
 
 def test_locals_index_orders_params_before_body(proj):
     """Allocation order, not AST visit order: the frame layout depends on it."""
-    from sevm.locals import LocalsIndex
+    from chasm_debugger.locals import LocalsIndex
 
     index = LocalsIndex(proj.asts)
     for layout in index.by_function.values():
@@ -41,7 +41,7 @@ def test_locals_index_orders_params_before_body(proj):
 
 
 def test_locals_scope_excludes_declarations_from_closed_blocks(proj):
-    from sevm.locals import LocalsIndex
+    from chasm_debugger.locals import LocalsIndex
 
     index = LocalsIndex(proj.asts)
     scoping = next(
@@ -57,7 +57,7 @@ def test_locals_scope_excludes_declarations_from_closed_blocks(proj):
 
 
 def test_stack_slots_counts_calldata_and_function_types():
-    from sevm.locals import stack_slots
+    from chasm_debugger.locals import stack_slots
 
     assert stack_slots("uint256", "default") == 1
     assert stack_slots("string", "memory") == 1
@@ -70,7 +70,12 @@ def test_stack_slots_counts_calldata_and_function_types():
 
 def test_declaration_pcs_skips_parameters(proj):
     """Parameters are pushed by the caller; recording them here would be wrong."""
-    from sevm.locals import KIND_LOCAL, KIND_RETURN, LocalsIndex, declaration_pcs
+    from chasm_debugger.locals import (
+        KIND_LOCAL,
+        KIND_RETURN,
+        LocalsIndex,
+        declaration_pcs,
+    )
 
     art = proj.artifact("Bank")
     index = LocalsIndex(proj.asts)
@@ -274,8 +279,8 @@ def test_expression_compiles_once_across_many_stops(deposit_debugger):
 
 
 def test_bindings_only_inject_referenced_names(proj):
-    from sevm.evaluate import bindings_for
-    from sevm.locals import LocalValue
+    from chasm_debugger.evaluate import bindings_for
+    from chasm_debugger.locals import LocalValue
 
     available = [
         LocalValue(
@@ -296,8 +301,8 @@ def test_bindings_only_inject_referenced_names(proj):
 
 
 def test_unbindable_local_is_reported_not_ignored(proj):
-    from sevm.evaluate import unbindable_reference
-    from sevm.locals import LocalValue
+    from chasm_debugger.evaluate import unbindable_reference
+    from chasm_debugger.locals import LocalValue
 
     blocked = [
         LocalValue(
@@ -313,7 +318,7 @@ def test_unbindable_local_is_reported_not_ignored(proj):
 
 
 def test_breakpoint_condition_reads_a_local(deposit_debugger):
-    """The limitation SEVM.md called out: `b LOC if amount > 1 ether` now works."""
+    """The limitation CHASM.md called out: `b LOC if amount > 1 ether` now works."""
     dbg = deposit_debugger
     dbg.run("b Bank.sol:46 if amount > 1 ether")
     assert dbg.run("c").ok

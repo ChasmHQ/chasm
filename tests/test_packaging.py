@@ -11,9 +11,9 @@ import sys
 import pytest
 from packaging.requirements import Requirement
 
-import sevm
+import chasm_debugger
 
-try:  # 3.11+; sevm supports 3.10
+try:  # 3.11+; chasm supports 3.10
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - 3.10 only
     tomllib = None
@@ -65,8 +65,8 @@ def test_keccak_runs_on_the_pycryptodome_backend():
 
 
 def _third_party_imports() -> dict[str, set[str]]:
-    """Top-level module imported by `src/sevm` -> the files importing it."""
-    src = os.path.dirname(os.path.abspath(sevm.__file__))
+    """Top-level module imported by `src/chasm_debugger` -> the files importing it."""
+    src = os.path.dirname(os.path.abspath(chasm_debugger.__file__))
     found: dict[str, set[str]] = {}
     for root, _dirs, files in os.walk(src):
         for name in files:
@@ -82,7 +82,7 @@ def _third_party_imports() -> dict[str, set[str]]:
                 elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                     modules = [node.module.split(".")[0]]
                 for module in modules:
-                    if module != "sevm" and module not in sys.stdlib_module_names:
+                    if module != "chasm" and module not in sys.stdlib_module_names:
                         found.setdefault(module, set()).add(path)
     return found
 

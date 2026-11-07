@@ -15,7 +15,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from sevm.mcp_server import DebugDriver, build_server
+from chasm_debugger.mcp_server import DebugDriver, build_server
 
 COUNTER = """\
 // SPDX-License-Identifier: MIT
@@ -40,7 +40,7 @@ import os
 
 from web3 import EthereumTesterProvider, Web3
 
-from sevm.compile import compile_project
+from chasm_debugger.compile import compile_project
 
 CONTRACTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts")
 
@@ -209,7 +209,7 @@ def test_run_to_line_and_source_window(lab):
 def test_errors_are_structured_not_exceptions(lab):
     """Driver methods raise; the tools layer is what converts to error dicts."""
     driver, _script = lab
-    with pytest.raises(Exception, match="sevm_start_session"):
+    with pytest.raises(Exception, match="chasm_start_session"):
         driver.status()
     with pytest.raises(Exception, match="no such file"):
         driver.start("C:/definitely/not/here.py")
@@ -263,10 +263,10 @@ def test_client_round_trip_lists_tools_and_returns_error_dicts():
                         await client.initialize()
                         tools = await client.list_tools()
                         names = {t.name for t in tools.tools}
-                        assert "sevm_start_session" in names
-                        assert "sevm_find_bytes" in names
+                        assert "chasm_start_session" in names
+                        assert "chasm_find_bytes" in names
                         started = await client.call_tool(
-                            "sevm_start_session",
+                            "chasm_start_session",
                             {
                                 "target": "example.py",
                                 "reference_runtime_hex": "0x6000",
@@ -280,11 +280,11 @@ def test_client_round_trip_lists_tools_and_returns_error_dicts():
                             "reference_runtime_hex": "0x6000",
                             "provenance": True,
                         }
-                        res = await client.call_tool("sevm_get_status", {})
+                        res = await client.call_tool("chasm_get_status", {})
                         # dict returns serialise as JSON text content (no output
                         # schema is declared, so there is no structuredContent).
                         payload = json.loads(res.content[0].text)
-                        assert "sevm_start_session" in payload.get("error", "")
+                        assert "chasm_start_session" in payload.get("error", "")
             finally:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -334,7 +334,7 @@ def test_export_trace_structlog_shape(lab):
 
 
 def test_structlog_stack_is_pre_opcode_and_bottom_first():
-    from sevm.session.provenance import Provenance
+    from chasm_debugger.session.provenance import Provenance
 
     trace = Provenance()
     trace.enabled = True
@@ -357,7 +357,7 @@ def test_structlog_stack_is_pre_opcode_and_bottom_first():
 
 
 def test_parity_verdicts(lab):
-    from sevm.compile import compare_runtime
+    from chasm_debugger.compile import compare_runtime
 
     driver, script = lab
     driver.start(script)
@@ -367,7 +367,7 @@ def test_parity_verdicts(lab):
     assert exact["match"] is True and exact["difference"] == "none"
     # A different metadata tail is not a divergence: strip the real one and
     # append another valid `<cbor> <uint16 be length>` tail.
-    from sevm.compile.model import _strip_metadata
+    from chasm_debugger.compile.model import _strip_metadata
 
     body = _strip_metadata(art.deployed_bytecode)
     alt_meta = bytes([0xA2, 0x64, 0x69, 0x70, 0x66, 0x73])

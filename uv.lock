@@ -665,6 +665,65 @@ wheels = [
 ]
 
 [[package]]
+name = "chasm-debugger"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anyio" },
+    { name = "eth-abi" },
+    { name = "eth-account" },
+    { name = "eth-hash", extra = ["pycryptodome"] },
+    { name = "eth-keys" },
+    { name = "eth-utils" },
+    { name = "mcp" },
+    { name = "packaging" },
+    { name = "py-solc-x" },
+    { name = "pygments" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "rlp" },
+    { name = "textual" },
+    { name = "web3" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "maturin" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "ruff" },
+    { name = "textual-dev" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anyio", specifier = ">=4.15.1" },
+    { name = "eth-abi", specifier = ">=5.2" },
+    { name = "eth-account", specifier = ">=0.13" },
+    { name = "eth-hash", extras = ["pycryptodome"], specifier = ">=0.5.1" },
+    { name = "eth-keys", specifier = ">=0.6" },
+    { name = "eth-utils", specifier = ">=5.0" },
+    { name = "mcp", specifier = ">=2.2.0" },
+    { name = "packaging", specifier = ">=23.0" },
+    { name = "py-solc-x", specifier = ">=2.0" },
+    { name = "pygments", specifier = ">=2.20" },
+    { name = "requests", specifier = ">=2.31" },
+    { name = "rich", specifier = ">=15.0" },
+    { name = "rlp", specifier = ">=4.0" },
+    { name = "textual", specifier = ">=8.0" },
+    { name = "web3", specifier = ">=7.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "maturin", specifier = ">=1.10,<2.0" },
+    { name = "mypy", specifier = ">=1.13" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "ruff", specifier = ">=0.9" },
+    { name = "textual-dev", specifier = ">=1.8" },
+]
+
+[[package]]
 name = "ckzg"
 version = "2.1.8"
 source = { registry = "https://pypi.org/simple" }
@@ -803,7 +862,7 @@ name = "cytoolz"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "toolz" },
+    { name = "toolz", marker = "implementation_name == 'cpython'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/bd/d4/16916f3dc20a3f5455b63c35dcb260b3716f59ce27a93586804e70e431d5/cytoolz-1.1.0.tar.gz", hash = "sha256:13a7bf254c3c0d28b12e2290b82aed0f0977a4c2a2bf84854fcdc7796a29f3b0", size = 642510, upload-time = "2025-10-19T00:44:56.174Z" }
 wheels = [
@@ -1086,7 +1145,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -1237,8 +1296,8 @@ name = "httpcore2"
 version = "2.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11" },
-    { name = "truststore" },
+    { name = "h11", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten'" },
+    { name = "truststore", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cb/f3/1db7aa2bc2524062192bb0e0323969492d1883152a232fe36eea65f4e35c/httpcore2-2.13.1.tar.gz", hash = "sha256:e0aa977abe17e69a3b820a24542a6fa88702676d83880b8d194dcd18408e5103", size = 68071, upload-time = "2026-09-23T07:47:22.372Z" }
 wheels = [
@@ -2885,65 +2944,6 @@ wheels = [
 ]
 
 [[package]]
-name = "sevm"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "anyio" },
-    { name = "eth-abi" },
-    { name = "eth-account" },
-    { name = "eth-hash", extra = ["pycryptodome"] },
-    { name = "eth-keys" },
-    { name = "eth-utils" },
-    { name = "mcp" },
-    { name = "packaging" },
-    { name = "py-solc-x" },
-    { name = "pygments" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "rlp" },
-    { name = "textual" },
-    { name = "web3" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "maturin" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "textual-dev" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anyio", specifier = ">=4.15.1" },
-    { name = "eth-abi", specifier = ">=5.2" },
-    { name = "eth-account", specifier = ">=0.13" },
-    { name = "eth-hash", extras = ["pycryptodome"], specifier = ">=0.5.1" },
-    { name = "eth-keys", specifier = ">=0.6" },
-    { name = "eth-utils", specifier = ">=5.0" },
-    { name = "mcp", specifier = ">=2.2.0" },
-    { name = "packaging", specifier = ">=23.0" },
-    { name = "py-solc-x", specifier = ">=2.0" },
-    { name = "pygments", specifier = ">=2.20" },
-    { name = "requests", specifier = ">=2.31" },
-    { name = "rich", specifier = ">=15.0" },
-    { name = "rlp", specifier = ">=4.0" },
-    { name = "textual", specifier = ">=8.0" },
-    { name = "web3", specifier = ">=7.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "maturin", specifier = ">=1.10,<2.0" },
-    { name = "mypy", specifier = ">=1.13" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "ruff", specifier = ">=0.9" },
-    { name = "textual-dev", specifier = ">=1.8" },
-]
-
-[[package]]
 name = "sse-starlette"
 version = "3.4.11"
 source = { registry = "https://pypi.org/simple" }
@@ -3147,8 +3147,8 @@ name = "uvicorn"
 version = "0.53.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "h11" },
+    { name = "click", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten'" },
+    { name = "h11", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten'" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5d/ad/04bbb797c84fc1f26cb171f7394716f4865ffb8d8c5e1eef42565c2dfa6b/uvicorn-0.53.0.tar.gz", hash = "sha256:a9356f0cb89b3b8621529c5d5eebd69bfe154f4c3f68b4cf2de47e45fa855c2e", size = 110881, upload-time = "2026-09-14T07:44:23.815Z" }

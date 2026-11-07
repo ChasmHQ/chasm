@@ -1,6 +1,6 @@
-"""The live-network equivalents, skipped unless SEVM_NETWORK_TESTS=1.
+"""The live-network equivalents, skipped unless CHASM_NETWORK_TESTS=1.
 
-These reach the real forge-std, npm and openzeppelin repositories. One asserts sevm
+These reach the real forge-std, npm and openzeppelin repositories. One asserts chasm
 implements every `assert*` the current forge-std declares, so a new overload upstream fails
 the suite rather than surfacing as "unimplemented cheatcode" at run time.
 """
@@ -14,9 +14,9 @@ import shutil
 import pytest
 from conftest import FIXTURES
 
-from sevm import libs
-from sevm.compile import compile_foundry_project
-from sevm.foundry import discover_tests
+from chasm_debugger import libs
+from chasm_debugger.compile import compile_foundry_project
+from chasm_debugger.foundry import discover_tests
 
 
 def read_text(path: str) -> str:
@@ -25,7 +25,7 @@ def read_text(path: str) -> str:
 
 
 # Marked tests reach the real repositories; conftest skips them without
-# SEVM_NETWORK_TESTS=1.
+# CHASM_NETWORK_TESTS=1.
 NETWORK = pytest.mark.network
 
 
@@ -34,9 +34,9 @@ NETWORK = pytest.mark.network
 
 @NETWORK
 def test_real_forge_std_installs_and_runs(tmp_path):
-    from sevm.evaluate import Evaluator, make_eval_hook
-    from sevm.foundry import compile_test, make_test_driver, select_test
-    from sevm.session import DebugSession, Finished, StepMode
+    from chasm_debugger.evaluate import Evaluator, make_eval_hook
+    from chasm_debugger.foundry import compile_test, make_test_driver, select_test
+    from chasm_debugger.session import DebugSession, Finished, StepMode
 
     root = str(tmp_path / "solo")
     shutil.copytree(os.path.join(os.path.dirname(FIXTURES), "foundry_solo"), root)
@@ -60,7 +60,7 @@ def test_real_forge_std_installs_and_runs(tmp_path):
 def test_real_forge_std_declares_every_assert_we_implement(tmp_path):
     from eth_utils import function_signature_to_4byte_selector
 
-    from sevm.cheatcodes.registry import _REGISTRY
+    from chasm_debugger.cheatcodes.registry import _REGISTRY
 
     root = str(tmp_path / "std")
     libs.clone(
@@ -77,7 +77,7 @@ def test_real_forge_std_declares_every_assert_we_implement(tmp_path):
         if function_signature_to_4byte_selector(sig) not in _REGISTRY
     ]
     assert not missing, (
-        f"forge-std asserts sevm does not implement: {sorted(set(missing))}"
+        f"forge-std asserts chasm does not implement: {sorted(set(missing))}"
     )
 
 

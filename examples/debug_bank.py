@@ -5,7 +5,7 @@ import os
 from eth_account import Account
 from web3 import EthereumTesterProvider, Web3
 
-from sevm.compile import compile_project
+from chasm_debugger.compile import compile_project
 
 CONTRACTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bank", "src")
 
@@ -17,7 +17,7 @@ def main():
 
     art = project.artifact("Bank")
     factory = w3.eth.contract(abi=art.abi, bytecode=art.bytecode.hex())
-    tx = factory.constructor("sevm-bank").transact(
+    tx = factory.constructor("chasm-bank").transact(
         {"value": w3.to_wei(1, "ether"), "gas": 3_000_000}
     )
     bank_address = w3.eth.wait_for_transaction_receipt(tx)["contractAddress"]

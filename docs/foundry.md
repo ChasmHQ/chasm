@@ -1,16 +1,16 @@
 # Foundry projects, libraries and the build cache
 
-sevm reads a Foundry project the way `forge` does, and writes back into it in a way that
+Chasm reads a Foundry project the way `forge` does, and writes back into it in a way that
 cannot disturb `forge`. This page covers the parts the README summarises.
 
 [back to README](../README.md)
 
-`sevm run` dispatches on the extension. A `.py` argument is a web3 driver, a `.sol`
+`chasm run` dispatches on the extension. A `.py` argument is a web3 driver, a `.sol`
 argument is a Foundry test.
 
 ```bash
-sevm run test/Counter.t.sol                     # fullscreen TUI, opens in the first test
-sevm run --console -m testDeposit examples/bank/test/Bank.t.sol   # one test by name
+chasm run test/Counter.t.sol                     # fullscreen TUI, opens in the first test
+chasm run --console -m testDeposit examples/bank/test/Bank.t.sol   # one test by name
 ```
 
 Each test gets a fresh deploy, a `setUp()` and the test call, as forge isolates them, and
@@ -36,12 +36,12 @@ contract VaultTest is Test {
 ```
 
 ```bash
-$ sevm run --console -y examples/standalone/Vault.t.sol
+$ chasm run --console -y examples/standalone/Vault.t.sol
 standalone test at examples/standalone; compiling ...
 installing forge-std from https://github.com/foundry-rs/forge-std @ v1.16.2
 installing @openzeppelin/contracts from https://github.com/OpenZeppelin/openzeppelin-contracts @ v5.7.0
 wrote 2 remapping(s) to remappings.txt
-wrote 25 artifact(s) to out/sevm
+wrote 25 artifact(s) to out/chasm
 debugging 1 test(s): VaultTest.testDeal
 Breakpoint 1, VaultTest.testDeal() at Vault.t.sol:11
   11          vm.deal(alice, 3 ether);
@@ -55,30 +55,30 @@ examples/standalone
 ├── foundry.toml        [profile.default] with libs = ["lib"], no src/test
 ├── remappings.txt      forge-std/=lib/forge-std/src/
 │                       @openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
-├── cache/sevm          the compilation unit, keyed by solc version, settings, sources
-├── out/sevm            one JSON per contract, in forge's layout
+├── cache/chasm          the compilation unit, keyed by solc version, settings, sources
+├── out/chasm            one JSON per contract, in forge's layout
 └── lib
     ├── forge-std                 v1.16.2
     └── openzeppelin-contracts    v5.7.0
 ```
 
-Drop `-y` and sevm asks once before writing anything:
+Drop `-y` and chasm asks once before writing anything:
 
 ```bash
-$ sevm run --console examples/standalone/Vault.t.sol
-sevm will:
+$ chasm run --console examples/standalone/Vault.t.sol
+chasm will:
   - create examples/standalone/foundry.toml
   - install forge-std, @openzeppelin/contracts into examples/standalone/lib
 [y/N]
 ```
 
-Answer `n` and sevm writes nothing, compiling against what is already there. A
+Answer `n` and chasm writes nothing, compiling against what is already there. A
 non-interactive run declines by itself. `--no-install` skips the prompt and refuses the
 same way, with the manual recipe:
 
 ```bash
-$ sevm run --console --no-install examples/standalone/Vault.t.sol
-compile failed: unresolved import 'forge-std/Test.sol' in Vault.t.sol, and sevm was told
+$ chasm run --console --no-install examples/standalone/Vault.t.sol
+compile failed: unresolved import 'forge-std/Test.sol' in Vault.t.sol, and chasm was told
 not to install it. Run again with -y to let it, or install it yourself:
   forge install <org>/<repo>
   echo 'forge-std/=lib/<repo>/src/' >> remappings.txt
@@ -87,7 +87,7 @@ not to install it. Run again with -y to let it, or install it yourself:
 ## Inside a Foundry project
 
 ```bash
-$ sevm run --console examples/bank/test/Bank.t.sol
+$ chasm run --console examples/bank/test/Bank.t.sol
 foundry project at examples/bank; compiling ...
 debugging 3 test(s): BankTest.testDeposit, BankTest.testFeeIsTakenOnDeposit,
 FailingAssertionTest.testBalanceIgnoresFee
@@ -101,13 +101,13 @@ has none.
 
 ## How an import is resolved
 
-sevm looks up the prefix in its own table (`forge-std`, `ds-test`, `solmate`, `solady`,
+chasm looks up the prefix in its own table (`forge-std`, `ds-test`, `solmate`, `solady`,
 openzeppelin), then in npm's registry metadata for anything else, and clones the repository
 it finds at the newest release tag. Prereleases are skipped. The remapping comes from where
 the imported file actually landed in the clone, so `src/`, `contracts/` and flat layouts
 all work.
 
-A clone is a pin. sevm never updates it. To move a version, delete `lib/<name>` or run
+A clone is a pin. chasm never updates it. To move a version, delete `lib/<name>` or run
 `forge install <org>/<repo>@<tag>` yourself. git is required, the `forge` binary is not, and
 only the first run for a given library needs the network.
 
@@ -116,43 +116,43 @@ only the first run for a given library needs the network.
 The first run compiles. The next one does not.
 
 ```bash
-$ time sevm compile .
-wrote 27 artifact(s) to out/sevm
+$ time chasm compile .
+wrote 27 artifact(s) to out/chasm
 solc 0.8.36, optimizer off
 real  1.95
 
-$ time sevm compile .
+$ time chasm compile .
 cache hit (22 sources)
 real  0.53
 
 $ $EDITOR test/Bank.t.sol
-$ time sevm compile .
+$ time chasm compile .
 recompiled 1 of 22 sources
-wrote 27 artifact(s) to out/sevm
+wrote 27 artifact(s) to out/chasm
 real  1.02
 ```
 
 A build leaves the same two directories forge does:
 
 ```
-cache/sevm/     the compilation unit, keyed by solc version, settings and source content
-out/sevm/       one JSON per contract, in forge's layout: out/sevm/Token.sol/Token.json
+cache/chasm/     the compilation unit, keyed by solc version, settings and source content
+out/chasm/       one JSON per contract, in forge's layout: out/chasm/Token.sol/Token.json
 ```
 
 An edit invalidates the file you changed and everything that imports it. The rest is
 reused, so solc only has to emit the parts that moved. `forge clean` clears both of those
 along with forge's own.
 
-Artifacts are nested under `out/sevm/` rather than written straight into `out/`, because
-sevm compiles with the optimizer off. Overwriting `out/Token.sol/Token.json` would leave
-forge's cache calling it fresh, and the next `forge test` would run sevm's build. They
+Artifacts are nested under `out/chasm/` rather than written straight into `out/`, because
+chasm compiles with the optimizer off. Overwriting `out/Token.sol/Token.json` would leave
+forge's cache calling it fresh, and the next `forge test` would run chasm's build. They
 carry `abi`, `bytecode`, `deployedBytecode`, `methodIdentifiers`, `storageLayout` and the
-source id, with forge's field names. `metadata` is the one thing missing, as sevm never
+source id, with forge's field names. `metadata` is the one thing missing, as chasm never
 asks solc for it.
 
 A directory with no `foundry.toml` gets nothing written into it. Its cache lives under
-`~/.cache/sevm/` and no artifacts are written at all. `--force` recompiles and rewrites the
-entry, `--no-cache` (or `SEVM_NO_CACHE=1`) writes nothing anywhere.
+`~/.cache/chasm/` and no artifacts are written at all. `--force` recompiles and rewrites the
+entry, `--no-cache` (or `CHASM_NO_CACHE=1`) writes nothing anywhere.
 
 ## Cheatcodes
 
@@ -177,25 +177,25 @@ Implemented:
 - `assume`, and the full `vm.assert*` family (`assertEq`, `assertGt`, `assertApproxEqRel`,
   the `*Decimal` forms, 116 overloads) that forge-std's own `assertEq` calls into.
 - gas-metering knobs (`pauseGasMetering resumeGasMetering resetGasMetering`) and `skip` are
-  accepted as no-ops, since sevm meters gas itself and produces no gas snapshots.
+  accepted as no-ops, since chasm meters gas itself and produces no gas snapshots.
 
 A failed assertion stops the debugger where it broke, with the comparison:
 
 ```bash
-(sevm) c
+(chasm) c
 Stopped on error: reverted: "assertion failed: 997500000000000000 != 1000000000000000000"
   StdAssertions.assertEq(uint256, uint256) at lib/forge-std/src/StdAssertions.sol:121
  121              vm.assertEq(left, right);
-(sevm) up
+(chasm) up
 #1  FailingAssertionTest.testBalanceIgnoresFee() at test/FailingAssertion.t.sol:20
 ```
 
 Fire one at the prompt against the frame you are stopped in:
 
 ```bash
-(sevm) vm.warp(12345)
+(chasm) vm.warp(12345)
 vm.warp -> ok
-(sevm) p block.timestamp
+(chasm) p block.timestamp
 $1 = 12345  (uint256)
 ```
 
@@ -204,13 +204,13 @@ as one, and otherwise a Solidity expression evaluated against the paused frame, 
 `p` evaluates one:
 
 ```bash
-(sevm) vm.deal(alice, 5 ether)
+(chasm) vm.deal(alice, 5 ether)
 vm.deal -> ok
-(sevm) p alice.balance
+(chasm) p alice.balance
 $2 = 5000000000000000000 (5 ether)  (uint256)
-(sevm) vm.label(bank.owner(), "owner")
+(chasm) vm.label(bank.owner(), "owner")
 vm.label -> ok
-(sevm) vm.getLabel(bank.owner())
+(chasm) vm.getLabel(bank.owner())
 vm.getLabel -> owner
 ```
 
@@ -223,7 +223,7 @@ parameter. If that does not fit either, the error names the argument and carries
 reason:
 
 ```bash
-(sevm) vm.prank(alcie)
+(chasm) vm.prank(alcie)
 error: vm.prank: argument 1 (alcie) is not a valid address (Undeclared identifier. Did you mean "alice"? (in
 `alcie`))
 ```

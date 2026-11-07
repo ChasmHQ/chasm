@@ -8,17 +8,17 @@ that is actually running.
 [back to README](../README.md)
 
 ```bash
-(sevm) mload(0x40)
+(chasm) mload(0x40)
 mload(0x40) -> $1 = 0x80 (128)  (gas 12)
-(sevm) mstore(0x80, 0xdeadbeef)
+(chasm) mstore(0x80, 0xdeadbeef)
 mstore(0x80, 0xdeadbeef) -> ok  (gas 18)
-(sevm) sstore(3, add(sload(3), 1))
+(chasm) sstore(3, add(sload(3), 1))
 sstore(3, add(sload(3), 1)) -> ok  (gas 22,103)
-(sevm) asm mstore(0x80, 1); mstore8(0xa0, 0x61); mload(0x80)
+(chasm) asm mstore(0x80, 1); mstore8(0xa0, 0x61); mload(0x80)
 mstore(0x80, 1) -> ok  (gas 18)
 mstore8(0xa0, 0x61) -> ok  (gas 21)
 mload(0x80) -> $2 = 0x1 (1)  (gas 18)
-(sevm) keccak256(0x80, 32)
+(chasm) keccak256(0x80, 32)
 keccak256(0x80, 32) -> $3 = 0xb10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6  (gas 51)
 ```
 
@@ -41,7 +41,7 @@ literal (`"hi"`, right-padded as Yul pads it), a nested call, or any convenience
 Refused, with the reason:
 
 ```bash
-(sevm) jump(0x10)
+(chasm) jump(0x10)
 error: `jump`: Yul has no `jump`; use the debugger's `jump 0xPC` or `set $pc = 0xPC`
 ```
 

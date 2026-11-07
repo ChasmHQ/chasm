@@ -12,7 +12,7 @@ import re
 
 from harness import TIMEOUT, line_of
 
-from sevm.evaluate import Evaluator, make_eval_hook
+from chasm_debugger.evaluate import Evaluator, make_eval_hook
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -39,7 +39,7 @@ def tui_app(bank, size=(150, 46)):
         )
         w3.eth.wait_for_transaction_receipt(tx)
 
-    from sevm.tui.app import SevmApp
+    from chasm_debugger.tui.app import ChasmApp
 
     session = w3.provider.session
     session.stop_at_start = True
@@ -48,7 +48,7 @@ def tui_app(bank, size=(150, 46)):
     session.set_eval_hook(make_eval_hook(evaluator))
     session.start(txfn)
     first = session.wait(timeout=TIMEOUT)
-    return session, proj_, SevmApp(session, evaluator, first_event=first), size
+    return session, proj_, ChasmApp(session, evaluator, first_event=first), size
 
 
 def run_tui(session, app, size, body):

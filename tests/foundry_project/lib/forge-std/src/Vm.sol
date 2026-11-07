@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.6.2 <0.9.0;
 
-// Minimal forge-std `Vm` interface bundled with sevm.
+// Minimal forge-std `Vm` interface bundled with chasm_debugger.
 //
-// This is NOT the full forge-std interface. It declares the cheatcodes sevm's debugger
-// implements (see src/sevm/cheatcodes.py), plus a few common signatures so that a
+// This is NOT the full forge-std interface. It declares the cheatcodes chasm's debugger
+// implements (see src/chasm_debugger/cheatcodes.py), plus a few common signatures so that a
 // standalone `Test.sol` still compiles. Any cheatcode declared here but not implemented by
-// the engine reverts at runtime with "sevm: unimplemented cheatcode", which is a clearer
+// the engine reverts at runtime with "chasm: unimplemented cheatcode", which is a clearer
 // signal than a compile error.
 //
 // The cheatcode address is the last 20 bytes of keccak256("hevm cheat code").

@@ -2,8 +2,8 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-src/sevm/_revm*.so
-src/sevm/_revm*.pyd
+src/chasm_debugger/_revm*.so
+src/chasm_debugger/_revm*.pyd
 .eggs/
 build/
 dist/

@@ -4,7 +4,7 @@ The debugger fixtures each get a *fresh* chain, because stepping mutates state a
 one would make failures order-dependent. Compilation is cached process-wide (see
 `harness.project`) since solc is the slow part.
 
-The rest stands up the dependency-install path: sevm fetches forge-std from its real
+The rest stands up the dependency-install path: chasm fetches forge-std from its real
 repository, so the suite builds a local git repo from `fixtures/forge_std_fake/` and points
 the resolver at it over `file://`.
 
@@ -23,7 +23,7 @@ from eth_abi import encode as abi_encode
 from eth_utils import function_signature_to_4byte_selector
 from harness import Debugger, bank_fixture, deploy, make_web3, project
 
-from sevm import libs
+from chasm_debugger import libs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(HERE, "fixtures")
@@ -34,11 +34,11 @@ FAKE_NEWEST = "v1.2.3"
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip `network`-marked tests unless SEVM_NETWORK_TESTS=1 asks for the real thing."""
-    if os.environ.get("SEVM_NETWORK_TESTS") == "1":
+    """Skip `network`-marked tests unless CHASM_NETWORK_TESTS=1 asks for the real thing."""
+    if os.environ.get("CHASM_NETWORK_TESTS") == "1":
         return
     skip = pytest.mark.skip(
-        reason="set SEVM_NETWORK_TESTS=1 to run tests that hit the network"
+        reason="set CHASM_NETWORK_TESTS=1 to run tests that hit the network"
     )
     for item in items:
         if "network" in item.keywords:
@@ -49,7 +49,7 @@ def pytest_collection_modifyitems(config, items):
 def isolated_cache(tmp_path, monkeypatch):
     """Point the user-level cache at tmp for every test.
 
-    Without this a test would read the developer's real `~/.cache/sevm/solc-versions.json`
+    Without this a test would read the developer's real `~/.cache/chasm/solc-versions.json`
     and quietly ignore its own mocked release list, and the suite would leave entries
     behind on the machine that ran it.
     """
@@ -64,9 +64,9 @@ def _git(*args: str, cwd: str) -> None:
         capture_output=True,
         env={
             **os.environ,
-            "GIT_AUTHOR_NAME": "sevm tests",
+            "GIT_AUTHOR_NAME": "chasm tests",
             "GIT_AUTHOR_EMAIL": "tests@example.com",
-            "GIT_COMMITTER_NAME": "sevm tests",
+            "GIT_COMMITTER_NAME": "chasm tests",
             "GIT_COMMITTER_EMAIL": "tests@example.com",
         },
     )
@@ -114,7 +114,7 @@ def solo_root(tmp_path_factory, local_forge_std) -> str:
 
 @pytest.fixture(scope="session")
 def solo_project(solo_root):
-    from sevm.foundry import compile_test
+    from chasm_debugger.foundry import compile_test
 
     return compile_test(os.path.join(solo_root, "AllCheats.t.sol"), solo_root)
 
@@ -128,7 +128,7 @@ def token_root(tmp_path_factory) -> str:
 
 @pytest.fixture(scope="session")
 def token_project(token_root):
-    from sevm.compile import DEFAULT_SOLC_VERSION, compile_foundry_project
+    from chasm_debugger.compile import DEFAULT_SOLC_VERSION, compile_foundry_project
 
     return compile_foundry_project(
         token_root,
@@ -141,7 +141,7 @@ def token_project(token_root):
 @pytest.fixture(scope="session")
 def failing_project(tmp_path_factory, local_forge_std):
     """A standalone test whose assertion fails, to prove failures surface as reverts."""
-    from sevm.foundry import compile_test, prepare_project
+    from chasm_debugger.foundry import compile_test, prepare_project
 
     root = str(tmp_path_factory.mktemp("failing"))
     sol = os.path.join(root, "Demo.t.sol")
@@ -223,7 +223,7 @@ def locals_contract(proj):
 @pytest.fixture
 def fake_clipboard(monkeypatch):
     """Capture what would reach the system clipboard, without touching it."""
-    from sevm import clipboard
+    from chasm_debugger import clipboard
 
     captured: list = []
 

@@ -5,7 +5,7 @@ import {Vm} from "./Vm.sol";
 import {console} from "./console.sol";
 
 // Mirrors real forge-std: every assertion is a guard plus a `vm.assert*` cheatcode call,
-// so the suite exercises sevm's assertion engine rather than plain Solidity requires.
+// so the suite exercises chasm's assertion engine rather than plain Solidity requires.
 abstract contract Test {
     Vm internal constant vm = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);
 

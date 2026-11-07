@@ -1,10 +1,10 @@
-# AGENTS.md — sevm
+# AGENTS.md — Chasm
 
 Context for any agent working in this directory. Read before editing.
 
 ## What this is
 
-`sevm` is a fullscreen, gdb-compatible interactive debugger for Solidity, running on
+`chasm` is a fullscreen, gdb-compatible interactive debugger for Solidity, running on
 REVM. It stops *inside* a running transaction with the frame still alive: read
 uncommitted state, call view functions, rewrite a stack operand before the opcode
 consumes it, mutate storage through Solidity, and force out-of-gas at an exact
@@ -15,19 +15,19 @@ core is shared by the Python bridge and the headless JSON-RPC server.
 
 ## Layout (src layout)
 
-Every package `__init__.py` carries a map of its own modules, and `src/sevm/__init__.py`
+Every package `__init__.py` carries a map of its own modules, and `src/chasm_debugger/__init__.py`
 maps the whole tree. Read those first; `tests/test_layout.py` fails if one goes stale.
 
 ```
-sevm/
+debugger/
 ├── Cargo.toml            # Rust workspace: core, Python bridge, headless server
-├── pyproject.toml        # metadata, deps, `sevm` entry points, pytest + Maturin config
+├── pyproject.toml        # metadata, deps, `chasm` entry points, pytest + Maturin config
 ├── uv.lock               # pinned resolution
 ├── README.md             # landing page and usage
 ├── rust/                 # REVM core, PyO3 bridge, headless JSON-RPC server
 ├── docs/                 # commands, expressions, assembly, Foundry reference
-├── src/sevm/             # the package (import as `sevm`)
-│   ├── cli.py            # arg parsing + `main()`; `.py` vs `.sol` dispatch in `sevm run`
+├── src/chasm_debugger/   # the package (import as `chasm_debugger`)
+│   ├── cli.py            # arg parsing + `main()`; `.py` vs `.sol` dispatch in `chasm run`
 │   ├── session/          # source debugger over REVM: revm, snapshots, framelocals,
 │   │                     #   code, events
 │   ├── commands/         # the gdb command layer: processor + one module per verb group
@@ -36,22 +36,22 @@ sevm/
 │   ├── assembly/         # builtins, parser, execute
 │   ├── cheatcodes/       # registry, cheats, assertions, args, console
 │   ├── locals/           # layout, index, values
-│   ├── tui/              # app, pane, panes, layout, opcodes, theme, sevm.tcss
+│   ├── tui/              # app, pane, panes, layout, opcodes, theme, chasm.tcss
 │   ├── cache.py          # on-disk build cache: unit hashing, partial rebuilds
-│   ├── artifacts.py      # forge-shaped `out/sevm/<File.sol>/<Contract>.json`
+│   ├── artifacts.py      # forge-shaped `out/chasm/<File.sol>/<Contract>.json`
 │   ├── libs.py           # dependency resolution: imports -> repo -> clone -> remapping
 │   ├── foundry.py        # Foundry test runner: resolve project, discover, REVM driver
 │   ├── provider.py       # synchronous Web3 provider backed by the REVM session
-│   ├── revm_server.py    # `sevm-engine` headless-process entry point
+│   ├── revm_server.py    # `chasm-engine` headless-process entry point
 │   ├── frames.py, srcmap.py, decode.py, disasm.py, dispatch.py
-│   ├── doctor.py         # `sevm doctor`: compiler, runtimes, caches, overrides
+│   ├── doctor.py         # `chasm doctor`: compiler, runtimes, caches, overrides
 │   ├── breakpoints.py, clipboard.py
 │   └── console.py        # plain-text frontend (`--console`)
 ├── tests/                # one file per layer + conftest/harness/tui_harness
 └── examples/             # runnable, self-contained projects
 ```
 
-`sevm run` dispatches by extension: `.py` attaches to a web3 driver (below); `.sol`
+`chasm run` dispatches by extension: `.py` attaches to a web3 driver (below); `.sol`
 compiles + runs a Foundry test. Both paths resolve dependencies the same way. With no
 `-m` filter it debugs every test in the file: a
 fresh deploy + `setUp` + test per function, a breakpoint on each body, opening at the first
@@ -70,7 +70,7 @@ surface and v1 limits.
 
 ## Library resolution (libs.py)
 
-sevm ships no forge-std. `compile_foundry_project` walks the import graph
+chasm ships no forge-std. `compile_foundry_project` walks the import graph
 (`libs.import_closure`), and anything unresolved is installed: prefix -> `libs.ALIASES`,
 else npm registry metadata (`repository.url`) -> `git clone --depth 1 --branch <newest
 stable tag>` into `<root>/lib/<name>`, with the remapping derived from where the imported
@@ -101,7 +101,7 @@ from ~710ms to ~28ms. Inside the test contract itself the closure is nearly the 
 project, so the cost stands.
 
 The second invocation is skipped outright for a bare identifier. `Evaluator._known_type`
-takes a bound local's type from the parameter sevm declares for it and a state variable's
+takes a bound local's type from the parameter chasm declares for it and a state variable's
 from solc's `typeString` in the AST, searching bindings first and then
 `linearizedBaseContracts`, which is the order Solidity itself shadows in. Both strings are
 what the probe's diagnostic would have named, so this is a lookup and not a second type
@@ -157,7 +157,7 @@ way; do not add `sys.path` hacks.
 resolved solc version, `optimize`, `evm_version`, the remappings, the output selection and
 every source's content hash. A hit loads `<cache>/<unit>.json.gz` (solc's standard-JSON
 output, `errors` stripped) and goes straight to `_build_project` without invoking solc. The
-cache is `cache/sevm/` inside a Foundry root, else `~/.cache/sevm/projects/<hash>`, so a
+cache is `cache/chasm/` inside a Foundry root, else `~/.cache/chasm/projects/<hash>`, so a
 plain directory is never written into.
 
 A miss with a usable base (same settings, same source *key set*) builds partially: solc
@@ -170,13 +170,13 @@ sees is unchanged, file ids, analysis and source maps come out identical to a fu
 `base_for` requires an identical key set because adding or removing a file shifts them.
 
 A build also leaves forge-shaped artifacts (`artifacts.write_out`): one JSON per contract
-under `<out>/sevm/<File.sol>/<Contract>.json`, `out` taken from foundry.toml. The `sevm/`
-nesting is load-bearing, not tidiness: sevm compiles optimizer-off, and overwriting
+under `<out>/chasm/<File.sol>/<Contract>.json`, `out` taken from foundry.toml. The `chasm/`
+nesting is load-bearing, not tidiness: chasm compiles optimizer-off, and overwriting
 `out/<File.sol>/<Contract>.json` would leave forge's own cache calling it fresh, so the
-next `forge test` would run sevm's build. Contract names that collide across sources with
+next `forge test` would run chasm's build. Contract names that collide across sources with
 the same basename get a `.1` suffix, and `sourceName` says which source each came from.
 Artifacts are written when a build happens, or when a hit finds the `out` tree gone; they
-carry no `metadata`, which is the one forge field sevm does not request from solc.
+carry no `metadata`, which is the one forge field chasm does not request from solc.
 
 Every cache failure is a miss, never an error. Tests must never touch `~/.cache`:
 `conftest.isolated_cache` points `XDG_CACHE_HOME` at tmp per test, which is also what lets
@@ -195,18 +195,18 @@ the standing instruction.
 Everything runs through uv. Do not call bare `pip`/`python` against a system interpreter.
 
 ```bash
-uv sync                 # editable install of sevm + dev group into .venv
-uv run sevm --help      # run the CLI
-uv run sevm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
-uv run sevm run --console --contracts tests/contracts examples/debug_bank.py
-uv run sevm compile tests/contracts                                  # what sevm sees
+uv sync                 # editable install of chasm + dev group into .venv
+uv run chasm --help      # run the CLI
+uv run chasm run --contracts tests/contracts examples/debug_bank.py   # fullscreen TUI
+uv run chasm run --console --contracts tests/contracts examples/debug_bank.py
+uv run chasm compile tests/contracts                                  # what chasm sees
 uv run pytest -q        # test suite (751 tests; ~2.5 min, solc compile is the slow part)
-SEVM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
+CHASM_NETWORK_TESTS=1 uv run pytest -q -m network   # 4 more, against the real forge-std/npm
 uv run ruff check src tests examples   # lint (config in pyproject [tool.ruff])
 uv run ruff format src tests examples  # format (line length 90)
 uv run mypy src         # type check (pragmatic config, not strict)
 uv build                # wheel + sdist
-uv tool install .       # install the `sevm` command globally
+uv tool install .       # install the `chasm` command globally
 ```
 
 Style is enforced by ruff, not by hand: run `ruff format` and `ruff check --fix` before
@@ -217,7 +217,7 @@ fixture tuple and using only some fields is normal). Every module carries
 `from __future__ import annotations`, so annotations use builtin generics (`dict`,
 `list`, `X | None`), not `typing.Dict`/`Optional`.
 
-CLI shape: `sevm {run,compile,doctor}`. Options go **before** the target script; everything
+CLI shape: `chasm {run,compile,doctor}`. Options go **before** the target script; everything
 after the script is forwarded to it. Recognition of user contracts is by bytecode
 (runtime code matched against compiled artifacts, metadata hash stripped, immutables
 masked), so an unmodified web3 script works as a `run` target.
@@ -251,7 +251,7 @@ for directory trees only.
 ## Dependencies
 
 Declared in `pyproject.toml` and the Cargo manifests. Rule: every third-party Python
-package imported under `src/sevm` is a direct dependency rather than left to transitive
+package imported under `src/chasm_debugger` is a direct dependency rather than left to transitive
 resolution. `test_packaging.py` walks the imports and fails if one goes undeclared,
 mapping import names such as `solcx` to their distributions.
 Dev-only tools (`pytest`, `textual-dev`) live in the PEP 735 `[dependency-groups] dev`,
@@ -259,11 +259,11 @@ not in the runtime deps, and are not shipped in the wheel.
 
 Do not add `web3[tester]`, `eth-tester`, or `py-evm`: Web3 calls run through
 `provider.RevmProvider`. `eth-hash[pycryptodome]` is named directly so the keccak backend
-sevm relies on is not left to a transitive dependency.
+chasm relies on is not left to a transitive dependency.
 
 Two files are package data, both loaded relative to their module and included by the
-Maturin build: the Textual stylesheet `src/sevm/tui/sevm.tcss` and the node
-driver `src/sevm/compile/soljson.js`. If you move or rename either, update `CSS_PATH` in
+Maturin build: the Textual stylesheet `src/chasm_debugger/tui/chasm.tcss` and the node
+driver `src/chasm_debugger/compile/soljson.js`. If you move or rename either, update `CSS_PATH` in
 `tui/app.py` or `DRIVER` in `compile/wasm.py`, and re-check `uv build` still bundles it.
 Nothing else is: forge-std is no longer vendored.
 
@@ -277,14 +277,14 @@ release list publishes, and proves the result by running `--version` — a downl
 is not evidence it can execute, since the Linux builds are glibc-linked and musl or NixOS
 cannot run them. An existing `~/.solcx` binary, one of Foundry's under `~/.svm`, or a
 matching `solc` on PATH is used before anything is downloaded, and `--solc-binary` /
-`SEVM_SOLC` overrides the lot (that binary then also names the version, because it is what
+`CHASM_SOLC` overrides the lot (that binary then also names the version, because it is what
 runs and the version keys the build cache). py-solc-x still *invokes* solc through
 `compile_standard(solc_binary=...)`.
 
 Where no native build exists or the one downloaded cannot execute, `compile/wasm.py` runs
-solc's Emscripten build (`soljson.js`, cached under `~/.cache/sevm/solc-wasm/`) through
+solc's Emscripten build (`soljson.js`, cached under `~/.cache/chasm/solc-wasm/`) through
 node, which is the only option on musl, NixOS and unpublished architectures — it is a JS
-bundle, not a WASI module, so no Python runtime can load it. `SEVM_NODE` names the
+bundle, not a WASI module, so no Python runtime can load it. `CHASM_NODE` names the
 runtime. Output is identical to the native compiler's, which the build cache depends on
 since it is keyed on the solc version and not on the backend, so `solcbin.Compiler` is
 what the rest of the package holds rather than a path. Tests and examples use solc
@@ -298,14 +298,14 @@ what the rest of the package holds rather than a path. Tests and examples use so
 `Debugger` helper; `conftest.py` holds the fixtures every file shares and `tui_harness.py`
 the Textual pilot helpers. Test files import them with `from harness import ...`, which
 works because `pyproject.toml` sets
-`[tool.pytest.ini_options] pythonpath = ["tests"]`; the `sevm` package itself is imported
+`[tool.pytest.ini_options] pythonpath = ["tests"]`; the `chasm_debugger` package is imported
 from the editable install. Fixtures are self-contained under `tests/contracts/`
 (`Bank.sol`, `Locals.sol`, `Vault.sol`) — do not reach outside the project for a contract.
 
 `test_cheatcodes.py` covers the cheat registry itself. Every registered signature is
 exercised once and `test_every_cheat_is_exercised` fails if one is added without a case.
 The expected values are not invented, each was read off a run of the same call under real
-`forge test`, so the file doubles as sevm's differential record of Foundry behaviour. The
+`forge test`, so the file doubles as chasm's differential record of Foundry behaviour. The
 generated `vm.assert*` overloads are driven from the signature rather than a hand-written
 table, which is the only way 116 of them stay covered. Cheats that touch VM state are
 proven a second time end to end in `test_foundry.py`, where they reach a real REVM
@@ -320,7 +320,7 @@ provisioning against faked release lists and downloads: which list each platform
 version comes from, the checksum gate, and that an already-installed binary (including
 svm's) is preferred to a download. `test_wasm.py` covers the fallback with a stub runtime
 in place of node, and its one network test compiles a fixture both ways and requires the
-documents to be equal. `test_doctor.py` covers which facts `sevm doctor` calls problems,
+documents to be equal. `test_doctor.py` covers which facts `chasm doctor` calls problems,
 since that is what its exit status is. `test_packaging.py` guards `pyproject.toml`: no dependency may
 ask for the `tester` extra, every package the sources import is declared, and keccak
 answers on the pycryptodome backend. `test_layout.py` guards the package tree itself: every module
@@ -339,7 +339,7 @@ and its own `lib/forge-std/src/`, which must be used untouched). Both are copied
 end by running each test to completion (the test's own `assertEq`s prove the effect).
 
 Tests marked `network` reach the real forge-std, npm and openzeppelin repositories, and
-are skipped unless `SEVM_NETWORK_TESTS=1`. One of them asserts sevm implements every
+are skipped unless `CHASM_NETWORK_TESTS=1`. One of them asserts chasm implements every
 `assert*` the current forge-std declares, so a new overload upstream fails the suite
 rather than surfacing as "unimplemented cheatcode" at run time.
 
@@ -357,7 +357,7 @@ rather than surfacing as "unimplemented cheatcode" at run time.
    debuggable artifact.
 8. Implement the `vm.assert*` cheats as real comparisons. forge-std calls the `*Decimal`
    and `*ApproxEq*` forms unconditionally, so a blanket revert fails passing assertions.
-9. Bind `msg.data`/`msg.sig` from the frame. The injected `__sevm_eval` is reached by a
+9. Bind `msg.data`/`msg.sig` from the frame. The injected `__chasm_eval` is reached by a
    real call, so read directly they report *that* call's calldata (`0x365a2820` plus the
    bound locals), silently and plausibly wrong.
 10. Apply a delegate-call prank to both caller identity and target/storage context in the
@@ -384,7 +384,7 @@ pushes a new internal frame; and REVERT pauses only surface while a debugger is 
 REVM 43.0.2, Rust 1.92.0, Maturin 1.15.0, web3 7.16.0, py-solc-x 2.0.5, solc 0.8.28,
 git 2.x, forge-std 1.16.2, and CPython 3.12. `requires-python = ">=3.10"`; the Rust
 workspace requires 1.91+. All 832 offline tests pass as of 2026-09-14 (5 more with
-`SEVM_NETWORK_TESTS=1`), covering every registered cheatcode
+`CHASM_NETWORK_TESTS=1`), covering every registered cheatcode
 against values taken from real forge, Foundry multi-test coverage, library install and
 remapping derivation, the assertion engine, the Yul assembly surface, the build cache and
 its artifacts, the snapshot refresh after a mutation, the dispatcher and selector layer,

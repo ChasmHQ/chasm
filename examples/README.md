@@ -10,9 +10,9 @@ examples/
 ```
 
 ```bash
-sevm run examples/bank/test/Bank.t.sol                        # a Foundry test
-sevm run -y examples/standalone/Vault.t.sol                   # clones forge-std first
-sevm run --contracts examples/bank/src examples/debug_bank.py # a web3.py script
+chasm run examples/bank/test/Bank.t.sol                        # a Foundry test
+chasm run -y examples/standalone/Vault.t.sol                   # clones forge-std first
+chasm run --contracts examples/bank/src examples/debug_bank.py # a web3.py script
 ```
 
 Running the first two writes `lib/`, `out/`, `cache/` and `remappings.txt` next to the

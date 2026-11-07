@@ -1,7 +1,7 @@
 """Every registered cheatcode, exercised once.
 
 Expected values here are not invented: each was taken from a run of the same call under
-real `forge test` against forge-std, so this file is sevm's differential record of Foundry
+real `forge test` against forge-std, so this file is chasm's differential record of Foundry
 behaviour. `test_every_cheat_is_exercised` fails if a cheat is added without a case, which
 is what keeps that record complete.
 
@@ -19,7 +19,7 @@ from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
 from eth_utils import function_signature_to_4byte_selector
 
-from sevm.cheatcodes import (
+from chasm_debugger.cheatcodes import (
     CheatArg,
     CheatError,
     CheatState,
@@ -142,59 +142,59 @@ def test_pure_cheats(signature, args, expected):
 # ==================================================================
 
 ENV_VALUES = {
-    "SEVM_UINT": "42",
-    "SEVM_UINT_HEX": "0xff",
-    "SEVM_INT": "-5",
-    "SEVM_BOOL": "true",
-    "SEVM_BOOL_ONE": "1",
-    "SEVM_ADDR": ALICE,
-    "SEVM_B32": "0x" + "00" * 28 + "deadbeef",
-    "SEVM_BYTES": "0xdeadbeef",
-    "SEVM_STR": "hello",
-    "SEVM_UINTS": "1,2,3",
-    "SEVM_INTS": "-1,2",
-    "SEVM_BOOLS": "true,false",
-    "SEVM_ADDRS": f"{ALICE},{BOB}",
-    "SEVM_B32S": "0x" + "00" * 31 + "01,0x" + "00" * 31 + "02",
-    "SEVM_BYTESS": "0xdead,0xbeef",
-    "SEVM_STRS": "a,b",
+    "CHASM_UINT": "42",
+    "CHASM_UINT_HEX": "0xff",
+    "CHASM_INT": "-5",
+    "CHASM_BOOL": "true",
+    "CHASM_BOOL_ONE": "1",
+    "CHASM_ADDR": ALICE,
+    "CHASM_B32": "0x" + "00" * 28 + "deadbeef",
+    "CHASM_BYTES": "0xdeadbeef",
+    "CHASM_STR": "hello",
+    "CHASM_UINTS": "1,2,3",
+    "CHASM_INTS": "-1,2",
+    "CHASM_BOOLS": "true,false",
+    "CHASM_ADDRS": f"{ALICE},{BOB}",
+    "CHASM_B32S": "0x" + "00" * 31 + "01,0x" + "00" * 31 + "02",
+    "CHASM_BYTESS": "0xdead,0xbeef",
+    "CHASM_STRS": "a,b",
 }
 
 ENV_CASES: list[tuple[str, list, tuple | None]] = [
-    ("envUint(string)", ["SEVM_UINT"], (42,)),
-    ("envInt(string)", ["SEVM_INT"], (-5,)),
-    ("envBool(string)", ["SEVM_BOOL"], (True,)),
-    ("envAddress(string)", ["SEVM_ADDR"], (ALICE,)),
-    ("envBytes32(string)", ["SEVM_B32"], (bytes.fromhex("00" * 28 + "deadbeef"),)),
-    ("envBytes(string)", ["SEVM_BYTES"], (b"\xde\xad\xbe\xef",)),
-    ("envString(string)", ["SEVM_STR"], ("hello",)),
-    ("envExists(string)", ["SEVM_UINT"], (True,)),
-    ("envUint(string,string)", ["SEVM_UINTS", ","], ((1, 2, 3),)),
-    ("envInt(string,string)", ["SEVM_INTS", ","], ((-1, 2),)),
-    ("envBool(string,string)", ["SEVM_BOOLS", ","], ((True, False),)),
-    ("envAddress(string,string)", ["SEVM_ADDRS", ","], ((ALICE, BOB),)),
+    ("envUint(string)", ["CHASM_UINT"], (42,)),
+    ("envInt(string)", ["CHASM_INT"], (-5,)),
+    ("envBool(string)", ["CHASM_BOOL"], (True,)),
+    ("envAddress(string)", ["CHASM_ADDR"], (ALICE,)),
+    ("envBytes32(string)", ["CHASM_B32"], (bytes.fromhex("00" * 28 + "deadbeef"),)),
+    ("envBytes(string)", ["CHASM_BYTES"], (b"\xde\xad\xbe\xef",)),
+    ("envString(string)", ["CHASM_STR"], ("hello",)),
+    ("envExists(string)", ["CHASM_UINT"], (True,)),
+    ("envUint(string,string)", ["CHASM_UINTS", ","], ((1, 2, 3),)),
+    ("envInt(string,string)", ["CHASM_INTS", ","], ((-1, 2),)),
+    ("envBool(string,string)", ["CHASM_BOOLS", ","], ((True, False),)),
+    ("envAddress(string,string)", ["CHASM_ADDRS", ","], ((ALICE, BOB),)),
     (
         "envBytes32(string,string)",
-        ["SEVM_B32S", ","],
+        ["CHASM_B32S", ","],
         ((B32_ONE, (2).to_bytes(32, "big")),),
     ),
-    ("envBytes(string,string)", ["SEVM_BYTESS", ","], ((b"\xde\xad", b"\xbe\xef"),)),
-    ("envString(string,string)", ["SEVM_STRS", ","], (("a", "b"),)),
+    ("envBytes(string,string)", ["CHASM_BYTESS", ","], ((b"\xde\xad", b"\xbe\xef"),)),
+    ("envString(string,string)", ["CHASM_STRS", ","], (("a", "b"),)),
     # envOr, on a miss: the caller's default comes straight back
-    ("envOr(string,uint256)", ["SEVM_MISSING", 7], (7,)),
-    ("envOr(string,int256)", ["SEVM_MISSING", -7], (-7,)),
-    ("envOr(string,bool)", ["SEVM_MISSING", True], (True,)),
-    ("envOr(string,address)", ["SEVM_MISSING", ALICE], (ALICE,)),
-    ("envOr(string,bytes32)", ["SEVM_MISSING", B32_ONE], (B32_ONE,)),
-    ("envOr(string,bytes)", ["SEVM_MISSING", b"\x01"], (b"\x01",)),
-    ("envOr(string,string)", ["SEVM_MISSING", "fallback"], ("fallback",)),
-    ("envOr(string,string,uint256[])", ["SEVM_MISSING", ",", [4, 5]], ((4, 5),)),
-    ("envOr(string,string,int256[])", ["SEVM_MISSING", ",", [-4]], ((-4,),)),
-    ("envOr(string,string,bool[])", ["SEVM_MISSING", ",", [True]], ((True,),)),
-    ("envOr(string,string,address[])", ["SEVM_MISSING", ",", [ALICE]], ((ALICE,),)),
-    ("envOr(string,string,bytes32[])", ["SEVM_MISSING", ",", [B32_ONE]], ((B32_ONE,),)),
-    ("envOr(string,string,bytes[])", ["SEVM_MISSING", ",", [b"\xaa"]], ((b"\xaa",),)),
-    ("envOr(string,string,string[])", ["SEVM_MISSING", ",", ["z"]], (("z",),)),
+    ("envOr(string,uint256)", ["CHASM_MISSING", 7], (7,)),
+    ("envOr(string,int256)", ["CHASM_MISSING", -7], (-7,)),
+    ("envOr(string,bool)", ["CHASM_MISSING", True], (True,)),
+    ("envOr(string,address)", ["CHASM_MISSING", ALICE], (ALICE,)),
+    ("envOr(string,bytes32)", ["CHASM_MISSING", B32_ONE], (B32_ONE,)),
+    ("envOr(string,bytes)", ["CHASM_MISSING", b"\x01"], (b"\x01",)),
+    ("envOr(string,string)", ["CHASM_MISSING", "fallback"], ("fallback",)),
+    ("envOr(string,string,uint256[])", ["CHASM_MISSING", ",", [4, 5]], ((4, 5),)),
+    ("envOr(string,string,int256[])", ["CHASM_MISSING", ",", [-4]], ((-4,),)),
+    ("envOr(string,string,bool[])", ["CHASM_MISSING", ",", [True]], ((True,),)),
+    ("envOr(string,string,address[])", ["CHASM_MISSING", ",", [ALICE]], ((ALICE,),)),
+    ("envOr(string,string,bytes32[])", ["CHASM_MISSING", ",", [B32_ONE]], ((B32_ONE,),)),
+    ("envOr(string,string,bytes[])", ["CHASM_MISSING", ",", [b"\xaa"]], ((b"\xaa",),)),
+    ("envOr(string,string,string[])", ["CHASM_MISSING", ",", ["z"]], (("z",),)),
 ]
 
 
@@ -202,7 +202,7 @@ ENV_CASES: list[tuple[str, list, tuple | None]] = [
 def env(monkeypatch):
     for name, value in ENV_VALUES.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.delenv("SEVM_MISSING", raising=False)
+    monkeypatch.delenv("CHASM_MISSING", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -213,51 +213,51 @@ def test_env_cheats(env, signature, args, expected):
 
 
 def test_env_or_prefers_the_variable_over_the_default(env):
-    assert call("envOr(string,uint256)", ["SEVM_UINT", 7]) == (42,)
-    assert call("envOr(string,string,uint256[])", ["SEVM_UINTS", ",", [4]]) == (
+    assert call("envOr(string,uint256)", ["CHASM_UINT", 7]) == (42,)
+    assert call("envOr(string,string,uint256[])", ["CHASM_UINTS", ",", [4]]) == (
         (1, 2, 3),
     )
 
 
 def test_env_exists_is_false_for_an_unset_variable(env):
-    assert call("envExists(string)", ["SEVM_MISSING"]) == (False,)
+    assert call("envExists(string)", ["CHASM_MISSING"]) == (False,)
 
 
 def test_env_missing_variable_reverts(env):
     with pytest.raises(CheatError, match="not found"):
-        call("envUint(string)", ["SEVM_MISSING"])
+        call("envUint(string)", ["CHASM_MISSING"])
 
 
 def test_set_env_writes_the_process_environment(monkeypatch):
-    monkeypatch.delenv("SEVM_SET_AT_RUNTIME", raising=False)
-    call("setEnv(string,string)", ["SEVM_SET_AT_RUNTIME", "123"])
+    monkeypatch.delenv("CHASM_SET_AT_RUNTIME", raising=False)
+    call("setEnv(string,string)", ["CHASM_SET_AT_RUNTIME", "123"])
     try:
-        assert os.environ["SEVM_SET_AT_RUNTIME"] == "123"
-        assert call("envUint(string)", ["SEVM_SET_AT_RUNTIME"]) == (123,)
+        assert os.environ["CHASM_SET_AT_RUNTIME"] == "123"
+        assert call("envUint(string)", ["CHASM_SET_AT_RUNTIME"]) == (123,)
     finally:
-        os.environ.pop("SEVM_SET_AT_RUNTIME", None)
+        os.environ.pop("CHASM_SET_AT_RUNTIME", None)
 
 
 def test_env_bool_accepts_one_and_zero(env):
     # forge's parser takes 1/0 as well as true/false.
-    assert call("envBool(string)", ["SEVM_BOOL_ONE"]) == (True,)
+    assert call("envBool(string)", ["CHASM_BOOL_ONE"]) == (True,)
 
 
 def test_env_uint_accepts_hex(env):
-    assert call("envUint(string)", ["SEVM_UINT_HEX"]) == (255,)
+    assert call("envUint(string)", ["CHASM_UINT_HEX"]) == (255,)
 
 
 @pytest.mark.parametrize(
     "signature,args",
     [
         ("parseBytes32(string)", ["0xdead"]),
-        ("envBytes32(string)", ["SEVM_SHORT"]),
+        ("envBytes32(string)", ["CHASM_SHORT"]),
     ],
 )
 def test_short_bytes32_is_refused_not_padded(monkeypatch, signature, args):
     # forge rejects it: a short literal pads left as an integer and right as a bytes32,
     # so guessing would be silently and plausibly wrong.
-    monkeypatch.setenv("SEVM_SHORT", "0xdead")
+    monkeypatch.setenv("CHASM_SHORT", "0xdead")
     with pytest.raises(CheatError, match="32 bytes"):
         call(signature, args)
 
@@ -426,7 +426,7 @@ def test_sign_compact_packs_the_parity_into_s():
 @pytest.fixture
 def state(proj):
     """The live REVM state adapter used by the cheatcode dispatcher."""
-    from sevm.session import DebugSession
+    from chasm_debugger.session import DebugSession
 
     return DebugSession(proj, stop_at_start=False)._state
 

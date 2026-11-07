@@ -1,6 +1,6 @@
 # Headless REVM protocol
 
-The REVM engine can run without the sevm console or fullscreen interface.
+The REVM engine can run without the Chasm console or fullscreen interface.
 Any frontend that can launch a process and exchange newline-delimited JSON can control the
 same live debugger session. This includes editor extensions, browser backends, terminal
 interfaces, and clients written in languages other than Python.
@@ -16,8 +16,8 @@ complete request stream that pauses before `SSTORE`, changes its value operand f
 to `9`, resumes, and reads the committed storage from the finish event:
 
 ```bash
-$ uv run sevm-engine < examples/headless-session.jsonl
-{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","step","read_storage","write_storage","state","evaluate","evaluate_call","execute_opcode","set_prank","respond_host","resume","close","shutdown"],"protocol":"sevm-debugger/1","transport":"jsonl-stdio"}}
+$ uv run chasm-engine < examples/headless-session.jsonl
+{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","step","read_storage","write_storage","state","evaluate","evaluate_call","execute_opcode","set_prank","respond_host","resume","close","shutdown"],"protocol":"chasm-debugger/1","transport":"jsonl-stdio"}}
 {"id":2,"jsonrpc":"2.0","result":{"started":true}}
 {"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","calldata":"0x","caller":"0x2000000000000000000000000000000000000002","code_address":"0x1000000000000000000000000000000000000001","depth":0,"frames":[{"address":"0x1000000000000000000000000000000000000001","calldata":"0x","caller":"0x2000000000000000000000000000000000000002","code":"0x600160005500","code_address":"0x1000000000000000000000000000000000000001","depth":0,"gas_limit":79000,"gas_remaining":78994,"is_static":false,"kind":"call","opcode":85,"pc":4,"value":"0x0"}],"gas_limit":79000,"gas_refund":0,"gas_remaining":78994,"gas_used":6,"is_static":false,"memory":"0x","memory_size":0,"mnemonic":"SSTORE","opcode":85,"origin":"0x2000000000000000000000000000000000000002","pc":4,"reason":"breakpoint","stack":["0x0","0x1"],"step":3,"value":"0x0"},"type":"paused"}}
 {"id":4,"jsonrpc":"2.0","result":"0x9"}
@@ -26,12 +26,12 @@ $ uv run sevm-engine < examples/headless-session.jsonl
 {"id":7,"jsonrpc":"2.0","result":null}
 ```
 
-An installed package exposes the same process as `sevm-engine`. A frontend launches that
+An installed package exposes the same process as `chasm-engine`. A frontend launches that
 command and keeps its standard input and standard output pipes open. A Rust application
-can instead depend on `sevm-revm-headless` and call `serve` with any buffered reader and
+can instead depend on `chasm-revm-headless` and call `serve` with any buffered reader and
 writer.
 
-Call `hello` first and require `sevm-debugger/1`. A client should stop if it receives a
+Call `hello` first and require `chasm-debugger/1`. A client should stop if it receives a
 protocol version it does not support.
 
 ## Requests

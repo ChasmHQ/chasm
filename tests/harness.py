@@ -12,12 +12,12 @@ from typing import Any
 from eth_account import Account
 from web3 import Web3
 
-from sevm.commands import CommandProcessor
-from sevm.compile import DEFAULT_SOLC_VERSION, Project, compile_project
-from sevm.evaluate import Evaluator, make_eval_hook
-from sevm.provider import RevmProvider
-from sevm.session import DebugSession, StepMode
-from sevm.srcmap import build_line_indexes
+from chasm_debugger.commands import CommandProcessor
+from chasm_debugger.compile import DEFAULT_SOLC_VERSION, Project, compile_project
+from chasm_debugger.evaluate import Evaluator, make_eval_hook
+from chasm_debugger.provider import RevmProvider
+from chasm_debugger.session import DebugSession, StepMode
+from chasm_debugger.srcmap import build_line_indexes
 
 # Generous: a stuck VM thread should fail the test, not hang the suite.
 TIMEOUT = 30.0
@@ -78,7 +78,7 @@ def bank_fixture(value_ether: int = 1) -> tuple[Web3, Project, Any, Any, Any]:
     proj = project()
     w3 = make_web3(proj)
     bank = deploy(
-        w3, proj, "Bank", "sevm-bank", value_wei=w3.to_wei(value_ether, "ether")
+        w3, proj, "Bank", "chasm-bank", value_wei=w3.to_wei(value_ether, "ether")
     )
     callee = deploy(w3, proj, "Callee")
     alice = funded_account(w3)
@@ -95,7 +95,7 @@ class Debugger:
         self.evaluator = Evaluator(proj)
         self.session.set_eval_hook(make_eval_hook(self.evaluator))
         self.commands = CommandProcessor(self.session, self.evaluator)
-        # Bind a restart target so `reset` / `run` work under test as via `sevm run`.
+        # Bind a restart target so `reset` / `run` work under test as via `chasm run`.
         self.session.set_restart_factory(lambda argv: txfn, [])
         self.session.start(txfn)
         self.first = self.session.wait(timeout=TIMEOUT)

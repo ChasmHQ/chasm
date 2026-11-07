@@ -42,7 +42,7 @@ const STATE_RUNNING: u8 = 1;
 const STATE_PAUSED: u8 = 2;
 const STATE_STOPPED: u8 = 3;
 
-type SevmContext = Context<BlockEnv, TxEnv, CfgEnv, InMemoryDB>;
+type ChasmContext = Context<BlockEnv, TxEnv, CfgEnv, InMemoryDB>;
 
 enum EngineCommand {
     Transact(TransactionRequest),
@@ -64,7 +64,7 @@ struct StepBackup {
     gas: Gas,
 }
 
-struct SevmInspector {
+struct ChasmInspector {
     commands: Receiver<Command>,
     events: Sender<DebugEvent>,
     breakpoints: HashSet<(Address, usize)>,
@@ -81,7 +81,7 @@ struct SevmInspector {
     steps_until_pause: Option<usize>,
 }
 
-impl SevmInspector {
+impl ChasmInspector {
     fn snapshot(&self, interpreter: &Interpreter<EthInterpreter>, reason: PauseReason) -> Snapshot {
         let address = interpreter.input.target_address();
         let code_address = interpreter
@@ -145,7 +145,7 @@ impl SevmInspector {
     fn pause(
         &mut self,
         interpreter: &mut Interpreter<EthInterpreter>,
-        context: &mut SevmContext,
+        context: &mut ChasmContext,
         reason: PauseReason,
     ) -> bool {
         self.state.store(STATE_PAUSED, Ordering::Release);
@@ -319,7 +319,7 @@ impl SevmInspector {
         )
     }
 
-    fn host_call(&mut self, context: &mut SevmContext, inputs: &CallInputs) -> CallOutcome {
+    fn host_call(&mut self, context: &mut ChasmContext, inputs: &CallInputs) -> CallOutcome {
         self.state.store(STATE_PAUSED, Ordering::Release);
         let event = HostCall {
             address: inputs.bytecode_address,
@@ -374,7 +374,7 @@ impl SevmInspector {
         call_result(inputs, Bytes::new(), true)
     }
 
-    fn apply_prank(&mut self, context: &mut SevmContext, inputs: &mut CallInputs) {
+    fn apply_prank(&mut self, context: &mut ChasmContext, inputs: &mut CallInputs) {
         let Some(prank) = self.prank.clone() else {
             return;
         };
@@ -425,7 +425,7 @@ fn call_result(inputs: &CallInputs, output: Bytes, revert: bool) -> CallOutcome 
 }
 
 fn execute_state_command(
-    context: &mut SevmContext,
+    context: &mut ChasmContext,
     command: StateCommand,
 ) -> Result<CommandValue, SessionError> {
     let invalid = |error| SessionError::InvalidCommand(format!("{error:?}"));
@@ -582,7 +582,7 @@ fn execute_state_command(
 
 #[allow(clippy::too_many_arguments)]
 fn execute_evaluation(
-    context: &mut SevmContext,
+    context: &mut ChasmContext,
     interpreter: &Interpreter<EthInterpreter>,
     code: Bytes,
     data: Bytes,
@@ -608,7 +608,7 @@ fn execute_evaluation(
         gas_limit,
     );
     let instructions =
-        EthInstructions::<EthInterpreter, SevmContext>::new_mainnet_with_spec(SpecId::CANCUN);
+        EthInstructions::<EthInterpreter, ChasmContext>::new_mainnet_with_spec(SpecId::CANCUN);
     let action = nested.run_plain(
         instructions.instruction_table(),
         instructions.gas_table(),
@@ -631,7 +631,7 @@ fn execute_evaluation(
 }
 
 fn execute_opcode(
-    context: &mut SevmContext,
+    context: &mut ChasmContext,
     interpreter: &mut Interpreter<EthInterpreter>,
     opcode: u8,
     arguments: Vec<U256>,
@@ -669,7 +669,7 @@ fn execute_opcode(
 
     let checkpoint = context.journal_mut().checkpoint();
     let instructions =
-        EthInstructions::<EthInterpreter, SevmContext>::new_mainnet_with_spec(SpecId::CANCUN);
+        EthInstructions::<EthInterpreter, ChasmContext>::new_mainnet_with_spec(SpecId::CANCUN);
     let result = (|| {
         let static_gas = instructions.gas_table()[opcode as usize] as u64;
         if !nested.gas.record_regular_cost(static_gas) {
@@ -713,10 +713,10 @@ fn execute_opcode(
     result
 }
 
-impl Inspector<SevmContext> for SevmInspector {
+impl Inspector<ChasmContext> for ChasmInspector {
     fn frame_start(
         &mut self,
-        context: &mut SevmContext,
+        context: &mut ChasmContext,
         frame_input: &mut FrameInput,
     ) -> Option<revm::handler::FrameResult> {
         let depth = self.frames.len();
@@ -769,7 +769,7 @@ impl Inspector<SevmContext> for SevmInspector {
     fn initialize_interp(
         &mut self,
         interpreter: &mut Interpreter<EthInterpreter>,
-        _context: &mut SevmContext,
+        _context: &mut ChasmContext,
     ) {
         if let Some(frame) = self.frames.last_mut() {
             Self::update_frame(frame, interpreter);
@@ -778,7 +778,7 @@ impl Inspector<SevmContext> for SevmInspector {
 
     fn frame_end(
         &mut self,
-        context: &mut SevmContext,
+        context: &mut ChasmContext,
         _frame_input: &FrameInput,
         _frame_result: &mut revm::handler::FrameResult,
     ) {
@@ -789,7 +789,7 @@ impl Inspector<SevmContext> for SevmInspector {
         }
     }
 
-    fn step(&mut self, interpreter: &mut Interpreter<EthInterpreter>, context: &mut SevmContext) {
+    fn step(&mut self, interpreter: &mut Interpreter<EthInterpreter>, context: &mut ChasmContext) {
         self.step_index = self.step_index.saturating_add(1);
         if let Some(frame) = self.frames.last_mut() {
             Self::update_frame(frame, interpreter);
@@ -830,7 +830,7 @@ impl Inspector<SevmContext> for SevmInspector {
     fn step_end(
         &mut self,
         interpreter: &mut Interpreter<EthInterpreter>,
-        context: &mut SevmContext,
+        context: &mut ChasmContext,
     ) {
         let result = interpreter
             .bytecode
@@ -873,7 +873,7 @@ impl Inspector<SevmContext> for SevmInspector {
         self.backup = None;
     }
 
-    fn call(&mut self, context: &mut SevmContext, inputs: &mut CallInputs) -> Option<CallOutcome> {
+    fn call(&mut self, context: &mut ChasmContext, inputs: &mut CallInputs) -> Option<CallOutcome> {
         if matches!(inputs.bytecode_address, CHEATCODE_ADDRESS | CONSOLE_ADDRESS) {
             return Some(self.host_call(context, inputs));
         }
@@ -1158,7 +1158,7 @@ fn run_worker(
                 .map_err(|error| format!("{error:?}"))?;
         }
     }
-    let inspector = SevmInspector {
+    let inspector = ChasmInspector {
         commands: commands.clone(),
         events: events.clone(),
         breakpoints: config

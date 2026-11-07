@@ -1,6 +1,6 @@
-"""What `sevm doctor` reports.
+"""What `chasm doctor` reports.
 
-The point of the command is to answer, on a machine sevm has never worked on, which
+The point of the command is to answer, on a machine chasm has never worked on, which
 compiler it would use and what is missing — so the tests are about which facts get
 marked as problems, since that is what the exit status is built from.
 """
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from sevm import doctor
-from sevm.compile import solcbin, wasm
+from chasm_debugger import doctor
+from chasm_debugger.compile import solcbin, wasm
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ def test_missing_git_fails_even_with_a_compiler(machine):
 
 
 def test_the_command_exits_with_the_verdict(machine, capsys):
-    from sevm.cli import main
+    from chasm_debugger.cli import main
 
     assert main(["doctor"]) == 0
     assert "platform" in capsys.readouterr().out

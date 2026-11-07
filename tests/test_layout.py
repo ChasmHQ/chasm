@@ -1,6 +1,6 @@
 """The package layout holds together.
 
-sevm is a tree of small packages, and splitting a module a level deeper silently breaks any
+chasm is a tree of small packages, and splitting a module a level deeper silently breaks any
 `from .x import y` written inside a function body: the name still resolves at import time
 because it is never executed, and only fails when that code path runs. That cost three
 debugging rounds during the split, so it is a test now.
@@ -17,13 +17,13 @@ import re
 
 import pytest
 
-import sevm
+import chasm_debugger
 
-SRC = os.path.dirname(os.path.abspath(sevm.__file__))
+SRC = os.path.dirname(os.path.abspath(chasm_debugger.__file__))
 # __main__ runs the CLI on import, by design.
 MODULES = sorted(
     m.name
-    for m in pkgutil.walk_packages([SRC], prefix="sevm.")
+    for m in pkgutil.walk_packages([SRC], prefix="chasm_debugger.")
     if not m.name.endswith("__main__")
 )
 

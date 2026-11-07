@@ -15,8 +15,8 @@ import shutil
 import pytest
 from conftest import HERE
 
-from sevm import cache
-from sevm.compile import compile_foundry_project, solc
+from chasm_debugger import cache
+from chasm_debugger.compile import compile_foundry_project, solc
 
 
 @pytest.fixture
@@ -93,7 +93,7 @@ def test_second_build_never_reaches_solc(root, monkeypatch):
 
 def test_cache_lives_in_the_foundry_cache_dir(root):
     build(root)
-    entries = os.listdir(os.path.join(root, "cache", "sevm"))
+    entries = os.listdir(os.path.join(root, "cache", "chasm"))
     assert "index.json" in entries
     assert any(name.endswith(".json.gz") for name in entries)
 
@@ -117,7 +117,7 @@ def test_no_cache_neither_reads_nor_writes(root, monkeypatch):
 
 
 def test_env_switch_disables_the_cache(root, monkeypatch):
-    monkeypatch.setenv("SEVM_NO_CACHE", "1")
+    monkeypatch.setenv("CHASM_NO_CACHE", "1")
     build(root)
     assert not os.path.exists(os.path.join(root, "cache"))
     assert not os.path.exists(os.path.join(root, "out"))
@@ -141,12 +141,12 @@ def test_different_settings_are_a_different_unit(root, monkeypatch, changed):
 
 
 # ==================================================================
-# out/sevm artifacts
+# out/chasm artifacts
 # ==================================================================
 
 
 def read_artifact(root: str, source: str, name: str) -> dict:
-    path = os.path.join(root, "out", "sevm", source, f"{name}.json")
+    path = os.path.join(root, "out", "chasm", source, f"{name}.json")
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
 
@@ -205,7 +205,7 @@ def test_artifacts_follow_the_out_key_in_foundry_toml(root):
 
     build(root)
     assert os.path.isfile(
-        os.path.join(root, "artifacts", "sevm", "Token.sol", "Token.json")
+        os.path.join(root, "artifacts", "chasm", "Token.sol", "Token.json")
     )
 
 
@@ -213,7 +213,7 @@ def test_artifacts_are_rewritten_when_the_out_tree_is_deleted(root):
     build(root)
     shutil.rmtree(os.path.join(root, "out"))
     build(root)  # a cache hit still restores what was removed
-    assert os.path.isfile(os.path.join(root, "out", "sevm", "Token.sol", "Token.json"))
+    assert os.path.isfile(os.path.join(root, "out", "chasm", "Token.sol", "Token.json"))
 
 
 def test_an_edit_reaches_the_written_artifact(root):
@@ -288,7 +288,7 @@ def test_merge_refuses_a_shifted_source_id():
 
 def test_a_truncated_unit_only_costs_a_recompile(root, monkeypatch):
     build(root)
-    directory = os.path.join(root, "cache", "sevm")
+    directory = os.path.join(root, "cache", "chasm")
     unit = next(n for n in os.listdir(directory) if n.endswith(".json.gz"))
     with open(os.path.join(directory, unit), "wb") as fh:
         fh.write(gzip.compress(b'{"sources": {"trunc'))
@@ -301,7 +301,7 @@ def test_a_truncated_unit_only_costs_a_recompile(root, monkeypatch):
 
 def test_a_corrupt_index_only_costs_a_recompile(root, monkeypatch):
     build(root)
-    index = os.path.join(root, "cache", "sevm", "index.json")
+    index = os.path.join(root, "cache", "chasm", "index.json")
     with open(index, "w", encoding="utf-8") as fh:
         fh.write("{not json")
     edit_token(root)

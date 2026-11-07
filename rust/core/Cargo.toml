@@ -1,6 +1,6 @@
 [package]
-name = "sevm-revm-core"
-description = "REVM debugger core for sevm"
+name = "chasm-revm-core"
+description = "REVM debugger core for chasm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -9,11 +9,11 @@ from harness import (
     line_of,
 )
 
-from sevm.compile import compile_standard
-from sevm.evaluate import Evaluator, rewrite_msg
-from sevm.evaluate.bindings import Binding
-from sevm.evaluate.injection import EvalError
-from sevm.session import SessionError, StepMode
+from chasm_debugger.compile import compile_standard
+from chasm_debugger.evaluate import Evaluator, rewrite_msg
+from chasm_debugger.evaluate.bindings import Binding
+from chasm_debugger.evaluate.injection import EvalError
+from chasm_debugger.session import SessionError, StepMode
 
 
 @pytest.mark.parametrize(
@@ -53,7 +53,7 @@ def test_evaluate_values_and_units(deposit_debugger):
         dbg.session.inspect("evaluate", "balances[owner] + 100 ether").value
         == 101 * 10**18
     )
-    assert dbg.session.inspect("evaluate", "name").value == "sevm-bank"
+    assert dbg.session.inspect("evaluate", "name").value == "chasm-bank"
     assert dbg.session.inspect("evaluate", "1 ether / 4").value == 25 * 10**16
 
 
@@ -95,8 +95,8 @@ def test_evaluate_leaves_msg_data_in_a_string_literal_alone(deposit_debugger):
 
 
 def test_rewrite_msg_rewrites_code_and_reports_what_it_bound():
-    assert rewrite_msg("msg.data.length") == ("__sevm_msg_data.length", ["data"])
-    assert rewrite_msg("msg . sig") == ("__sevm_msg_sig", ["sig"])
+    assert rewrite_msg("msg.data.length") == ("__chasm_msg_data.length", ["data"])
+    assert rewrite_msg("msg . sig") == ("__chasm_msg_sig", ["sig"])
     # Order is the order of first appearance, which is the order they are encoded in.
     assert rewrite_msg("msg.sig == bytes4(msg.data)")[1] == ["sig", "data"]
     assert rewrite_msg("msg.sender") == ("msg.sender", [])
