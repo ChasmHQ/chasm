@@ -1,0 +1,33 @@
+"""Chasm: an interactive EVM playground on REVM, built for red-team dynamic analysis.
+
+Where things live:
+
+  cli.py         argument parsing and `main()`; `.py` vs `.sol` dispatch
+  session/       the source-level REVM session
+  commands/      the gdb-style command layer both frontends drive
+  evaluate/      Solidity expression evaluation at a breakpoint
+  assembly/      Yul typed at the prompt, run against the live frame
+  cheatcodes/    the Foundry cheatcode and console.log intercept
+  compile/       solc, the artifact model, and Foundry project resolution
+  locals/        recovering Solidity locals from the EVM stack
+  tui/           the Textual fullscreen frontend
+  console.py     the plain-text frontend (`--console`)
+
+  artifacts.py   forge-shaped `out/chasm/<File.sol>/<Contract>.json`
+  breakpoints.py the breakpoint and watchpoint set
+  cache.py       the on-disk build cache
+  clipboard.py   copying through the platform's own tool
+  decode.py      storage layout, calldata and revert decoding
+  disasm.py      the opcode table and disassembler
+  doctor.py      what `chasm doctor` reports: compiler, runtimes, caches
+  dispatch.py    the external dispatcher read back out of runtime bytecode
+  foundry.py     the Foundry test runner
+  frames.py      EVM and Solidity frames, and the snapshot handed to the UI
+  libs.py        dependency resolution: imports -> repo -> clone -> remapping
+  provider.py    the REVM-backed Web3 provider for Python driver scripts
+  revm_server.py the headless REVM JSON-RPC process (`chasm-engine`)
+  srcmap.py      solc source maps: pc <-> source location
+  web.py         local browser frontend for a live debug session
+"""
+
+__version__ = "0.1.0"

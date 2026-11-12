@@ -1,0 +1,11 @@
+[package]
+name = "chasm-revm-core"
+description = "REVM debugger core for chasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+crossbeam-channel = "0.5.15"
+revm.workspace = true

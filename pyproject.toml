@@ -1,0 +1,112 @@
+[build-system]
+requires = ["maturin>=1.10,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "chasm-debugger"
+version = "0.1.0"
+description = "Chasm is an interactive, gdb-style Solidity/EVM debugger on REVM, built for red-team dynamic analysis."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "sevm authors" }]
+keywords = ["solidity", "evm", "ethereum", "debugger", "revm", "web3"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Debuggers",
+]
+
+# Runtime dependencies. Every third-party package imported by the sources under
+# src/chasm_debugger is declared here (not left to transitive resolution). `eth`, `eth_abi`,
+# `eth_utils` and `eth_account` all arrive with web3, but chasm imports them directly,
+# so they are named explicitly.
+#
+# Do not use `web3[tester]`: chasm supplies its own REVM provider, and the tester extra
+# would restore the archived Py-EVM stack. The pycryptodome backend is named directly so
+# the keccak implementation chasm relies on is not left to a transitive dependency.
+dependencies = [
+    "web3>=7.0",
+    "eth-hash[pycryptodome]>=0.5.1",
+    "py-solc-x>=2.0",
+    "textual>=8.0",
+    "rich>=15.0",
+    "pygments>=2.20",
+    "eth-abi>=5.2",
+    "eth-utils>=5.0",
+    "eth-account>=0.13",
+    "eth-keys>=0.6",
+    "rlp>=4.0",
+    "packaging>=23.0",
+    "requests>=2.31",
+    "mcp>=2.2.0",
+    "anyio>=4.15.1",
+]
+
+[project.scripts]
+chasm = "chasm_debugger.cli:main"
+chasm-engine = "chasm_debugger.revm_server:main"
+
+[project.urls]
+Homepage = "https://github.com/ChasmHQ/debugger"
+Documentation = "https://github.com/ChasmHQ/debugger/blob/main/README.md"
+
+[tool.maturin]
+manifest-path = "rust/python/Cargo.toml"
+module-name = "chasm_debugger._revm"
+python-source = "src"
+include = ["src/chasm_debugger/web.html"]
+
+[dependency-groups]
+# uv-native dev group: `uv sync` installs these by default.
+dev = [
+    "maturin>=1.10,<2.0",
+    "pytest>=8.0",
+    "textual-dev>=1.8", # `textual console` for debugging the debugger
+    "ruff>=0.9",
+    "mypy>=1.13",
+]
+
+[tool.pytest.ini_options]
+markers = ["network: hits the network; run with CHASM_NETWORK_TESTS=1"]
+testpaths = ["tests"]
+# Put tests/ on sys.path so the shared `harness` module imports cleanly, and rely
+# on the installed (editable) `chasm_debugger` package - no sys.path hacks.
+pythonpath = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 90
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade (modernize typing: Dict->dict, Optional[X]->X | None)
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501",   # line length is owned by the formatter; the rest are unsplittable strings
+    "RUF012", # ClassVar for mutable class attrs fights Textual's BINDINGS/CSS idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Unpacking a shared fixture tuple and using only some fields is idiomatic here.
+"tests/**" = ["RUF059"]
+
+[tool.mypy]
+python_version = "3.10"
+# Pragmatic, not strict: this wraps an untyped Web3 boundary where full
+# strictness would drown real signal in third-party Any-noise. Tighten over time.
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true

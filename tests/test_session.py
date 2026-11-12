@@ -1,0 +1,192 @@
+"""Session lifecycle: provider integration, detach, and what survives a run."""
+
+from __future__ import annotations
+
+import pytest
+from harness import (
+    TIMEOUT,
+    Debugger,
+    line_of,
+    make_web3,
+)
+
+from chasm_debugger.session import DebugSession, Finished, Paused, SessionError, StepMode
+
+
+def test_gas_estimation_is_not_debugged(bank):
+    """A transaction without an explicit `gas=` must still stop exactly once.
+
+    The REVM provider answers eth_estimateGas without executing the transaction. Counting
+    that request proves Web3 took the estimate path without creating a duplicate stop.
+    """
+    w3, proj_, contract, _callee, alice = bank
+
+    def txfn():
+        tx = contract.functions.deposit().transact(
+            {"from": alice.address, "value": w3.to_wei(1, "ether")}  # no gas= on purpose
+        )
+        w3.eth.wait_for_transaction_receipt(tx)
+
+    dbg = Debugger(proj_, txfn)
+    try:
+        assert isinstance(dbg.first, Paused)
+        assert dbg.snap.stop_reason != "error", dbg.snap.annotation
+        assert dbg.snap.function.display_name == "Bank.deposit"
+        line = line_of(proj_, "history.push(amount);")
+        dbg.session.break_at_line("Bank.sol", line)
+        event = dbg.step(StepMode.RUN)
+        assert isinstance(event, Paused)
+        assert event.snapshot.line == line
+        assert dbg.session.estimations > 0, "estimation passes should have been counted"
+    finally:
+        dbg.close()
+
+
+def test_provider_remains_usable_after_detach(bank):
+    w3, proj_, contract, _callee, _alice = bank
+
+    def txfn():
+        tx = contract.functions.deposit().transact({"value": 1, "gas": 300_000})
+        w3.eth.wait_for_transaction_receipt(tx)
+
+    dbg = Debugger(proj_, txfn)
+    dbg.close()
+    assert contract.functions.totalDeposits().call() > 0
+
+
+def test_ether_hint_only_for_plausible_wei(deposit_debugger):
+    """An address cast to uint256 is not 721 billion billion ether."""
+    dbg = deposit_debugger
+    assert "ether" in dbg.session.inspect("evaluate", "1 ether").display
+    assert (
+        "ether" not in dbg.session.inspect("evaluate", "uint256(uint160(owner))").display
+    )
+    assert "ether" not in dbg.session.inspect("evaluate", "type(uint256).max").display
+    assert "ether" not in dbg.session.inspect("evaluate", "feeBps").display
+
+
+def test_debugs_inline_assembly_in_the_original_vault():
+    """The article's Vault.sol: a breakpoint inside an `assembly { sstore(...) }` block."""
+    import os as _os
+
+    from eth_account import Account
+
+    from chasm_debugger.compile import DEFAULT_SOLC_VERSION
+    from chasm_debugger.compile import compile_project as _compile
+
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    vault_project = _compile(
+        [_os.path.join(here, "contracts", "Vault.sol")], solc_version=DEFAULT_SOLC_VERSION
+    )
+    art = vault_project.artifact("Vault")
+    assert art is not None
+
+    w3 = make_web3(vault_project)
+    factory = w3.eth.contract(abi=art.abi, bytecode=art.bytecode.hex())
+    tx = factory.constructor().transact(
+        {"value": w3.to_wei(1, "ether"), "gas": 3_000_000}
+    )
+    address = w3.eth.wait_for_transaction_receipt(tx)["contractAddress"]
+    vault = w3.eth.contract(address=address, abi=art.abi)
+    attacker = Account.create()
+    w3.eth.send_transaction(
+        {"to": attacker.address, "value": w3.to_wei(1, "ether"), "gas": 21000}
+    )
+    w3.provider.ethereum_tester.backend.add_account(attacker.key)
+
+    def txfn():
+        t = vault.functions.unsafeStore(0, int(attacker.address, 16)).transact(
+            {"from": attacker.address, "gas": 200_000}
+        )
+        w3.eth.wait_for_transaction_receipt(t)
+
+    dbg = Debugger(vault_project, txfn)
+    try:
+        sstore_line = None
+        for n, text in enumerate(
+            vault_project.sources["Vault.sol"].text.split("\n"), start=1
+        ):
+            if "sstore(slot, value)" in text:
+                sstore_line = n
+        assert sstore_line
+        dbg.session.break_at_line("Vault.sol", sstore_line)
+        event = dbg.step(StepMode.RUN)
+        assert isinstance(event, Paused)
+        assert event.snapshot.line == sstore_line
+        assert event.snapshot.function.name == "unsafeStore"
+        # The arbitrary-storage-write bug, seen before it lands.
+        assert dbg.run("info args").ok
+        assert dbg.session.inspect("evaluate", "owner").value != attacker.address.lower()
+        dbg.session.break_at_opcode("SSTORE")
+        assert isinstance(dbg.step(StepMode.RUN), Paused)
+        assert dbg.snap.stack[0].value == 0, "the SSTORE targets slot 0 (owner)"
+    finally:
+        dbg.close()
+
+
+def test_detach_finishes_the_transaction(bank):
+    w3, proj_, contract, _callee, _alice = bank
+
+    def txfn():
+        tx = contract.functions.deposit().transact({"value": 1, "gas": 300_000})
+        w3.eth.wait_for_transaction_receipt(tx)
+
+    dbg = Debugger(proj_, txfn)
+    dbg.close()
+    assert contract.functions.totalDeposits().call() > 0
+
+
+def test_inspect_after_finish_raises(bank):
+    w3, proj_, contract, _callee, _alice = bank
+
+    def txfn():
+        tx = contract.functions.deposit().transact({"value": 1, "gas": 300_000})
+        w3.eth.wait_for_transaction_receipt(tx)
+
+    dbg = Debugger(proj_, txfn)
+    try:
+        dbg.step(StepMode.RUN)
+        assert dbg.session.finished
+        with pytest.raises(SessionError):
+            dbg.session.inspect("read_storage", 0)
+    finally:
+        dbg.close()
+
+
+def test_script_exception_is_reported_not_swallowed(proj):
+    def txfn():
+        raise ValueError("script blew up")
+
+    session = DebugSession(proj)
+    session.start(txfn)
+    event = session.wait(timeout=TIMEOUT)
+    assert isinstance(event, Finished)
+    assert not event.ok and "script blew up" in event.error
+    session.detach(timeout=TIMEOUT)
+
+
+def test_out_of_gas_is_rescuable_by_topping_up(bank):
+    """`set $gas = N` at an out-of-gas stop refills the meter and retries the opcode."""
+    w3, proj_, contract, _callee, alice = bank
+    status: dict[str, object] = {}
+
+    def txfn():
+        tx = contract.functions.deposit().transact(
+            {"from": alice.address, "value": w3.to_wei(1, "ether"), "gas": 30_000}
+        )
+        try:
+            status["receipt"] = w3.eth.wait_for_transaction_receipt(tx).status
+        except Exception as exc:  # a failing tx raises on this backend
+            status["error"] = repr(exc)
+
+    dbg = Debugger(proj_, txfn)
+    try:
+        result = dbg.run("c")  # past the constructor, into the underfunded deposit
+        joined = "\n".join(result.lines)
+        assert "OutOfGas" in joined and "set $gas" in joined, joined
+        assert dbg.run("set $gas = 5000000").ok
+        result = dbg.run("c")
+        assert "program finished" in "\n".join(result.lines)
+        assert status.get("receipt") == 1, status
+    finally:
+        dbg.close()
