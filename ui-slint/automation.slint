@@ -1,0 +1,102 @@
+import { ComboBox, ScrollView, TextEdit } from "std-widgets.slint";
+import { IconButton, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct AutomationClient { id: string, scopes: string }
+
+export global AutomationData {
+    in-out property <bool> visible: false;
+    in property <bool> enabled: false;
+    in property <bool> busy: false;
+    in property <string> endpoint;
+    in property <string> message;
+    in property <string> pairing-token;
+    in property <[AutomationClient]> clients;
+    in property <string> approval-id;
+    in property <string> approval-detail;
+    in property <string> approval-action;
+}
+
+export global AutomationLogic {
+    callback open();
+    callback close();
+    callback enable();
+    callback disable();
+    callback pair(int);
+    callback revoke(string);
+    callback accept(string);
+    callback reject(string);
+}
+
+export component AutomationPanel inherits Rectangle {
+    in property <bool> enabled: true;
+    background: #00000088;
+    forward-focus: close-button;
+    init => { close-button.focus(); }
+    TouchArea { clicked => { } scroll-event(event) => { return accept; } }
+    FocusScope {
+        enabled: root.enabled;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { AutomationLogic.close(); return accept; }
+            if event.modifiers.control && !event.modifiers.alt && (event.text == "a" || event.text == "A" || event.text == "c" || event.text == "C") { return reject; }
+            if event.modifiers.control || event.modifiers.alt { return accept; }
+            return reject;
+        }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(48rem, parent.width - 2 * Theme.pad);
+            height: min(42rem, parent.height - 2 * Theme.pad);
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.edge;
+            border-radius: Theme.radius;
+            VerticalLayout {
+                padding: Theme.pad;
+                spacing: 0.75rem;
+                HorizontalLayout {
+                    SelectableText { text: "Automation / AI Access"; font-size: 1rem; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                    close-button := IconButton { icon: @image-url("icons/stop.svg"); label: "Close"; clicked => { AutomationLogic.close(); } }
+                }
+                ScrollView {
+                    min-width: 0px;
+                    min-height: 0px;
+                    content-width: self.visible-width;
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        spacing: 0.75rem;
+                        alignment: start;
+                        SelectableText { text: AutomationData.enabled ? "Access enabled for paired local clients" : "AI access is off"; font-weight: 600; }
+                        SelectableText { text: "Pair only clients you trust. Navigation and analysis follow their selected scopes. Sensitive actions require a separate confirmation here. Passwords and private keys stay in the local Wallet form."; color: Theme.muted; }
+                        HorizontalLayout {
+                            alignment: start;
+                            IconButton { icon: @image-url("icons/play.svg"); label: "Enable local API / MCP"; enabled: !AutomationData.enabled && !AutomationData.busy; clicked => { AutomationLogic.enable(); } }
+                            IconButton { icon: @image-url("icons/stop.svg"); label: "Disable and revoke all"; enabled: AutomationData.enabled && !AutomationData.busy; clicked => { AutomationLogic.disable(); } }
+                        }
+                        if AutomationData.endpoint != "": SelectableText { text: "HTTP API: \{AutomationData.endpoint}/api/v1\nMCP: \{AutomationData.endpoint}/mcp"; color: Theme.text; }
+                        SelectableText { text: "New client permissions"; color: Theme.muted; }
+                        permissions := ComboBox { model: ["Read application state", "Read and control UI", "Read and analyze chain", "Read, control UI and analyze"]; current-index: 0; accessible-label: "Client permissions"; enabled: AutomationData.enabled && !AutomationData.busy; }
+                        HorizontalLayout {
+                            alignment: start;
+                            IconButton { icon: @image-url("icons/wallet.svg"); label: "Create client token"; enabled: AutomationData.enabled && !AutomationData.busy; clicked => { AutomationLogic.pair(permissions.current-index); } }
+                        }
+                        if AutomationData.pairing-token != "": VerticalLayout {
+                            spacing: 0.375rem;
+                            SelectableText { text: "Copy this token to your client. It disappears when this panel closes. Chasm stores only its digest; revoke the client if the token is exposed."; color: Theme.accent; }
+                            TextEdit { text: AutomationData.pairing-token; read-only: true; accessible-label: "One-time client bearer token"; font-family: "Cascadia Mono"; font-size: 0.75rem; height: 4rem; min-width: 0px; wrap: word-wrap; }
+                        }
+                        if AutomationData.message != "": SelectableText { text: AutomationData.message; color: Theme.muted; }
+                        SelectableText { text: "Paired clients"; font-weight: 600; }
+                        if AutomationData.clients.length == 0: SelectableText { text: "No paired clients. Enable access, choose permissions and create a token."; color: Theme.muted; }
+                        for client in AutomationData.clients: VerticalLayout {
+                            spacing: 0.25rem;
+                            SelectableText { text: "\{client.id}\n\{client.scopes}"; }
+                            HorizontalLayout { alignment: start; IconButton { icon: @image-url("icons/stop.svg"); label: "Revoke client"; clicked => { AutomationLogic.revoke(client.id); } } }
+                        }
+                        SelectableText { text: "Available actions are listed in app.catalog. Signing, broadcast, keystore deletion, chain resets and debugger commands are not remotely exposed yet. This is not the Slint developer-inspection interface."; color: Theme.muted; }
+                    }
+                }
+            }
+        }
+    }
+}

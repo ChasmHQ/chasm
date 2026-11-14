@@ -1,0 +1,643 @@
+import { LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
+import { ActionControl, DockTab, SideHeader, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct ContractFunction { name: string, inputs: string, mutability: string }
+
+export struct ContractViewData {
+    contract-name: string,
+    address: string,
+    target-note: string,
+    selected-name: string,
+    mutability: string,
+    call-status: string,
+    storage-status: string,
+    simple-output: string,
+    raw-output: string,
+    trace-output: string,
+    storage-output: string,
+    details: string,
+    section: int,
+    interact-view: int,
+    result-view: int,
+    selected-function: int,
+    call-busy: bool,
+    send-enabled: bool,
+    trace-busy: bool,
+    has-result: bool,
+    storage-busy: bool,
+    can-read-storage: bool,
+    can-read: bool,
+    target-bound: bool,
+    result-detached: bool,
+    storage-detached: bool,
+    arguments: string,
+    value: string,
+    slot: string,
+    attach-address: string,
+    functions: [ContractFunction],
+    functions-scroll-y: float,
+    request-scroll-y: float,
+    details-scroll-y: float,
+    result-scroll-y: float,
+    storage-scroll-y: float,
+    function-width: float,
+    result-height: float,
+}
+
+export global ContractData {
+    in property <string> contract-name;
+    in property <string> address;
+    in property <string> target-note;
+    in property <string> selected-name;
+    in property <string> mutability;
+    in property <string> call-status;
+    in property <string> storage-status;
+    in property <string> simple-output;
+    in property <string> raw-output;
+    in property <string> trace-output;
+    in property <string> storage-output;
+    in property <string> details;
+    in property <int> section: 0;
+    in property <int> result-view: 0;
+    in property <int> selected-function: -1;
+    in property <bool> call-busy;
+    in property <bool> send-enabled;
+    in property <bool> trace-busy;
+    in property <bool> can-read;
+    in property <bool> target-bound;
+    in property <bool> result-detached;
+    in property <bool> storage-detached;
+    in-out property <string> arguments;
+    in-out property <string> value;
+    in-out property <string> slot;
+    in-out property <string> attach-address;
+    in property <[ContractFunction]> functions;
+}
+
+export global ContractLogic {
+    callback section(string, int);
+    callback interact-view(string, int);
+    callback select-function(string, int);
+    callback arguments-edited(string, string);
+    callback value-edited(string, string);
+    callback slot-edited(string, string);
+    callback attach-address-edited(string, string);
+    callback read(string);
+    callback send(string);
+    callback read-slot(string);
+    callback result-view(string, int);
+    callback trace(string);
+    callback attach(string, string);
+    callback deploy(string);
+    callback save-output(string, string);
+    callback detach-result(string);
+    callback detach-storage(string);
+    callback dock-result(string);
+    callback dock-storage(string);
+    callback scroll-changed(string, string, float);
+    callback size-changed(string, string, float);
+}
+
+component ContractButton inherits ActionControl {
+    height: Theme.control-height;
+    min-width: button-content.min-width;
+    preferred-width: button-content.preferred-width;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: Theme.radius;
+    button-content := HorizontalLayout {
+        padding-left: 0.625rem;
+        padding-right: 0.625rem;
+        Text {
+            text: root.label;
+            color: !root.enabled ? Theme.faint : root.primary ? Theme.accent-ink : Theme.text;
+            font-size: 0.8125rem;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+            accessible-role: none;
+        }
+    }
+}
+
+component ContractOutput inherits TextEdit {
+    read-only: true;
+    font-family: "Cascadia Mono";
+    font-size: 0.75rem;
+    wrap: word-wrap;
+    min-width: 0px;
+    min-height: 0px;
+    vertical-stretch: 1;
+}
+
+component ContractSplitter inherits Rectangle {
+    in property <string> owner;
+    in property <string> part;
+    in property <bool> horizontal;
+    in property <float> extent;
+    in property <float> minimum;
+    in property <float> maximum;
+    private property <float> initial;
+    private property <length> origin;
+    background: keyboard.has-focus ? Theme.accent : touch.has-hover || touch.pressed ? Theme.edge : Theme.line;
+    forward-focus: keyboard;
+    accessible-role: slider;
+    accessible-label: root.horizontal ? "Resize result area" : "Resize function list";
+    accessible-orientation: root.horizontal ? Orientation.vertical : Orientation.horizontal;
+    accessible-value: root.extent;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: 20;
+    accessible-action-set-value(value) => {
+        if value.is-float() { ContractLogic.size-changed(root.owner, root.part, value.to-float().clamp(root.minimum, root.maximum)); }
+    }
+    accessible-action-increment => { ContractLogic.size-changed(root.owner, root.part, (root.extent + 20).clamp(root.minimum, root.maximum)); }
+    accessible-action-decrement => { ContractLogic.size-changed(root.owner, root.part, (root.extent - 20).clamp(root.minimum, root.maximum)); }
+    touch := TouchArea {
+        mouse-cursor: root.horizontal ? ns-resize : ew-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.initial = root.extent;
+                root.origin = root.horizontal ? self.absolute-position.y + self.mouse-y : self.absolute-position.x + self.mouse-x;
+                keyboard.focus();
+            }
+        }
+        moved => {
+            if self.pressed {
+                if root.horizontal {
+                    ContractLogic.size-changed(root.owner, root.part, (root.initial - (self.absolute-position.y + self.mouse-y - root.origin) / Theme.unit).clamp(root.minimum, root.maximum));
+                } else {
+                    ContractLogic.size-changed(root.owner, root.part, (root.initial + (self.absolute-position.x + self.mouse-x - root.origin) / Theme.unit).clamp(root.minimum, root.maximum));
+                }
+            }
+        }
+    }
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if (!root.horizontal && event.text == Key.LeftArrow) || (root.horizontal && event.text == Key.DownArrow) {
+                ContractLogic.size-changed(root.owner, root.part, (root.extent - 20).clamp(root.minimum, root.maximum));
+                return accept;
+            }
+            if (!root.horizontal && event.text == Key.RightArrow) || (root.horizontal && event.text == Key.UpArrow) {
+                ContractLogic.size-changed(root.owner, root.part, (root.extent + 20).clamp(root.minimum, root.maximum));
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component ContractFunctions inherits Rectangle {
+    in property <ContractViewData> view;
+    in property <string> owner;
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.panel;
+    VerticalLayout {
+        SideHeader { title: "Functions"; }
+        if root.view.functions.length == 0: SelectableText {
+            text: "No functions available for this contract.";
+            color: Theme.muted;
+            font-size: 0.75rem;
+        }
+        ListView {
+            min-width: 0px;
+            min-height: 0px;
+            vertical-stretch: 1;
+            content-y: min(0, root.view.functions-scroll-y) * Theme.unit;
+            changed content-y => {
+                if self.content-y != min(0, root.view.functions-scroll-y) * Theme.unit {
+                    ContractLogic.scroll-changed(root.owner, "functions", min(0, self.content-y / Theme.unit));
+                }
+            }
+            for item[index] in root.view.functions: ActionControl {
+                height: Theme.row-height;
+                min-width: 0px;
+                label: "\{item.name}(\{item.inputs}), \{item.mutability}";
+                checkable: true;
+                selected: root.view.selected-function == index;
+                clicked => { ContractLogic.select-function(root.owner, index); }
+                HorizontalLayout {
+                    padding-left: Theme.pad;
+                    padding-right: Theme.pad;
+                    spacing: 0.375rem;
+                    Text { text: "\{item.name}(\{item.inputs})"; color: Theme.text; font-size: 0.75rem; font-family: "Cascadia Mono"; min-width: 0px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; accessible-role: none; }
+                    Text { text: item.mutability; color: Theme.muted; font-size: 0.75rem; horizontal-stretch: 0; vertical-alignment: center; accessible-role: none; }
+                }
+            }
+        }
+    }
+}
+
+component CompactFunctionPicker inherits VerticalLayout {
+    in property <ContractViewData> view;
+    in property <string> owner;
+    private property <bool> open;
+    spacing: 0.25rem;
+    vertical-stretch: 0;
+    ActionControl {
+        label: root.view.selected-name == "" ? "Choose function" : root.view.mutability == "" ? "Function: \{root.view.selected-name}" : "\{root.view.selected-name} · \{root.view.mutability}";
+        checkable: true;
+        selected: root.open;
+        height: Theme.control-height;
+        clicked => { root.open = !root.open; }
+        HorizontalLayout {
+            padding-left: 0.5rem;
+            padding-right: 0.5rem;
+            spacing: 0.375rem;
+            Text { text: root.view.selected-name == "" ? "Choose function" : root.view.mutability == "" ? "Function: \{root.view.selected-name}" : "\{root.view.selected-name} · \{root.view.mutability}"; color: Theme.text; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; accessible-role: none; }
+            Text { text: root.open ? "Hide" : "Choose"; color: Theme.accent; font-size: 0.75rem; horizontal-stretch: 0; vertical-alignment: center; accessible-role: none; }
+        }
+    }
+    if root.open: Rectangle {
+        height: min(120 * Theme.unit, max(Theme.row-height, root.view.functions.length * Theme.row-height));
+        min-width: 0px;
+        background: Theme.panel;
+        if root.view.functions.length == 0: SelectableText { text: "No functions available."; color: Theme.muted; font-size: 0.75rem; }
+        ListView {
+            min-width: 0px;
+            min-height: 0px;
+            content-y: min(0, root.view.functions-scroll-y) * Theme.unit;
+            changed content-y => {
+                if self.content-y != min(0, root.view.functions-scroll-y) * Theme.unit {
+                    ContractLogic.scroll-changed(root.owner, "functions", min(0, self.content-y / Theme.unit));
+                }
+            }
+            for item[index] in root.view.functions: ActionControl {
+                height: Theme.row-height;
+                min-width: 0px;
+                label: "\{item.name}(\{item.inputs}), \{item.mutability}";
+                checkable: true;
+                selected: root.view.selected-function == index;
+                clicked => { ContractLogic.select-function(root.owner, index); root.open = false; }
+                HorizontalLayout {
+                    padding-left: 0.5rem;
+                    padding-right: 0.5rem;
+                    Text { text: "\{item.name}(\{item.inputs})"; color: Theme.text; font-size: 0.75rem; min-width: 0px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; accessible-role: none; }
+                    Text { text: item.mutability; color: Theme.muted; font-size: 0.75rem; horizontal-stretch: 0; vertical-alignment: center; accessible-role: none; }
+                }
+            }
+        }
+    }
+}
+
+component ContractRequest inherits Rectangle {
+    in property <ContractViewData> view;
+    in property <string> owner;
+    in property <bool> compact;
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.canvas;
+    VerticalLayout {
+        min-width: 0px;
+        min-height: 0px;
+        Rectangle {
+            min-width: 0px;
+            min-height: 0px;
+            vertical-stretch: 1;
+            clip: true;
+            ScrollView {
+                min-width: 0px;
+                min-height: 0px;
+                content-width: self.visible-width;
+                content-y: min(0, root.view.request-scroll-y) * Theme.unit;
+                changed content-y => {
+                    if self.content-y != min(0, root.view.request-scroll-y) * Theme.unit {
+                        ContractLogic.scroll-changed(root.owner, "request", min(0, self.content-y / Theme.unit));
+                    }
+                }
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    padding: 8 * Theme.unit;
+                    spacing: 0.375rem;
+                    alignment: start;
+                    if root.compact: CompactFunctionPicker { view: root.view; owner: root.owner; }
+                    if !root.compact: SelectableText { text: root.view.selected-name == "" ? "Select a function to prepare a call." : root.view.mutability == "" ? root.view.selected-name : "\{root.view.selected-name} · \{root.view.mutability}"; font-size: 0.875rem; font-weight: 600; wrap: word-wrap; }
+                    SelectableText { text: "Arguments"; color: Theme.muted; font-size: 0.75rem; }
+                    LineEdit {
+                        min-width: 0px;
+                        enabled: root.view.selected-function >= 0 && !root.view.call-busy;
+                        accessible-label: "Function arguments";
+                        text: root.view.arguments;
+                        edited => { ContractLogic.arguments-edited(root.owner, self.text); }
+                    }
+                    if root.view.mutability != "view" && root.view.mutability != "pure": SelectableText { text: "Value (wei)"; color: Theme.muted; font-size: 0.75rem; }
+                    if root.view.mutability != "view" && root.view.mutability != "pure": LineEdit {
+                        min-width: 0px;
+                        enabled: root.view.selected-function >= 0 && !root.view.call-busy;
+                        accessible-label: "Call value in wei";
+                        text: root.view.value;
+                        edited => { ContractLogic.value-edited(root.owner, self.text); }
+                    }
+                    if root.view.call-busy || root.view.call-status != "": SelectableText {
+                        text: root.view.call-busy ? "Calling contract..." : root.view.call-status;
+                        color: Theme.muted;
+                        font-size: 0.75rem;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+        ScrollView {
+            height: Theme.control-height;
+            min-width: 0px;
+            content-width: max(self.visible-width, request-actions.preferred-width);
+            content-height: self.visible-height;
+            vertical-scrollbar-policy: always-off;
+            request-actions := HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                spacing: 0.375rem;
+                alignment: start;
+                ContractButton { label: "Read / Simulate"; enabled: root.view.target-bound && root.view.can-read && root.view.selected-function >= 0 && !root.view.call-busy; clicked => { ContractLogic.read(root.owner); } }
+                ContractButton { label: "Send"; primary: true; enabled: root.view.target-bound && root.view.send-enabled && root.view.selected-function >= 0 && root.view.mutability != "view" && root.view.mutability != "pure" && !root.view.call-busy; clicked => { ContractLogic.send(root.owner); } }
+            }
+        }
+    }
+}
+
+export component ContractResult inherits Rectangle {
+    in property <ContractViewData> view;
+    in property <string> owner;
+    private property <string> active-output: root.view.result-view == 0 ? root.view.simple-output : root.view.result-view == 1 ? root.view.raw-output : root.view.trace-output;
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.panel;
+    VerticalLayout {
+        min-width: 0px;
+        min-height: 0px;
+        ScrollView {
+            height: Theme.tab-height;
+            min-width: 0px;
+            content-width: max(self.visible-width, result-tabs.preferred-width);
+            content-height: self.visible-height;
+            vertical-scrollbar-policy: always-off;
+            result-tabs := HorizontalLayout {
+                spacing: 0.25rem;
+                alignment: start;
+                DockTab { label: "Simple"; selected: root.view.result-view == 0; clicked => { ContractLogic.result-view(root.owner, 0); } }
+                DockTab { label: "Raw JSON"; selected: root.view.result-view == 1; clicked => { ContractLogic.result-view(root.owner, 1); } }
+                DockTab { label: "Trace"; selected: root.view.result-view == 2; clicked => { ContractLogic.result-view(root.owner, 2); } }
+                ContractButton { label: "Copy"; enabled: root.active-output != ""; clicked => { result-output.select-all(); result-output.copy(); } }
+                ContractButton { label: "Save..."; enabled: root.active-output != ""; clicked => { ContractLogic.save-output(root.owner, root.active-output); } }
+                if root.view.result-view == 2: ContractButton { label: root.view.trace-busy ? "Loading trace..." : "Load trace"; enabled: root.view.has-result && !root.view.trace-busy && !root.view.call-busy; clicked => { ContractLogic.trace(root.owner); } }
+                if !root.view.result-detached: ContractButton { label: "Float result"; clicked => { ContractLogic.detach-result(root.owner); } }
+                if root.view.result-detached: ContractButton { label: "Return to contract"; clicked => { ContractLogic.dock-result(root.owner); } }
+            }
+        }
+        result-output := ContractOutput {
+            text: root.active-output;
+            placeholder-text: root.view.result-view == 2 ? "No trace loaded." : "No call result yet.";
+            content-y: min(0, root.view.result-scroll-y) * Theme.unit;
+            changed content-y => {
+                if self.content-y != min(0, root.view.result-scroll-y) * Theme.unit {
+                    ContractLogic.scroll-changed(root.owner, root.view.result-view == 0 ? "result-simple" : root.view.result-view == 1 ? "result-raw" : "result-trace", min(0, self.content-y / Theme.unit));
+                }
+            }
+            font-family: root.view.result-view == 0 ? "Segoe UI" : "Cascadia Mono";
+            accessible-label: root.view.result-view == 0 ? "Simple call result" : root.view.result-view == 1 ? "Raw JSON call result" : "Call trace";
+        }
+    }
+}
+
+export component ContractStorage inherits Rectangle {
+    in property <ContractViewData> view;
+    in property <string> owner;
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.canvas;
+    ScrollView {
+        min-width: 0px;
+        min-height: 0px;
+        content-width: self.visible-width;
+        horizontal-scrollbar-policy: always-off;
+        VerticalLayout {
+            padding: Theme.pad;
+            spacing: 0.375rem;
+            alignment: start;
+            min-width: 0px;
+            HorizontalLayout {
+                spacing: 0.375rem;
+                SelectableText { text: "Read slot"; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                if !root.view.storage-detached: ContractButton { label: "Float storage"; clicked => { ContractLogic.detach-storage(root.owner); } }
+                if root.view.storage-detached: ContractButton { label: "Return to contract"; clicked => { ContractLogic.dock-storage(root.owner); } }
+            }
+            HorizontalLayout {
+                spacing: 0.375rem;
+                SelectableText { text: "Storage slot"; color: Theme.muted; font-size: 0.75rem; horizontal-stretch: 0; vertical-alignment: center; }
+                LineEdit {
+                    min-width: 0px;
+                    horizontal-stretch: 1;
+                    accessible-label: "Storage slot";
+                    text: root.view.slot;
+                    edited => { ContractLogic.slot-edited(root.owner, self.text); }
+                }
+            }
+            ScrollView {
+                height: Theme.control-height;
+                min-width: 0px;
+                content-width: max(self.visible-width, storage-actions.preferred-width);
+                content-height: self.visible-height;
+                vertical-scrollbar-policy: always-off;
+                storage-actions := HorizontalLayout {
+                    spacing: 0.375rem;
+                    alignment: start;
+                    ContractButton { label: root.view.storage-busy ? "Reading slot..." : "Read slot"; enabled: root.view.can-read-storage && !root.view.storage-busy; clicked => { ContractLogic.read-slot(root.owner); } }
+                    ContractButton { label: "Copy"; enabled: root.view.storage-output != ""; clicked => { storage-output.select-all(); storage-output.copy(); } }
+                    ContractButton { label: "Save..."; enabled: root.view.storage-output != ""; clicked => { ContractLogic.save-output(root.owner, root.view.storage-output); } }
+                }
+            }
+            if root.view.storage-status != "": SelectableText { text: root.view.storage-status; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+            storage-output := ContractOutput {
+                height: 100 * Theme.unit;
+                text: root.view.storage-output;
+                placeholder-text: "Enter a slot and select Read slot.";
+                content-y: min(0, root.view.storage-scroll-y) * Theme.unit;
+                changed content-y => {
+                    if self.content-y != min(0, root.view.storage-scroll-y) * Theme.unit {
+                        ContractLogic.scroll-changed(root.owner, "storage", min(0, self.content-y / Theme.unit));
+                    }
+                }
+                accessible-label: "Storage slot result";
+            }
+        }
+    }
+}
+
+component ContractDetails inherits Rectangle {
+    in property <ContractViewData> view;
+    in property <string> owner;
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.canvas;
+    ScrollView {
+        min-width: 0px;
+        min-height: 0px;
+        content-width: self.visible-width;
+        content-y: min(0, root.view.details-scroll-y) * Theme.unit;
+        changed content-y => {
+            if self.content-y != min(0, root.view.details-scroll-y) * Theme.unit {
+                ContractLogic.scroll-changed(root.owner, "details", min(0, self.content-y / Theme.unit));
+            }
+        }
+        horizontal-scrollbar-policy: always-off;
+        VerticalLayout {
+            padding: Theme.pad;
+            spacing: 0.5rem;
+            alignment: start;
+            SelectableText { text: "Address"; color: Theme.muted; font-size: 0.75rem; }
+            HorizontalLayout {
+                spacing: 0.375rem;
+                address-text := SelectableText { text: root.view.address == "" ? "No address attached" : root.view.address; min-width: 0px; horizontal-stretch: 1; vertical-alignment: center; wrap: no-wrap; overflow: elide; }
+                ContractButton { label: "Copy address"; enabled: root.view.address != ""; clicked => { address-text.select-all(); address-text.copy(); } }
+            }
+            if root.view.target-note != "": SelectableText { text: root.view.target-note; color: Theme.muted; wrap: word-wrap; }
+            if root.view.details != "": SelectableText { text: root.view.details; wrap: word-wrap; }
+            SelectableText { text: "Attach an address"; color: Theme.muted; font-size: 0.75rem; }
+            LineEdit {
+                min-width: 0px;
+                accessible-label: "Address to attach";
+                text: root.view.attach-address;
+                edited => { ContractLogic.attach-address-edited(root.owner, self.text); }
+            }
+            HorizontalLayout {
+                spacing: 0.375rem;
+                alignment: start;
+                ContractButton { label: "Attach"; enabled: root.view.contract-name != "" && root.view.attach-address != "" && !root.view.call-busy; clicked => { ContractLogic.attach(root.owner, root.view.attach-address); } }
+                ContractButton { label: "Deploy"; enabled: root.view.contract-name != "" && !root.view.call-busy; clicked => { ContractLogic.deploy(root.owner); } }
+            }
+        }
+    }
+}
+
+export component ContractWorkspace inherits Rectangle {
+    in property <ContractViewData> view;
+    in property <string> owner;
+    in property <float> result-height: 220;
+    private property <bool> compact: root.height < 420 * Theme.unit || root.width < 680 * Theme.unit;
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.canvas;
+    VerticalLayout {
+        min-width: 0px;
+        min-height: 0px;
+        ScrollView {
+            height: Theme.tab-height;
+            min-width: 0px;
+            content-width: max(self.visible-width, section-tabs.preferred-width);
+            content-height: self.visible-height;
+            vertical-scrollbar-policy: always-off;
+            section-tabs := HorizontalLayout {
+                alignment: start;
+                DockTab { label: "Interact"; selected: root.view.section == 0 && (!root.compact || root.view.interact-view == 0); clicked => { ContractLogic.interact-view(root.owner, 0); ContractLogic.section(root.owner, 0); } }
+                if root.compact: DockTab { label: "Result"; selected: root.view.section == 0 && root.view.interact-view == 1; clicked => { ContractLogic.interact-view(root.owner, 1); ContractLogic.section(root.owner, 0); } }
+                DockTab { label: "Storage"; selected: root.view.section == 1; clicked => { ContractLogic.section(root.owner, 1); } }
+                DockTab { label: "Details"; selected: root.view.section == 2; clicked => { ContractLogic.section(root.owner, 2); } }
+            }
+        }
+        if root.view.section == 0: interaction := Rectangle {
+            min-width: 0px;
+            min-height: 0px;
+            vertical-stretch: 1;
+            private property <bool> compact: root.compact;
+            private property <length> splitter-height: min(8 * Theme.unit, self.height);
+            private property <length> available-height: max(0px, self.height - self.splitter-height);
+            private property <length> max-result-height: max(0px, self.available-height - 180 * Theme.unit);
+            private property <length> min-result-height: min(80 * Theme.unit, self.max-result-height);
+            private property <length> actual-result-height: root.view.result-detached ? 0px : ((root.view.result-height > 0 ? root.view.result-height : root.result-height) * Theme.unit).clamp(self.min-result-height, self.max-result-height);
+            private property <length> request-height: root.view.result-detached ? max(0px, self.height - Theme.control-height) : max(0px, self.available-height - self.actual-result-height);
+            if interaction.compact && root.view.interact-view == 0: ContractRequest {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                view: root.view;
+                owner: root.owner;
+                compact: true;
+            }
+            if interaction.compact && root.view.interact-view == 1 && !root.view.result-detached: ContractResult {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                view: root.view;
+                owner: root.owner;
+            }
+            if interaction.compact && root.view.interact-view == 1 && root.view.result-detached: HorizontalLayout {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: min(Theme.control-height, parent.height);
+                spacing: 0.375rem;
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                SelectableText { text: "Result is in another panel."; color: Theme.muted; min-width: 0px; horizontal-stretch: 1; wrap: no-wrap; overflow: elide; vertical-alignment: center; }
+                ContractButton { label: "Return to contract"; clicked => { ContractLogic.dock-result(root.owner); } }
+            }
+            if !interaction.compact: HorizontalLayout {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: interaction.request-height;
+                min-width: 0px;
+                min-height: 0px;
+                ContractFunctions {
+                    view: root.view;
+                    owner: root.owner;
+                    width: (root.view.function-width > 0 ? root.view.function-width : 250).clamp(160, max(160, (root.width / Theme.unit) - 250)) * Theme.unit;
+                    horizontal-stretch: 0;
+                }
+                ContractSplitter {
+                    owner: root.owner;
+                    part: "function-width";
+                    extent: (root.view.function-width > 0 ? root.view.function-width : 250).clamp(160, max(160, (root.width / Theme.unit) - 250));
+                    minimum: 160;
+                    maximum: max(160, (root.width / Theme.unit) - 250);
+                    width: 8 * Theme.unit;
+                    horizontal-stretch: 0;
+                }
+                ContractRequest { view: root.view; owner: root.owner; horizontal-stretch: 1; }
+            }
+            if !interaction.compact && !root.view.result-detached: ContractSplitter {
+                x: 0px;
+                y: interaction.request-height;
+                width: parent.width;
+                height: interaction.splitter-height;
+                owner: root.owner;
+                part: "result-height";
+                horizontal: true;
+                minimum: interaction.min-result-height / Theme.unit;
+                maximum: interaction.max-result-height / Theme.unit;
+                extent: interaction.actual-result-height / Theme.unit;
+            }
+            if !interaction.compact && !root.view.result-detached: ContractResult {
+                x: 0px;
+                y: interaction.request-height + interaction.splitter-height;
+                width: parent.width;
+                height: interaction.actual-result-height;
+                view: root.view;
+                owner: root.owner;
+            }
+            if !interaction.compact && root.view.result-detached: HorizontalLayout {
+                x: 0px;
+                y: interaction.request-height;
+                width: parent.width;
+                height: min(Theme.control-height, interaction.height);
+                spacing: 0.375rem;
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                SelectableText { text: "Result is in another panel."; color: Theme.muted; min-width: 0px; horizontal-stretch: 1; wrap: no-wrap; overflow: elide; vertical-alignment: center; }
+                ContractButton { label: "Return to contract"; clicked => { ContractLogic.dock-result(root.owner); } }
+            }
+        }
+        if root.view.section == 1 && !root.view.storage-detached: ContractStorage { view: root.view; owner: root.owner; vertical-stretch: 1; }
+        if root.view.section == 1 && root.view.storage-detached: VerticalLayout {
+            padding: Theme.pad;
+            spacing: 0.5rem;
+            alignment: start;
+            SelectableText { text: "Storage is in another panel."; color: Theme.muted; wrap: word-wrap; }
+            HorizontalLayout { alignment: start; ContractButton { label: "Return to contract"; clicked => { ContractLogic.dock-storage(root.owner); } } }
+        }
+        if root.view.section == 2: ContractDetails { view: root.view; owner: root.owner; vertical-stretch: 1; }
+    }
+}

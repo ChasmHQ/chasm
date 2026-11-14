@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
-import { Hammer, Zap, Plus, X, Box, ChevronRight, ChevronDown, Trash2, Globe, Wand2, FileCode, RefreshCw, Layers } from 'lucide-react'
+import { Hammer, Zap, Plus, X, Box, Bug, ChevronRight, ChevronDown, Trash2, Globe, Wand2, FileCode, RefreshCw, Layers } from 'lucide-react'
 import { clsx } from 'clsx'
 import { createWalletClient, createPublicClient, createTestClient, http, custom, defineChain, type Address, type Block, type Transaction, type PublicClient, type WalletClient, type Hex, publicActions, walletActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -14,6 +14,9 @@ import { MacroEditor } from './components/MacroEditor'
 import { OpenZeppelinModal } from './components/OpenZeppelinModal'
 import { OzVersionPicker } from './components/OzVersionPicker'
 import type { Macro } from './types/macro'
+import { useDebuggerSession } from './hooks/useDebuggerSession'
+import { DebuggerWorkspace } from './components/debugger/DebuggerWorkspace'
+import type { DebuggerLaunchIntent } from './types/debugger'
 
 // Default Constants
 const DEFAULT_RPC = "http://127.0.0.1:8545"
@@ -143,7 +146,15 @@ function App() {
     const [atAddressInput, setAtAddressInput] = useState('')
 
   // View State
-  const [activeView, setActiveView] = useState<'contracts' | 'explorer' | 'converter' | 'macros'>('contracts')
+  const [activeView, setActiveView] = useState<'contracts' | 'explorer' | 'converter' | 'macros' | 'debugger'>('contracts')
+  // Session lifetime is above the activity conditional: switching views never
+  // restarts or cancels a worker, and credentials remain in memory only.
+  const debuggerSession = useDebuggerSession()
+  const [debuggerIntent, setDebuggerIntent] = useState<DebuggerLaunchIntent | null>(null)
+  const launchDebugger = useCallback((intent: DebuggerLaunchIntent) => {
+    setDebuggerIntent(intent)
+    setActiveView('debugger')
+  }, [])
 
   // Macro State
   const [macros, setMacros] = useState<Macro[]>([])
@@ -763,6 +774,9 @@ function App() {
 
   useEffect(() => {
     if (globalMode !== 'live') return
+    // Do not replace the dependency maps when there is nothing to purge: that
+    // creates a render loop and prevents activity buttons from responding.
+    if (!Object.values(txModes).includes('local') && !Object.values(blockModes).includes('local')) return
     setRecentTransactions(prev => prev.filter(tx => txModes[tx.hash] !== 'local'))
     setRecentBlocks(prev => prev.filter(block => (block.hash ? blockModes[block.hash] !== 'local' : true)))
     setTxModes(prev => {
@@ -945,6 +959,16 @@ function App() {
           >
             <Layers size={20} strokeWidth={1.5} />
             {activeView === 'macros' && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-indigo-500 rounded-r-full" />}
+          </button>
+
+          <button
+            onClick={() => setActiveView('debugger')}
+            className={clsx("p-2 rounded-lg transition-all relative group", activeView === 'debugger' ? "text-indigo-400 bg-slate-900" : "text-slate-500 hover:text-slate-300")}
+            title="Debugger"
+            aria-label="Debugger activity"
+          >
+            <Bug size={20} strokeWidth={1.5} />
+            {activeView === 'debugger' && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-indigo-500 rounded-r-full" />}
           </button>
 
           <div className="flex-1" />
@@ -1427,6 +1451,8 @@ function App() {
                             ) : (
                                 <RequestTab 
                                     type={tab.type as 'deploy' | 'function'}
+                                    onDebugLocally={launchDebugger}
+                                    debuggerChainId={chainId}
                                     contractName={tab.contractName}
                                     abiItem={tab.abiItem}
                                     bytecode={bytecode}
@@ -1456,6 +1482,8 @@ function App() {
             </div>
         </div>
         </>
+        ) : activeView === 'debugger' ? (
+            <DebuggerWorkspace key={debuggerIntent?.key || 'debugger'} debuggerSession={debuggerSession} intent={debuggerIntent} onIntentConsumed={() => setDebuggerIntent(null)} />
         ) : activeView === 'converter' ? (
             <ConverterView />
         ) : activeView === 'macros' ? (
@@ -1479,7 +1507,9 @@ function App() {
         ) : (
             <div className="flex-1 min-h-0">
                 {clients ? (
-                    <Explorer 
+                    <Explorer
+                        onDebugLocally={launchDebugger}
+                        debuggerChainId={globalMode === 'local' ? 31337 : chainId}
                         publicClient={globalMode === 'local' && localClients ? localClients.publicClient : clients.publicClient}
                         rpcUrl={globalMode === 'local' && localClients ? localClients.rpcUrl : rpcUrl}
                         txModes={txModes}
@@ -1513,6 +1543,8 @@ function App() {
         )}
         </div>
 
+        {/* The debugger owns its inspection panes and uses the full viewport. */}
+        {activeView !== 'debugger' && <>
         {/* Global Resizer & Bottom Panel */}
         <div 
             onMouseDown={startResizing}
@@ -1528,6 +1560,7 @@ function App() {
                 onRevert={revertSnapshot}
             />
         </div>
+        </>}
       </div>
     </div>
 

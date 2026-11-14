@@ -3,6 +3,8 @@ mod compiler;
 mod config;
 mod watcher;
 mod anvil;
+mod debugger;
+mod desktop;
 
 use axum::{
     extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path, Query, State},
@@ -12,7 +14,7 @@ use axum::{
     Router,
     Json,
 };
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser};
 use include_dir::{include_dir, Dir};
 use std::{net::SocketAddr, path::PathBuf, process::Command, sync::{Arc, Mutex}};
 use tokio::sync::broadcast;
@@ -29,6 +31,7 @@ struct AppState {
     fork_node: Arc<Mutex<anvil::AnvilNode>>,
     root_dir: PathBuf,
     remappings: Arc<Mutex<Vec<String>>>,
+    debugger: Arc<debugger::Manager>,
 }
 
 // ─── Helper: trigger recompile & broadcast via WebSocket ─────────────────────
@@ -186,18 +189,51 @@ async fn handle_proxy_request(
 
 static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "chasm", about = "ChainSmith CLI")]
 struct Cli {
     #[arg(value_name = "path", default_value = ".")]
     path: PathBuf,
+    /// Explicit local Python interpreter with chasm-debugger installed (never searches PATH).
+    #[arg(long)]
+    debugger_python: Option<PathBuf>,
+    /// Opt in to one exact loopback frontend development origin, e.g. http://localhost:5173.
+    #[arg(long)]
+    debugger_dev_origin: Option<String>,
+    /// Trusted local offline capture exposed as the synthetic example.
+    #[arg(long)]
+    debugger_example: Option<PathBuf>,
+    /// Serve the previous browser workspace instead of the desktop window.
+    #[arg(long)]
+    web: bool,
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+fn main() {
+    let matches = Cli::command().get_matches();
+    let explicit_path = matches.value_source("path") == Some(clap::parser::ValueSource::CommandLine);
+    let args = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    if args.web {
+        if let Err(error) = web_main(args) {
+            eprintln!("Chasm web workspace failed: {error:#}");
+            std::process::exit(1);
+        }
+    } else {
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::Console::FreeConsole();
+        }
+        if let Err(error) = desktop::launch(args, explicit_path) {
+            desktop::show_startup_error(&format!("{error:#}"));
+            eprintln!("Chasm desktop failed: {error:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
 #[tokio::main]
-async fn main() {
-    let args = Cli::parse();
+async fn web_main(args: Cli) -> anyhow::Result<()> {
     let root_dir = args.path.canonicalize().unwrap_or(args.path);
 
     tracing_subscriber::registry()
@@ -282,7 +318,17 @@ async fn main() {
         tracing::error!("Failed to setup watcher: {}", e);
     }
 
-    let app_state = Arc::new(AppState { tx, last_msg, fork_node, root_dir, remappings });
+    // The debugger has an independent worker lifecycle; it never uses the global Anvil nodes.
+    let mut debugger_config = debugger::Config::new(
+        root_dir.clone(), args.debugger_python, args.debugger_dev_origin, args.debugger_example,
+    );
+    let build_root = root_dir.clone();
+    let build_remappings = remappings.clone();
+    debugger_config.build_info = Some(Arc::new(move || {
+        compiler::debug_build_info(build_root.clone(), build_remappings.lock().unwrap().clone())
+    }));
+    let debugger = debugger::Manager::new(debugger_config).await;
+    let app_state = Arc::new(AppState { tx, last_msg, fork_node, root_dir, remappings, debugger: debugger.clone() });
 
     // ── Router ────────────────────────────────────────────────────────────────
     let app = Router::new()
@@ -310,12 +356,20 @@ async fn main() {
         .route("/", get(serve_ui_root))
         .route("/*path", get(serve_ui))
         .layer(CorsLayer::permissive())
-        .with_state(app_state);
+        .with_state(app_state)
+        // Add protected debugger routes AFTER layering public CORS, never underneath it.
+        .nest("/api/debugger", debugger::router(debugger.clone()));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::info!("ChainSmith UI listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let shutdown_debugger = debugger.clone();
+    axum::serve(listener, app).with_graceful_shutdown(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        shutdown_debugger.shutdown().await;
+    }).await.unwrap();
+    debugger.shutdown().await;
+    Ok(())
 }
 
 // ─── OZ Endpoints ─────────────────────────────────────────────────────────────

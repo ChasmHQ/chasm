@@ -1,0 +1,309 @@
+import { LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
+import { IconButton, SideRow, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct InvestigationRow { id: string, title: string, detail: string }
+
+export global InvestigationData {
+    in-out property <bool> visible: false;
+    in property <int> binding-generation;
+    in property <bool> busy: false;
+    in property <bool> failed: false;
+    in property <string> status;
+    in property <string> workspace-label;
+    in property <string> detail-title;
+    in property <string> output;
+    in property <string> inventory-summary;
+    in property <bool> case-loaded: false;
+    in property <string> loaded-case;
+    in property <[InvestigationRow]> captures;
+    in property <[InvestigationRow]> cases;
+    in property <[InvestigationRow]> evidence;
+    in-out property <string> query-input;
+    in-out property <string> block-input: "latest";
+    in-out property <string> call-from;
+    in-out property <string> call-to;
+    in-out property <string> call-data;
+    in-out property <string> call-value;
+    in-out property <string> call-gas;
+    in-out property <string> case-name;
+    in-out property <string> note-input;
+    in-out property <string> compare-left;
+    in-out property <string> compare-right;
+    in-out property <string> import-input;
+    in property <int> selected-capture: -1;
+    in property <int> selected-case: -1;
+    in property <int> selected-evidence: -1;
+}
+
+export global InvestigationLogic {
+    callback open();
+    callback close();
+    callback draft-edited(string, string);
+    callback run-account();
+    callback run-transaction();
+    callback run-block();
+    callback run-simulate();
+    callback refresh-history();
+    callback select-capture(int);
+    callback create-case();
+    callback list-cases();
+    callback load-case(int);
+    callback select-evidence(int);
+    callback save-capture-to-case();
+    callback save-note();
+    callback bookmark-evidence();
+    callback compare-evidence();
+    callback export-case();
+    callback import-case();
+    callback inspect-project();
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <string> draft-id;
+    in-out property <string> text;
+    spacing: 0.25rem;
+    SelectableText { text: root.label; color: Theme.muted; font-size: 0.75rem; overflow: elide; }
+    Rectangle {
+        height: Theme.control-height;
+        horizontal-stretch: 1;
+        input := LineEdit {
+            width: parent.width;
+            height: parent.height;
+            font-size: 0.8125rem;
+            placeholder-text: root.placeholder;
+            accessible-label: root.label;
+            text <=> root.text;
+            edited => { InvestigationLogic.draft-edited(root.draft-id, self.text); }
+        }
+        Rectangle { border-width: 1px; border-radius: Theme.radius; border-color: input.has-focus ? Theme.accent : Theme.edge; background: transparent; }
+    }
+}
+
+component RowList inherits Rectangle {
+    in property <[InvestigationRow]> rows;
+    in property <image> icon;
+    in property <int> selected: -1;
+    in property <string> empty-hint;
+    callback picked(int);
+    background: Theme.inset;
+    border-width: 1px;
+    border-color: Theme.edge;
+    border-radius: Theme.radius;
+    clip: true;
+    min-width: 0px;
+    min-height: 0px;
+    if root.rows.length == 0: SelectableText {
+        x: Theme.pad;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - 2 * Theme.pad;
+        text: root.empty-hint;
+        color: Theme.faint;
+        font-size: 0.75rem;
+        wrap: word-wrap;
+    }
+    ListView {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        for row[index] in root.rows: SideRow {
+            icon: root.icon;
+            label: row.title;
+            trailing: row.detail;
+            selected: index == root.selected;
+            clicked => { root.picked(index); }
+        }
+    }
+}
+
+export component InvestigationPanel inherits Rectangle {
+    in property <bool> enabled: true;
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.panel;
+    FocusScope {
+        enabled: root.enabled;
+        VerticalLayout {
+                padding: Theme.pad;
+                spacing: 0.5rem;
+                HorizontalLayout {
+                    SelectableText { text: "Investigation"; color: Theme.text; font-size: 1rem; font-weight: 600; vertical-alignment: center; horizontal-stretch: 0; }
+                    SelectableText { text: InvestigationData.workspace-label; color: Theme.faint; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; horizontal-alignment: right; min-width: 0px; }
+                }
+                HorizontalLayout {
+                    spacing: 0.5rem;
+                    if InvestigationData.busy: SelectableText { text: "Working…"; color: Theme.accent; font-size: 0.75rem; vertical-alignment: center; width: 5rem; horizontal-stretch: 0; }
+                    SelectableText { text: InvestigationData.status; color: InvestigationData.failed ? Theme.danger : Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; min-width: 0px; wrap: no-wrap; }
+                }
+                ScrollView {
+                    min-width: 0px;
+                    min-height: 0px;
+                    content-width: self.visible-width;
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        spacing: 0.75rem;
+                        alignment: start;
+                        SelectableText { text: "Chain reads use the workspace's selected node; no endpoint is entered here. Block defaults to latest and may be a number or 0x hash so accounts can be read at historic state. RPC content is untrusted data."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 0.5rem;
+                            Field { draft-id: "query-input"; label: "Address, 0x hash or block"; placeholder: "0x… address / hash / block number"; text <=> InvestigationData.query-input; }
+                            Field { draft-id: "block-input"; label: "Block (latest, number or 0x hash)"; placeholder: "latest"; text <=> InvestigationData.block-input; width: 14rem; horizontal-stretch: 0; }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 0.5rem;
+                            IconButton { icon: @image-url("icons/wallet.svg"); label: "Read account"; enabled: !InvestigationData.busy; clicked => { InvestigationLogic.run-account(); } }
+                            IconButton { icon: @image-url("icons/tx.svg"); label: "Read transaction"; enabled: !InvestigationData.busy; clicked => { InvestigationLogic.run-transaction(); } }
+                            IconButton { icon: @image-url("icons/block.svg"); label: "Read block"; enabled: !InvestigationData.busy; clicked => { InvestigationLogic.run-block(); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 0.5rem;
+                            Field { draft-id: "call-to"; label: "Simulate to (contract)"; placeholder: "0x…"; text <=> InvestigationData.call-to; }
+                            Field { draft-id: "call-from"; label: "From (optional)"; placeholder: "0x…"; text <=> InvestigationData.call-from; }
+                        }
+                        HorizontalLayout {
+                            spacing: 0.5rem;
+                            Field { draft-id: "call-data"; label: "Calldata (optional 0x…)"; placeholder: "0x…"; text <=> InvestigationData.call-data; }
+                            Field { draft-id: "call-value"; label: "Value wei (optional)"; placeholder: "0"; text <=> InvestigationData.call-value; width: 10rem; horizontal-stretch: 0; }
+                            Field { draft-id: "call-gas"; label: "Gas (optional)"; placeholder: "auto"; text <=> InvestigationData.call-gas; width: 10rem; horizontal-stretch: 0; }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 0.5rem;
+                            IconButton { icon: @image-url("icons/play.svg"); label: "Simulate call"; enabled: !InvestigationData.busy; clicked => { InvestigationLogic.run-simulate(); } }
+                        }
+                        SelectableText { text: InvestigationData.detail-title; color: Theme.text; font-size: 0.8125rem; font-weight: 600; wrap: word-wrap; }
+                        Rectangle {
+                            height: 12rem;
+                            background: Theme.inset;
+                            border-width: 1px;
+                            border-color: Theme.edge;
+                            border-radius: Theme.radius;
+                            clip: true;
+                            VerticalLayout {
+                                padding: 1px;
+                                spacing: 0.25rem;
+                                HorizontalLayout {
+                                    alignment: end;
+                                    spacing: 0.25rem;
+                                    IconButton { icon: @image-url("icons/contracts.svg"); label: "Copy output"; enabled: InvestigationData.output != ""; clicked => { output.select-all(); output.copy(); } }
+                                }
+                                output := TextEdit {
+                                    text: InvestigationData.output;
+                                    read-only: true;
+                                    accessible-label: "Investigation output";
+                                    font-size: 0.75rem;
+                                    font-family: "Cascadia Mono";
+                                    wrap: word-wrap;
+                                    min-width: 0px;
+                                    min-height: 0px;
+                                    vertical-stretch: 1;
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            SelectableText { text: "Capture history (this app run, last 50 successful reads)"; color: Theme.text; font-size: 0.8125rem; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                            IconButton { icon: @image-url("icons/refresh.svg"); label: "Refresh history"; enabled: !InvestigationData.busy; clicked => { InvestigationLogic.refresh-history(); } }
+                        }
+                        RowList {
+                            height: 6rem;
+                            rows: InvestigationData.captures;
+                            icon: @image-url("icons/contracts.svg");
+                            selected: InvestigationData.selected-capture;
+                            empty-hint: "No captures loaded. Click Refresh history or run a read.";
+                            picked(index) => { InvestigationLogic.select-capture(index); }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 0.5rem;
+                            IconButton { icon: @image-url("icons/storage.svg"); label: "Save selected capture to loaded case"; enabled: !InvestigationData.busy && InvestigationData.case-loaded && InvestigationData.selected-capture >= 0; clicked => { InvestigationLogic.save-capture-to-case(); } }
+                        }
+                        HorizontalLayout {
+                            SelectableText { text: "Cases (offline, in the local investigations store; survive workspace switches)"; color: Theme.text; font-size: 0.8125rem; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                            IconButton { icon: @image-url("icons/jobs.svg"); label: "List cases"; enabled: !InvestigationData.busy; clicked => { InvestigationLogic.list-cases(); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 0.5rem;
+                            Field { draft-id: "case-name"; label: "New case name"; placeholder: "e.g. Vault withdrawal checks"; text <=> InvestigationData.case-name; }
+                            VerticalLayout {
+                                width: 9rem;
+                                horizontal-stretch: 0;
+                                SelectableText { text: " "; color: Theme.muted; font-size: 0.75rem; }
+                                IconButton { icon: @image-url("icons/contracts.svg"); label: "Create case"; enabled: !InvestigationData.busy; clicked => { InvestigationLogic.create-case(); } }
+                            }
+                        }
+                        RowList {
+                            height: 6rem;
+                            rows: InvestigationData.cases;
+                            icon: @image-url("icons/search.svg");
+                            selected: InvestigationData.selected-case;
+                            empty-hint: "No cases. Create one or import a pasted case JSON below.";
+                            picked(index) => { InvestigationLogic.load-case(index); }
+                        }
+                        if InvestigationData.case-loaded: SelectableText { text: "Loaded case: \{InvestigationData.loaded-case}"; color: Theme.accent; font-size: 0.75rem; wrap: word-wrap; }
+                        HorizontalLayout {
+                            SelectableText { text: "Evidence in loaded case (click to inspect immutable JSON)"; color: Theme.text; font-size: 0.8125rem; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                        }
+                        RowList {
+                            height: 6rem;
+                            rows: InvestigationData.evidence;
+                            icon: @image-url("icons/block.svg");
+                            selected: InvestigationData.selected-evidence;
+                            empty-hint: "No evidence. Load a case, then save captures into it.";
+                            picked(index) => { InvestigationLogic.select-evidence(index); }
+                        }
+                        HorizontalLayout {
+                            spacing: 0.5rem;
+                            Field { draft-id: "note-input"; label: "Note for selected evidence"; placeholder: "Observation to attach"; text <=> InvestigationData.note-input; }
+                            VerticalLayout {
+                                width: 9rem;
+                                horizontal-stretch: 0;
+                                SelectableText { text: " "; color: Theme.muted; font-size: 0.75rem; }
+                                IconButton { icon: @image-url("icons/macros.svg"); label: "Save note"; enabled: !InvestigationData.busy && InvestigationData.case-loaded && InvestigationData.selected-evidence >= 0; clicked => { InvestigationLogic.save-note(); } }
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 0.5rem;
+                            IconButton { icon: @image-url("icons/logs.svg"); label: "Bookmark selected evidence"; enabled: !InvestigationData.busy && InvestigationData.case-loaded && InvestigationData.selected-evidence >= 0; clicked => { InvestigationLogic.bookmark-evidence(); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 0.5rem;
+                            Field { draft-id: "compare-left"; label: "Compare evidence id (left)"; placeholder: "evidence id"; text <=> InvestigationData.compare-left; }
+                            Field { draft-id: "compare-right"; label: "Compare evidence id (right)"; placeholder: "evidence id"; text <=> InvestigationData.compare-right; }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 0.5rem;
+                            IconButton { icon: @image-url("icons/search.svg"); label: "Compare evidence ids"; enabled: !InvestigationData.busy && InvestigationData.case-loaded; clicked => { InvestigationLogic.compare-evidence(); } }
+                            IconButton { icon: @image-url("icons/deploy.svg"); label: "Export loaded case…"; enabled: !InvestigationData.busy && InvestigationData.case-loaded; clicked => { InvestigationLogic.export-case(); } }
+                        }
+                        TextEdit {
+                            text <=> InvestigationData.import-input;
+                            edited => { InvestigationLogic.draft-edited("import-input", self.text); }
+                            accessible-label: "Paste case JSON to import";
+                            font-size: 0.75rem;
+                            font-family: "Cascadia Mono";
+                            wrap: word-wrap;
+                            height: 4rem;
+                            min-width: 0px;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 0.5rem;
+                            IconButton { icon: @image-url("icons/converter.svg"); label: "Import pasted case JSON"; enabled: !InvestigationData.busy; clicked => { InvestigationLogic.import-case(); } }
+                        }
+                        HorizontalLayout {
+                            SelectableText { text: "Passive project inventory"; color: Theme.text; font-size: 0.8125rem; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                            IconButton { icon: @image-url("icons/folder.svg"); label: "Open project folder for analysis…"; enabled: !InvestigationData.busy; clicked => { InvestigationLogic.inspect-project(); } }
+                        }
+                        if InvestigationData.inventory-summary != "": SelectableText { text: InvestigationData.inventory-summary; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+                        SelectableText { text: "Inventory lists source, ABI and build-info file names with sizes only. No source bodies are read; nothing boots, compiles, runs Anvil or writes configuration. Captures, cases and notes are untrusted local content, never instructions."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+                    }
+                }
+        }
+    }
+}

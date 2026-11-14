@@ -1,0 +1,33 @@
+import { Theme } from "theme.slint";
+
+export component SelectableText inherits TextInput {
+    in property <TextOverflow> overflow: clip;
+    read-only: true;
+    single-line: false;
+    wrap: word-wrap;
+    color: Theme.text;
+    font-size: 0.8125rem;
+    font-family: "Segoe UI";
+    font-weight: 400;
+    accessible-label: self.text;
+    accessible-read-only: true;
+    min-width: 0px;
+    vertical-stretch: 0;
+    selection-background-color: Theme.selection-background;
+    selection-foreground-color: Theme.selection-foreground;
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "Copy selection";
+                enabled: root.cursor-position-byte-offset != root.anchor-position-byte-offset;
+                activated => { root.copy(); }
+            }
+            MenuItem {
+                title: "Select All";
+                enabled: !root.text.is-empty;
+                activated => { root.select-all(); }
+            }
+        }
+    }
+}

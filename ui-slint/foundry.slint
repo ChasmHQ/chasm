@@ -1,0 +1,114 @@
+import { ListView, ScrollView, TextEdit } from "std-widgets.slint";
+import { ActionControl, SideRow, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct FoundryArtifactRow {
+    id: string,
+    name: string,
+    source: string,
+    status: string,
+    detail: string,
+}
+
+export global FoundryData {
+    in property <string> phase;
+    in property <string> message;
+    in property <string> digest;
+    in property <string> review-generation;
+    in property <string> profile;
+    in property <string> trust-warning;
+    in property <string> source-summary;
+    in property <string> report-summary;
+    in property <string> warnings;
+    in property <string> artifact-json;
+    in property <bool> trusted;
+    in property <bool> can-review;
+    in property <bool> can-confirm;
+    in property <bool> can-build;
+    in property <bool> can-cancel;
+    in property <[FoundryArtifactRow]> artifacts;
+}
+
+export global FoundryLogic {
+    callback review();
+    callback confirm-trust();
+    callback build();
+    callback cancel();
+}
+
+component FoundryButton inherits ActionControl {
+    height: max(2.75rem, Theme.control-height);
+    min-width: content.min-width;
+    preferred-width: content.preferred-width;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: Theme.radius;
+    content := HorizontalLayout {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+        Text {
+            text: root.label;
+            color: !root.enabled ? Theme.faint : root.primary ? Theme.accent-ink : Theme.text;
+            font-size: 0.8125rem;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component FoundryWorkspace inherits ScrollView {
+    min-width: 0px;
+    min-height: 0px;
+    content-width: self.visible-width;
+    horizontal-scrollbar-policy: always-off;
+    VerticalLayout {
+        padding: Theme.pad;
+        spacing: 0.75rem;
+        alignment: start;
+        SelectableText { text: "Trusted Foundry Build"; color: Theme.text; font-size: 1rem; font-weight: 600; }
+        SelectableText {
+            text: "Review first. Build runs local Forge and solc with your user permissions in offline mode; it is not a sandbox.";
+            color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap;
+        }
+        FlexboxLayout {
+            spacing: 0.375rem;
+            FoundryButton { label: "Review profile"; enabled: FoundryData.can-review; clicked => { FoundryLogic.review(); } }
+            FoundryButton { label: "Confirm local trust"; enabled: FoundryData.can-confirm; clicked => { FoundryLogic.confirm-trust(); } }
+            FoundryButton { label: "Build reviewed digest"; primary: true; enabled: FoundryData.can-build; clicked => { FoundryLogic.build(); } }
+            FoundryButton { label: "Cancel"; enabled: FoundryData.can-cancel; clicked => { FoundryLogic.cancel(); } }
+        }
+        SelectableText { text: "Phase: " + (FoundryData.phase == "" ? "Idle" : FoundryData.phase); color: Theme.text; font-size: 0.8125rem; }
+        if FoundryData.message != "": SelectableText { text: FoundryData.message; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
+        if FoundryData.digest != "": SelectableText { text: "Review " + FoundryData.review-generation + " digest: \{FoundryData.digest}"; color: Theme.accent; font-family: "Cascadia Mono"; font-size: 0.75rem; wrap: word-wrap; }
+        if FoundryData.profile != "": VerticalLayout {
+            spacing: 0.375rem;
+            SelectableText { text: "Effective profile"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
+            TextEdit { text: FoundryData.profile; read-only: true; font-family: "Cascadia Mono"; font-size: 0.75rem; wrap: word-wrap; height: 13rem; min-width: 0px; }
+            SelectableText { text: FoundryData.source-summary; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+            SelectableText { text: FoundryData.trust-warning; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; }
+        }
+        if FoundryData.report-summary != "": VerticalLayout {
+            spacing: 0.375rem;
+            Rectangle { height: 1px; background: Theme.line; }
+            SelectableText { text: "Build result"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
+            SelectableText { text: FoundryData.report-summary; color: Theme.text; font-size: 0.8125rem; wrap: word-wrap; }
+            if FoundryData.warnings != "": TextEdit { text: FoundryData.warnings; read-only: true; font-family: "Cascadia Mono"; font-size: 0.75rem; wrap: word-wrap; height: 8rem; min-width: 0px; }
+            SelectableText { text: "Artifacts"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
+            TextEdit { text: FoundryData.artifact-json; read-only: true; accessible-label: "Foundry artifact identities"; font-family: "Cascadia Mono"; font-size: 0.7rem; wrap: word-wrap; height: 7rem; min-width: 0px; }
+            if FoundryData.artifacts.length == 0: SelectableText { text: "No artifacts reported."; color: Theme.muted; font-size: 0.75rem; }
+            if FoundryData.artifacts.length > 0: Rectangle {
+                height: min(max(Theme.row-height, FoundryData.artifacts.length * Theme.row-height), 12rem);
+                min-width: 0px;
+                background: Theme.inset;
+                border-width: 1px;
+                border-color: Theme.edge;
+                ListView {
+                    for item in FoundryData.artifacts: SideRow {
+                        icon: @image-url("icons/contracts.svg");
+                        label: item.name;
+                        trailing: item.status;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,404 @@
+import { LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
+import { DockTab, IconButton, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct CodeRow { position: string, text: string, current: bool }
+
+export global DebugData {
+    in-out property <int> launch-mode: 0;
+    in-out property <string> foundry-target;
+    in-out property <string> foundry-match;
+    in-out property <bool> foundry-trusted: false;
+    in-out property <string> capture-id;
+    in-out property <string> build-info-id;
+    in property <string> launch-summary;
+    in property <string> phase;
+    in property <string> status;
+    in property <string> location;
+    in property <string> baseline;
+    in property <string> outcome;
+    in property <string> completion;
+    in property <string> divergence;
+    in property <string> notice;
+    in property <string> capability-reason;
+    in property <string> code-title;
+    in property <string> frames-text;
+    in property <string> locals-text;
+    in property <string> arguments-text;
+    in property <string> inspect-text;
+    in property <string> stack-text;
+    in property <string> memory-text;
+    in property <string> storage-text;
+    in property <string> calldata-text;
+    in property <string> logs-text;
+    in property <string> gas-text;
+    in property <string> diff-text;
+    in property <string> result-text;
+    in property <bool> can-start;
+    in property <bool> can-command;
+    in property <bool> can-cancel;
+    in property <bool> can-refresh;
+    in property <int> current-code-index: -1;
+    in property <int> code-revision;
+    in property <bool> has-snapshot;
+    in property <bool> source-available;
+    in property <bool> solidity-available;
+    in property <bool> restart-available;
+    in property <int> code-mode;
+    in property <int> inspector-tab;
+    in property <int> inspect-tab;
+    in-out property <int> workspace-tab: 0;
+    in-out property <bool> show-dock: false;
+    in property <[CodeRow]> code-rows;
+    in-out property <string> run-to;
+    in-out property <string> evaluate-input;
+    in-out property <string> memory-offset;
+    in-out property <string> storage-slots;
+    in-out property <string> source-start;
+    in-out property <string> around-pc;
+}
+
+export global DebugLogic {
+    callback start();
+    callback launch-edited();
+    callback navigate(string);
+    callback cancel();
+    callback refresh();
+    callback code-mode(int);
+    callback inspector-tab(int);
+    callback inspect-tab(int);
+    callback draft-edited(string, string);
+    callback run-to();
+    callback evaluate();
+    callback read-window();
+}
+
+component DebugField inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> draft-id;
+    in property <bool> enabled: true;
+    in-out property <string> text;
+    spacing: 0.375rem;
+    SelectableText { text: root.label; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; wrap: no-wrap; }
+    Rectangle {
+        min-width: 4rem;
+        height: Theme.control-height;
+        horizontal-stretch: 1;
+        input := LineEdit {
+            width: parent.width;
+            height: parent.height;
+            enabled: root.enabled;
+            font-family: "Cascadia Mono";
+            font-size: 0.75rem;
+            accessible-label: root.label;
+            text <=> root.text;
+            edited => { DebugLogic.draft-edited(root.draft-id, self.text); }
+        }
+        Rectangle { border-width: 1px; border-radius: Theme.radius; border-color: input.has-focus ? Theme.accent : Theme.edge; background: transparent; }
+    }
+}
+
+component DebugLaunchField inherits HorizontalLayout {
+    in property <string> label;
+    in property <bool> enabled: true;
+    in-out property <string> text;
+    spacing: 0.375rem;
+    SelectableText { text: root.label; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; wrap: no-wrap; }
+    Rectangle {
+        min-width: 4rem;
+        height: Theme.control-height;
+        horizontal-stretch: 1;
+        input := LineEdit {
+            width: parent.width;
+            height: parent.height;
+            enabled: root.enabled;
+            font-family: "Cascadia Mono";
+            font-size: 0.75rem;
+            accessible-label: root.label;
+            text <=> root.text;
+            edited => { DebugLogic.launch-edited(); }
+        }
+        Rectangle { border-width: 1px; border-radius: Theme.radius; border-color: input.has-focus ? Theme.accent : Theme.edge; background: transparent; }
+    }
+}
+
+component DebugOutput inherits TextEdit {
+    read-only: true;
+    font-family: "Cascadia Mono";
+    font-size: 0.75rem;
+    wrap: no-wrap;
+    min-width: 0px;
+    min-height: 0px;
+    vertical-stretch: 1;
+}
+
+export component DebugCodePane inherits Rectangle {
+    private property <int> code-revision: DebugData.code-revision;
+    changed code-revision => { self.follow-pc(); }
+    changed height => { self.follow-pc(); }
+    function follow-pc() {
+        if DebugData.current-code-index >= 0 {
+            code-list.content-y = -max(0px, DebugData.current-code-index * 1.5rem - code-list.visible-height / 2);
+        }
+    }
+    Timer { interval: 30ms; running: true; triggered => { root.follow-pc(); self.running = false; } }
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.edge;
+    VerticalLayout {
+        padding: 1px;
+        ScrollView {
+            height: Theme.control-height;
+            min-width: 0px;
+            content-width: max(self.visible-width, code-controls.preferred-width);
+            content-height: self.visible-height;
+            vertical-scrollbar-policy: always-off;
+            code-controls := HorizontalLayout {
+                alignment: start;
+                spacing: 0.25rem;
+                DockTab { label: "Source"; selected: DebugData.code-mode == 0; enabled: DebugData.source-available; clicked => { DebugLogic.code-mode(0); } }
+                DockTab { label: "Disassembly"; selected: DebugData.code-mode == 1; clicked => { DebugLogic.code-mode(1); } }
+                if DebugData.code-mode == 0: DebugField { draft-id: "source-start"; width: 12rem; label: "Source start"; enabled: DebugData.can-command; text <=> DebugData.source-start; }
+                if DebugData.code-mode == 1: DebugField { draft-id: "around-pc"; width: 12rem; label: "Around PC"; enabled: DebugData.can-command; text <=> DebugData.around-pc; }
+                IconButton { icon: @image-url("icons/search.svg"); label: "Read window"; enabled: DebugData.has-snapshot && DebugData.can-command; clicked => { DebugLogic.read-window(); } }
+                IconButton { icon: @image-url("icons/search.svg"); label: "Back to PC"; enabled: DebugData.current-code-index >= 0; clicked => { root.follow-pc(); } }
+            }
+        }
+        SelectableText { text: DebugData.code-title; color: Theme.muted; font-size: 0.75rem; wrap: no-wrap; overflow: elide; min-width: 0px; }
+        Rectangle {
+            background: Theme.inset;
+            border-width: 1px;
+            border-color: Theme.edge;
+            clip: true;
+            min-width: 0px;
+            min-height: 0px;
+            vertical-stretch: 1;
+            if DebugData.code-rows.length == 0: SelectableText {
+                x: 0.5rem;
+                y: 0.5rem;
+                width: max(0px, parent.width - 1rem);
+                text: DebugData.has-snapshot ? "No code window reported. Read a source line or PC window." : "No snapshot available. Check debugger status.";
+                color: Theme.muted;
+            }
+            code-list := ListView {
+                min-width: 0px;
+                min-height: 0px;
+                content-width: max(self.visible-width, 80rem);
+                for row in DebugData.code-rows: Rectangle {
+                    height: 1.5rem;
+                    background: row.current ? Theme.selected : Theme.inset;
+                    HorizontalLayout {
+                        spacing: 0.25rem;
+                        SelectableText { width: 1.25rem; horizontal-stretch: 0; text: row.current ? ">" : ""; color: Theme.accent; font-family: "Cascadia Mono"; vertical-alignment: center; horizontal-alignment: center; }
+                        SelectableText { width: 6rem; horizontal-stretch: 0; text: row.position; color: row.current ? Theme.accent : Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; wrap: no-wrap; overflow: elide; }
+                        SelectableText { text: row.text; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; wrap: no-wrap; horizontal-stretch: 1; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component DebugInspectorPane inherits Rectangle {
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.edge;
+    VerticalLayout {
+        padding: 1px;
+        ScrollView {
+            height: Theme.control-height;
+            min-width: 0px;
+            content-width: max(self.visible-width, inspector-controls.preferred-width);
+            content-height: self.visible-height;
+            vertical-scrollbar-policy: always-off;
+            inspector-controls := HorizontalLayout {
+                alignment: start;
+                DockTab { label: "Frames"; selected: DebugData.inspector-tab == 0; clicked => { DebugLogic.inspector-tab(0); } }
+                DockTab { label: "Locals"; selected: DebugData.inspector-tab == 1; clicked => { DebugLogic.inspector-tab(1); } }
+                DockTab { label: "Arguments"; selected: DebugData.inspector-tab == 2; clicked => { DebugLogic.inspector-tab(2); } }
+            }
+        }
+        Rectangle {
+            min-width: 0px; min-height: 0px; vertical-stretch: 1;
+            DebugOutput { visible: DebugData.inspector-tab == 0; width: parent.width; height: parent.height; accessible-label: "Frames"; text: DebugData.frames-text; }
+            DebugOutput { visible: DebugData.inspector-tab == 1; width: parent.width; height: parent.height; accessible-label: "Locals"; text: DebugData.locals-text; }
+            DebugOutput { visible: DebugData.inspector-tab == 2; width: parent.width; height: parent.height; accessible-label: "Arguments"; text: DebugData.arguments-text; }
+        }
+    }
+}
+
+export component DebugInspectionPane inherits Rectangle {
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.edge;
+    VerticalLayout {
+        padding: 1px;
+        ScrollView {
+            height: Theme.control-height;
+            min-width: 0px;
+            content-width: max(self.visible-width, low-controls.preferred-width);
+            content-height: self.visible-height;
+            vertical-scrollbar-policy: always-off;
+            low-controls := HorizontalLayout {
+                alignment: start;
+                DockTab { label: "Stack"; selected: DebugData.inspect-tab == 0; clicked => { DebugLogic.inspect-tab(0); } }
+                DockTab { label: "Memory"; selected: DebugData.inspect-tab == 1; clicked => { DebugLogic.inspect-tab(1); } }
+                DockTab { label: "Storage"; selected: DebugData.inspect-tab == 2; clicked => { DebugLogic.inspect-tab(2); } }
+                DockTab { label: "Calldata"; selected: DebugData.inspect-tab == 3; clicked => { DebugLogic.inspect-tab(3); } }
+                DockTab { label: "Logs"; selected: DebugData.inspect-tab == 4; clicked => { DebugLogic.inspect-tab(4); } }
+                DockTab { label: "Gas"; selected: DebugData.inspect-tab == 5; clicked => { DebugLogic.inspect-tab(5); } }
+                DockTab { label: "Last-stop diff"; selected: DebugData.inspect-tab == 6; clicked => { DebugLogic.inspect-tab(6); } }
+                if DebugData.inspect-tab == 1: DebugField { draft-id: "memory-offset"; width: 13rem; label: "Offset"; enabled: DebugData.can-command; text <=> DebugData.memory-offset; }
+                if DebugData.inspect-tab == 2: DebugField { draft-id: "storage-slots"; width: 13rem; label: "Slots"; enabled: DebugData.can-command; text <=> DebugData.storage-slots; }
+                if DebugData.inspect-tab == 1 || DebugData.inspect-tab == 2: IconButton { icon: @image-url("icons/search.svg"); label: "Read window"; enabled: DebugData.has-snapshot && DebugData.can-command; clicked => { DebugLogic.read-window(); } }
+            }
+        }
+        Rectangle {
+            min-width: 0px; min-height: 0px; vertical-stretch: 1;
+            DebugOutput { visible: DebugData.inspect-tab == 0; width: parent.width; height: parent.height; accessible-label: "Debugger stack"; text: DebugData.stack-text; }
+            DebugOutput { visible: DebugData.inspect-tab == 1; width: parent.width; height: parent.height; accessible-label: "Debugger memory"; text: DebugData.memory-text; }
+            DebugOutput { visible: DebugData.inspect-tab == 2; width: parent.width; height: parent.height; accessible-label: "Debugger storage"; text: DebugData.storage-text; }
+            DebugOutput { visible: DebugData.inspect-tab == 3; width: parent.width; height: parent.height; accessible-label: "Debugger calldata"; text: DebugData.calldata-text; }
+            DebugOutput { visible: DebugData.inspect-tab == 4; width: parent.width; height: parent.height; accessible-label: "Debugger logs"; text: DebugData.logs-text; }
+            DebugOutput { visible: DebugData.inspect-tab == 5; width: parent.width; height: parent.height; accessible-label: "Debugger gas"; text: DebugData.gas-text; }
+            DebugOutput { visible: DebugData.inspect-tab == 6; width: parent.width; height: parent.height; accessible-label: "Debugger last-stop diff"; text: DebugData.diff-text; }
+        }
+    }
+}
+
+export component DebugToolbar inherits Rectangle {
+    height: Theme.control-height;
+    min-width: 0px;
+    background: Theme.panel;
+    HorizontalLayout {
+        ScrollView {
+            min-width: 0px;
+            content-width: max(self.visible-width, commands.preferred-width);
+            content-height: self.visible-height;
+            vertical-scrollbar-policy: always-off;
+            commands := HorizontalLayout {
+                alignment: start; spacing: 0.25rem;
+                IconButton { icon: @image-url("icons/play.svg"); label: DebugData.launch-mode == 0 ? "Start synthetic fixture" : DebugData.launch-mode == 1 ? "Start trusted Foundry target" : "Start offline capture"; primary: DebugData.can-start; enabled: DebugData.can-start; clicked => { DebugLogic.start(); } }
+                IconButton { icon: @image-url("icons/play.svg"); label: "Continue"; enabled: DebugData.can-command; clicked => { DebugLogic.navigate("continue"); } }
+                IconButton { icon: @image-url("icons/call.svg"); label: "Step opcode"; enabled: DebugData.can-command; clicked => { DebugLogic.navigate("step_opcode"); } }
+                IconButton { icon: @image-url("icons/call.svg"); label: "Step line"; enabled: DebugData.can-command && DebugData.source-available; clicked => { DebugLogic.navigate("step_line"); } }
+                IconButton { icon: @image-url("icons/call.svg"); label: "Next line"; enabled: DebugData.can-command && DebugData.source-available; clicked => { DebugLogic.navigate("next_line"); } }
+                IconButton { icon: @image-url("icons/call.svg"); label: "Finish"; enabled: DebugData.can-command; clicked => { DebugLogic.navigate("finish"); } }
+                IconButton { icon: @image-url("icons/refresh.svg"); label: "Restart"; enabled: DebugData.restart-available; clicked => { DebugLogic.navigate("restart"); } }
+                IconButton { icon: @image-url("icons/refresh.svg"); label: "Refresh"; enabled: DebugData.can-refresh; clicked => { DebugLogic.refresh(); } }
+            }
+        }
+        IconButton { icon: @image-url("icons/stop.svg"); label: "Cancel worker"; enabled: DebugData.can-cancel; clicked => { DebugLogic.cancel(); } }
+    }
+}
+
+export component DebugEvaluationPane inherits Rectangle {
+    min-width: 0px; min-height: 0px;
+    background: Theme.panel; border-width: 1px; border-color: Theme.edge;
+    VerticalLayout {
+        padding: 1px;
+        HorizontalLayout {
+            spacing: 0.25rem;
+            DebugField { draft-id: "run-to"; label: "Run to"; enabled: DebugData.can-command; text <=> DebugData.run-to; }
+            IconButton { icon: @image-url("icons/play.svg"); label: "Run to"; enabled: DebugData.can-command && DebugData.run-to != ""; clicked => { DebugLogic.run-to(); } }
+        }
+        HorizontalLayout {
+            spacing: 0.25rem;
+            DebugField { draft-id: "evaluate-input"; label: "Evaluate (discard)"; enabled: DebugData.can-command && DebugData.solidity-available; text <=> DebugData.evaluate-input; }
+            IconButton { icon: @image-url("icons/search.svg"); label: "Evaluate"; enabled: DebugData.can-command && DebugData.solidity-available && DebugData.evaluate-input != ""; clicked => { DebugLogic.evaluate(); } }
+        }
+        DebugOutput { accessible-label: "Last command result"; text: DebugData.result-text; placeholder-text: "No command result reported."; }
+    }
+}
+
+export component DebugSessionPane inherits Rectangle {
+    min-width: 0px; min-height: 0px;
+    background: Theme.canvas;
+    VerticalLayout {
+        min-width: 0px; min-height: 0px;
+        SelectableText { text: "\{DebugData.phase}  \{DebugData.status}  \{DebugData.location}"; color: Theme.text; font-size: 0.75rem; wrap: word-wrap; }
+        if DebugData.notice != "" || DebugData.capability-reason != "": SelectableText { text: "\{DebugData.notice}  \{DebugData.capability-reason}"; color: Theme.accent; font-size: 0.75rem; wrap: word-wrap; }
+        HorizontalLayout {
+            alignment: start;
+            DockTab { label: "Session"; selected: DebugData.workspace-tab != 3; clicked => { DebugData.workspace-tab = 4; } }
+            DockTab { label: "Evaluation"; selected: DebugData.workspace-tab == 3; clicked => { DebugData.workspace-tab = 3; } }
+        }
+        if DebugData.workspace-tab == 3: DebugEvaluationPane { vertical-stretch: 1; }
+        if DebugData.workspace-tab != 3: ScrollView {
+            min-width: 0px; min-height: 0px; vertical-stretch: 1;
+            content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+            VerticalLayout {
+                padding: Theme.pad; spacing: 0.75rem; alignment: start;
+                SelectableText { text: "Launch source"; font-weight: 600; }
+                SelectableText { text: "Choose one explicit source before Start. Foundry executes trusted local test code; offline mode uses resources already uploaded to this gateway."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: start; spacing: 0.25rem;
+                    DockTab { label: "Synthetic"; selected: DebugData.launch-mode == 0; enabled: DebugData.can-start; clicked => { DebugData.launch-mode = 0; DebugLogic.launch-edited(); } }
+                    DockTab { label: "Trusted Foundry"; selected: DebugData.launch-mode == 1; enabled: DebugData.can-start; clicked => { DebugData.launch-mode = 1; DebugLogic.launch-edited(); } }
+                    DockTab { label: "Offline capture"; selected: DebugData.launch-mode == 2; enabled: DebugData.can-start; clicked => { DebugData.launch-mode = 2; DebugLogic.launch-edited(); } }
+                }
+                if DebugData.launch-mode == 0: SelectableText { text: "Bundled WorkshopVault fixture. Synthetic evidence only; it is not a replay of the selected project or a chain transaction."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+                if DebugData.launch-mode == 1: VerticalLayout {
+                    spacing: 0.375rem;
+                    DebugLaunchField { label: "Target .sol"; enabled: DebugData.can-start; text <=> DebugData.foundry-target; }
+                    DebugLaunchField { label: "Test match (optional)"; enabled: DebugData.can-start; text <=> DebugData.foundry-match; }
+                    HorizontalLayout {
+                        alignment: start;
+                        IconButton { icon: @image-url("icons/debugger.svg"); label: DebugData.foundry-trusted ? "Trusted for this launch" : "Confirm local code trust"; checkable: true; selected: DebugData.foundry-trusted; enabled: DebugData.can-start; clicked => { DebugData.foundry-trusted = !DebugData.foundry-trusted; DebugLogic.launch-edited(); } }
+                    }
+                }
+                if DebugData.launch-mode == 2: VerticalLayout {
+                    spacing: 0.375rem;
+                    DebugLaunchField { label: "Capture resource ID"; enabled: DebugData.can-start; text <=> DebugData.capture-id; }
+                    DebugLaunchField { label: "Build-info ID (optional)"; enabled: DebugData.can-start; text <=> DebugData.build-info-id; }
+                }
+                if DebugData.launch-summary != "": SelectableText { text: DebugData.launch-summary; color: Theme.accent; font-size: 0.75rem; wrap: word-wrap; }
+                Rectangle { height: 1px; background: Theme.line; }
+                SelectableText { text: "Session identity and validation"; font-weight: 600; }
+                SelectableText { text: "Baseline: \{DebugData.baseline}"; wrap: word-wrap; }
+                SelectableText { text: DebugData.outcome; wrap: word-wrap; }
+                SelectableText { text: DebugData.completion; wrap: word-wrap; }
+                SelectableText { text: DebugData.divergence; wrap: word-wrap; }
+                SelectableText { text: "Offline WorkshopVault is synthetic. Receipt agreement is not consensus proof. Last-stop diff is bounded inspection, not a reverse-execution timeline. Historical replay remains Ethereum mainnet Cancun only; arbitrary Anvil reconstruction is unavailable."; color: Theme.muted; wrap: word-wrap; }
+            }
+        }
+    }
+}
+
+export component DebuggerWorkspace inherits Rectangle {
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.canvas;
+    VerticalLayout {
+        spacing: 2 * Theme.unit;
+        DebugToolbar { }
+        SelectableText { text: "\{DebugData.phase}  \{DebugData.status}  \{DebugData.location}"; color: Theme.text; font-size: 0.75rem; wrap: no-wrap; overflow: elide; min-width: 0px; }
+        if DebugData.notice != "" || DebugData.capability-reason != "": SelectableText { text: "\{DebugData.notice}  \{DebugData.capability-reason}"; color: Theme.accent; font-size: 0.75rem; wrap: no-wrap; overflow: elide; min-width: 0px; }
+        HorizontalLayout {
+            alignment: start;
+            DockTab { label: "Code"; selected: DebugData.workspace-tab == 0; clicked => { DebugData.workspace-tab = 0; } }
+            DockTab { label: "Inspector"; selected: DebugData.workspace-tab == 1; clicked => { DebugData.workspace-tab = 1; } }
+            DockTab { label: "Inspection"; selected: DebugData.workspace-tab == 2; clicked => { DebugData.workspace-tab = 2; } }
+            DockTab { label: "Evaluation"; selected: DebugData.workspace-tab == 3; clicked => { DebugData.workspace-tab = 3; } }
+            DockTab { label: "Session"; selected: DebugData.workspace-tab == 4; clicked => { DebugData.workspace-tab = 4; } }
+            Rectangle { horizontal-stretch: 1; }
+            DockTab { label: "Log dock"; selected: DebugData.show-dock; clicked => { DebugData.show-dock = !DebugData.show-dock; } }
+        }
+        Rectangle {
+            min-width: 0px;
+            min-height: 0px;
+            vertical-stretch: 1;
+            DebugCodePane { visible: DebugData.workspace-tab == 0; width: parent.width; height: parent.height; }
+            DebugInspectorPane { visible: DebugData.workspace-tab == 1; width: parent.width; height: parent.height; }
+            DebugInspectionPane { visible: DebugData.workspace-tab == 2; width: parent.width; height: parent.height; }
+            DebugSessionPane { visible: DebugData.workspace-tab == 4; width: parent.width; height: parent.height; }
+            DebugEvaluationPane { visible: DebugData.workspace-tab == 3; width: parent.width; height: parent.height; }
+        }
+    }
+}

@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { formatUnits } from "viem";
 import { clsx } from "clsx";
-import { ChevronUp, ChevronDown, Activity, Loader2 } from "lucide-react";
+import { ChevronUp, ChevronDown, Activity, Bug, Loader2 } from "lucide-react";
 import Editor from "react-simple-code-editor";
 import { highlight, languages } from "prismjs";
 import "prismjs/components/prism-json";
@@ -50,6 +50,7 @@ export function UnitDisplay({ value }: UnitDisplayProps) {
 interface TransactionViewerProps {
   data: any;
   onTrace?: (hash: string) => void;
+  onDebugLocally?: (hash: string) => void;
   isLoadingTrace?: boolean;
   traceData?: string | null;
   className?: string;
@@ -71,6 +72,7 @@ const COMMON_KEYS = [
 export function TransactionViewer({
   data,
   onTrace,
+  onDebugLocally,
   isLoadingTrace = false,
   traceData,
   className,
@@ -192,6 +194,7 @@ export function TransactionViewer({
           <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
             Transaction Details
           </h3>
+          {txHash && onDebugLocally && <button onClick={() => onDebugLocally(String(txHash))} className="flex items-center gap-1 rounded border border-indigo-900/60 bg-indigo-950/30 px-2 py-1 text-[10px] text-indigo-300 hover:bg-indigo-900/40"><Bug size={12} /> Debug locally</button>}
           {txHash && onTrace && (
             <button
               onClick={() => {

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import type { DebuggerLaunchIntent } from '../types/debugger'
 import { TransactionViewer } from './TransactionViewer'
 import { clsx } from 'clsx'
 import type { PublicClient, Block, Transaction } from 'viem'
@@ -7,6 +8,9 @@ import { Search, Box, ArrowRightLeft, FileText, Hash, Clock, Layers, ArrowLeft }
 
 export interface ExplorerProps {
     publicClient: PublicClient;
+    onDebugLocally?: (intent: DebuggerLaunchIntent) => void;
+    debuggerChainId?: number;
+    debuggerProviderId?: string;
     rpcUrl: string;
     txModes: Record<string, 'live' | 'local'>;
     onRemoveRecentTx: (hash: string) => void;
@@ -25,7 +29,8 @@ type SearchResult =
 
 
 
-export function Explorer({ publicClient, rpcUrl, txModes, onRemoveRecentTx, blockModes, onRemoveRecentBlock, onLog, recentBlocks, recentTransactions }: ExplorerProps) {
+export function Explorer({ publicClient, rpcUrl, txModes, onRemoveRecentTx, blockModes, onRemoveRecentBlock, onLog, recentBlocks, recentTransactions, onDebugLocally, debuggerChainId, debuggerProviderId }: ExplorerProps) {
+    const [debugOrigin, setDebugOrigin] = useState<{ chainId?: number; providerId?: string }>({})
     const [query, setQuery] = useState("")
     const [result, setResult] = useState<SearchResult>(null)
     const [loading, setLoading] = useState(false)
@@ -147,6 +152,7 @@ export function Explorer({ publicClient, rpcUrl, txModes, onRemoveRecentTx, bloc
                         receipt = await publicClient.getTransactionReceipt({ hash: searchQuery })
                     } catch {}
                     
+                    setDebugOrigin({ chainId: debuggerChainId, providerId: debuggerProviderId })
                     setResult({ type: 'tx', data: { ...tx, ...receipt } })
                     return
                 } catch {
@@ -289,6 +295,7 @@ export function Explorer({ publicClient, rpcUrl, txModes, onRemoveRecentTx, bloc
                         <div className="bg-slate-900 border border-slate-800 rounded-lg h-[600px] overflow-hidden">
                              <TransactionViewer 
                                 data={result.data}
+                                onDebugLocally={onDebugLocally ? hash => onDebugLocally({ key: crypto.randomUUID(), mode: 'replay', txHash: hash, chainId: debugOrigin.chainId, providerId: debugOrigin.providerId, originLabel: 'Explorer transaction · original provider alias not resolved; choose explicitly', local: debugOrigin.chainId === 31337 }) : undefined}
                                 onTrace={fetchTrace}
                                 isLoadingTrace={loadingTrace}
                                 traceData={traceData}

@@ -6,6 +6,10 @@ use foundry_compilers::{ConfigurableArtifacts, Project, ProjectPathsConfig};
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
+#[cfg(test)]
+#[path = "compiler_tests.rs"]
+mod compiler_tests;
+
 pub struct Compiler {
     project: Project,
     /// Explicit list of .sol files to compile — excludes lib/, node_modules/, etc.
@@ -143,6 +147,39 @@ impl Compiler {
         Ok(Self { project, src_files, root })
     }
 
+    pub fn debug_build_info(&mut self) -> Result<serde_json::Value> {
+        self.project.build_info = true;
+        self.project.offline = true;
+        self.project.update_output_selection(|selection| {
+            *selection = serde_json::from_value(serde_json::json!({
+                "*": {
+                    "": ["ast"],
+                    "*": [
+                        "abi", "storageLayout", "evm.bytecode.object",
+                        "evm.bytecode.sourceMap", "evm.bytecode.linkReferences",
+                        "evm.deployedBytecode.object", "evm.deployedBytecode.sourceMap",
+                        "evm.deployedBytecode.linkReferences",
+                        "evm.deployedBytecode.immutableReferences", "evm.methodIdentifiers"
+                    ]
+                }
+            })).expect("static debugger output selection");
+        });
+        let output = self.project.compile_files(self.src_files.clone())?;
+        if output.has_compiler_errors() {
+            return Err(anyhow::anyhow!("{}", strip_ansi(&output.to_string())));
+        }
+        let infos = &output.output().build_infos;
+        if infos.len() != 1 {
+            return Err(anyhow::anyhow!(
+                "Select an explicit build-info file: workspace produced {} compiler units",
+                infos.len()
+            ));
+        }
+        let mut value = serde_json::to_value(&infos[0])?;
+        value["chasmBuildId"] = serde_json::Value::String(infos[0].id.clone());
+        Ok(value)
+    }
+
     pub fn compile(&self) -> Result<Vec<(String, String, ConfigurableContractArtifact)>> {
         let output = self.project.compile_files(self.src_files.clone())?;
         if output.has_compiler_errors() {
@@ -198,6 +235,10 @@ impl Compiler {
 
         Ok(serde_json::to_string(&msg)?)
     }
+}
+
+pub fn debug_build_info(root: PathBuf, remappings: Vec<String>) -> Result<serde_json::Value> {
+    Compiler::new(root, remappings)?.debug_build_info()
 }
 
 /// Normalize a file path for cross-format comparison:

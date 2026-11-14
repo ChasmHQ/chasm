@@ -1,0 +1,267 @@
+import { LineEdit, TextEdit } from "std-widgets.slint";
+import { ActionControl, DockTab, IconButton, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+import { ContractViewData } from "contract.slint";
+
+export struct PanelRow { id: string, title: string, active: bool }
+export struct ConstructorFieldRow { name: string, kind: string, value: string, hint: string, placeholder: string, error: string }
+export struct DeploymentView {
+    fields: [ConstructorFieldRow], note: string, value-error: string,
+    ready: bool, block-reason: string, busy: bool, value: string, output: string,
+}
+export global PanelData {
+    in property <[PanelRow]> left-tabs;
+    in property <[PanelRow]> center-tabs;
+    in property <[PanelRow]> right-tabs;
+    in property <[PanelRow]> bottom-tabs;
+    in property <string> left-active;
+    in property <string> center-active;
+    in property <string> right-active;
+    in property <string> bottom-active;
+    in property <int> left-kind: -1;
+    in property <int> center-kind: -1;
+    in property <int> right-kind: -1;
+    in property <int> bottom-kind: -1;
+    in property <int> left-active-index;
+    in property <int> center-active-index;
+    in property <int> right-active-index;
+    in property <int> bottom-active-index;
+    in property <string> left-title;
+    in property <string> center-title;
+    in property <string> right-title;
+    in property <string> bottom-title;
+    in property <string> left-owner;
+    in property <string> center-owner;
+    in property <string> right-owner;
+    in property <string> bottom-owner;
+    in property <ContractViewData> left-contract;
+    in property <ContractViewData> center-contract;
+    in property <ContractViewData> right-contract;
+    in property <ContractViewData> bottom-contract;
+    in property <ContractViewData> contract-view;
+    in property <DeploymentView> left-deployment;
+    in property <DeploymentView> center-deployment;
+    in property <DeploymentView> right-deployment;
+    in property <DeploymentView> bottom-deployment;
+    in property <DeploymentView> deployment-view;
+    in property <int> left-document-kind;
+    in property <int> center-document-kind;
+    in property <int> right-document-kind;
+    in property <int> bottom-document-kind;
+    in property <string> left-document-title;
+    in property <string> center-document-title;
+    in property <string> right-document-title;
+    in property <string> bottom-document-title;
+    in property <string> left-document-body;
+    in property <string> center-document-body;
+    in property <string> right-document-body;
+    in property <string> bottom-document-body;
+    in property <int> document-kind;
+    in property <string> document-title;
+    in property <string> document-body;
+    in property <string> maximized;
+    in property <float> left-width: 250;
+    in property <float> right-width: 340;
+    in property <float> bottom-height: 140;
+    in property <float> bottom-limit: 200;
+    in property <bool> left-visible: false;
+    in property <bool> center-visible: false;
+    in property <bool> right-visible: false;
+    in property <bool> bottom-visible: false;
+    in property <bool> blocked: false;
+    in property <bool> navigation-detached: false;
+    in property <bool> document-detached: false;
+    in property <bool> result-detached: false;
+    in property <bool> storage-detached: false;
+    in property <bool> debug-code-detached: false;
+    in property <bool> debug-inspector-detached: false;
+    in property <bool> debug-inspection-detached: false;
+    in property <bool> console-detached: false;
+    in property <bool> logs-detached: false;
+    in property <bool> jobs-detached: false;
+    in property <string> pane-title;
+    in property <string> pane-id;
+    in property <string> text;
+    in property <string> console-text;
+    in-out property <string> console-input;
+    in property <float> console-scroll-y: 0;
+    in property <bool> console-follow: true;
+    in-out property <string> drag-pane;
+    in-out property <length> drag-start-x;
+    in-out property <length> drag-start-y;
+    in-out property <length> drag-x;
+    in-out property <length> drag-y;
+    in-out property <bool> dragging;
+}
+export global PanelLogic {
+    callback float(string);
+    callback dock(string, int);
+    callback hide(string);
+    callback select(string, int);
+    callback move(string, int, int);
+    callback constructor-edited(string, int, string);
+    callback reset-constructor(string);
+    callback deployment-value-edited(string, string);
+    callback deploy-contract(string);
+    callback maximize(string);
+    callback resize(int, float);
+    callback viewport-changed();
+    callback preset(int);
+    callback reset();
+    callback console-submit(string);
+    callback console-input-edited(string);
+    callback console-history(int);
+    callback console-complete();
+    callback console-scroll(float);
+    callback console-follow(bool);
+    callback drag-drop(string, length, length);
+}
+
+export component PanelDragHandle inherits Rectangle {
+    in property <string> pane-id;
+    in property <string> label;
+    in property <bool> draggable: true;
+    callback clicked();
+    min-width: 0px;
+    background: PanelData.dragging && PanelData.drag-pane == root.pane-id ? Theme.selected : transparent;
+    Text { text: root.label; color: Theme.text; font-size: 0.75rem; font-weight: 600; vertical-alignment: center; overflow: elide; accessible-role: none; }
+    touch := TouchArea {
+        enabled: root.draggable && !PanelData.blocked;
+        mouse-cursor: move;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                PanelData.drag-pane = root.pane-id;
+                PanelData.drag-start-x = self.absolute-position.x + self.mouse-x;
+                PanelData.drag-start-y = self.absolute-position.y + self.mouse-y;
+                PanelData.drag-x = PanelData.drag-start-x;
+                PanelData.drag-y = PanelData.drag-start-y;
+                PanelData.dragging = false;
+            }
+            if event.kind == PointerEventKind.move && self.pressed && PanelData.drag-pane == root.pane-id {
+                PanelData.drag-x = self.absolute-position.x + self.mouse-x;
+                PanelData.drag-y = self.absolute-position.y + self.mouse-y;
+                if (PanelData.drag-x - PanelData.drag-start-x > 6 * Theme.unit) || (PanelData.drag-start-x - PanelData.drag-x > 6 * Theme.unit) || (PanelData.drag-y - PanelData.drag-start-y > 6 * Theme.unit) || (PanelData.drag-start-y - PanelData.drag-y > 6 * Theme.unit) { PanelData.dragging = true; }
+            }
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.left && PanelData.drag-pane == root.pane-id {
+                if PanelData.dragging {
+                    PanelData.drag-x = self.absolute-position.x + self.mouse-x;
+                    PanelData.drag-y = self.absolute-position.y + self.mouse-y;
+                    PanelLogic.drag-drop(root.pane-id, PanelData.drag-x, PanelData.drag-y);
+                } else { root.clicked(); }
+                PanelData.dragging = false;
+                PanelData.drag-pane = "";
+            }
+            if event.kind == PointerEventKind.cancel { PanelData.dragging = false; PanelData.drag-pane = ""; }
+        }
+    }
+}
+
+export component PanelHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> pane-id;
+    in property <bool> floating: false;
+    in property <int> zone: 1;
+    in property <int> tab-index: 0;
+    in property <int> tab-count: 1;
+    height: Theme.tab-height;
+    min-width: 0px;
+    background: Theme.panel;
+    HorizontalLayout {
+        spacing: 0.25rem;
+        PanelDragHandle { label: root.title; pane-id: root.pane-id; draggable: !root.floating; horizontal-stretch: 1; }
+        IconButton { icon: @image-url("icons/workspace.svg"); icon-only: true; label: root.floating ? "Dock panel" : "Undock panel"; clicked => { if root.floating { PanelLogic.dock(root.pane-id, -1); } else { PanelLogic.float(root.pane-id); } } }
+        position-button := IconButton { icon: @image-url("icons/chevron-right.svg"); icon-only: true; label: "Panel position"; clicked => { positions.show(); } }
+        IconButton { icon: @image-url("icons/stop.svg"); icon-only: true; label: "Hide panel"; clicked => { PanelLogic.hide(root.pane-id); } }
+    }
+    positions := PopupWindow {
+        x: max(0px, position-button.x + position-button.width - self.width);
+        y: position-button.y + position-button.height;
+        width: 14rem;
+        VerticalLayout {
+            padding: 0.25rem;
+            Rectangle { background: Theme.panel; VerticalLayout {
+                DockTab { label: "Dock left"; clicked => { PanelLogic.dock(root.pane-id, 0); positions.close(); } }
+                DockTab { label: "Dock center"; clicked => { PanelLogic.dock(root.pane-id, 1); positions.close(); } }
+                DockTab { label: "Dock right"; clicked => { PanelLogic.dock(root.pane-id, 2); positions.close(); } }
+                DockTab { label: "Dock bottom"; clicked => { PanelLogic.dock(root.pane-id, 3); positions.close(); } }
+                if !root.floating: DockTab { label: "Move tab earlier"; enabled: root.tab-index > 0; clicked => { PanelLogic.move(root.pane-id, root.zone, root.tab-index - 1); positions.close(); } }
+                if !root.floating: DockTab { label: "Move tab later"; enabled: root.tab-index + 1 < root.tab-count; clicked => { PanelLogic.move(root.pane-id, root.zone, root.tab-index + 1); positions.close(); } }
+                if !root.floating: DockTab { label: "Maximize / restore panel"; clicked => { PanelLogic.maximize(root.pane-id); positions.close(); } }
+            } }
+        }
+    }
+}
+
+export component Splitter inherits Rectangle {
+    in property <bool> horizontal: false;
+    in property <int> zone: 2;
+    in property <float> extent;
+    private property <float> initial;
+    private property <length> origin;
+    background: touch.has-hover || touch.pressed ? Theme.edge : Theme.line;
+    forward-focus: keyboard;
+    touch := TouchArea {
+        mouse-cursor: root.horizontal ? ns-resize : ew-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.initial = root.extent;
+                root.origin = root.horizontal ? self.absolute-position.y + self.mouse-y : self.absolute-position.x + self.mouse-x;
+                keyboard.focus();
+            }
+        }
+        moved => {
+            if self.pressed {
+                if root.horizontal { PanelLogic.resize(root.zone, root.initial - (self.absolute-position.y + self.mouse-y - root.origin) / (1px * Theme.zoom)); }
+                else { PanelLogic.resize(root.zone, root.initial + (root.zone == 0 ? 1 : -1) * (self.absolute-position.x + self.mouse-x - root.origin) / (1px * Theme.zoom)); }
+            }
+        }
+    }
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow || event.text == Key.UpArrow { PanelLogic.resize(root.zone, root.extent + (root.zone == 0 ? -20 : 20)); return accept; }
+            if event.text == Key.RightArrow || event.text == Key.DownArrow { PanelLogic.resize(root.zone, root.extent + (root.zone == 0 ? 20 : -20)); return accept; }
+            return reject;
+        }
+    }
+}
+
+export component ConsoleView inherits Rectangle {
+    min-width: 0px; min-height: 0px;
+    background: Theme.inset;
+    VerticalLayout {
+        min-width: 0px;
+        HorizontalLayout {
+            height: Theme.control-height;
+            spacing: 0.25rem;
+            SelectableText { text: "Debugger console (not a shell)"; color: Theme.muted; font-size: 0.75rem; min-width: 0px; horizontal-stretch: 1; wrap: no-wrap; overflow: elide; vertical-alignment: center; }
+            DockTab { label: PanelData.console-follow ? "Follow: on" : "Follow: off"; selected: PanelData.console-follow; clicked => { PanelLogic.console-follow(!PanelData.console-follow); } }
+            DockTab { label: "Copy"; clicked => { transcript.select-all(); transcript.copy(); } }
+        }
+        transcript := TextEdit {
+            text: PanelData.console-text;
+            read-only: true;
+            font-family: "Cascadia Mono";
+            font-size: 0.75rem;
+            wrap: word-wrap;
+            accessible-label: "Debugger console transcript";
+            min-width: 0px; min-height: 0px; vertical-stretch: 1;
+            content-y: PanelData.console-follow ? min(0px, self.visible-height - self.content-height) : PanelData.console-scroll-y * Theme.unit;
+            changed content-y => {
+                if !PanelData.console-follow && self.content-y != PanelData.console-scroll-y * Theme.unit {
+                    PanelLogic.console-scroll(min(0, self.content-y / Theme.unit));
+                }
+            }
+        }
+        FocusScope {
+            height: Theme.control-height;
+            forward-focus: prompt;
+            capture-key-pressed(event) => {
+                if event.text == Key.UpArrow && !event.modifiers.shift { PanelLogic.console-history(-1); return accept; }
+                if event.text == Key.DownArrow && !event.modifiers.shift { PanelLogic.console-history(1); return accept; }
+                if event.modifiers.control && (event.text == " " || event.text == Key.Space) { PanelLogic.console-complete(); return accept; }
+                return reject;
+            }
+            prompt := LineEdit { width: parent.width; height: parent.height; text <=> PanelData.console-input; enabled: !PanelData.blocked; font-family: "Cascadia Mono"; font-size: 0.8125rem; placeholder-text: "(chasm) help"; accessible-label: "Debugger console command"; edited => { PanelLogic.console-input-edited(self.text); } accepted => { PanelLogic.console-submit(self.text); } }
+        }
+    }
+}

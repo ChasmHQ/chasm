@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import {
   Play,
+  Bug,
   Loader2,
   ChevronDown,
   ChevronUp,
@@ -9,6 +10,7 @@ import {
   Link,
 } from "lucide-react";
 import { clsx } from "clsx";
+import type { DebuggerLaunchIntent } from '../types/debugger';
 import type { PublicClient, WalletClient, Address, Hex, TestClient } from "viem";
 import {
   formatEther,
@@ -29,6 +31,9 @@ import "prismjs/components/prism-clike";
 
 interface RequestTabProps {
   type: "deploy" | "function";
+  onDebugLocally?: (intent: DebuggerLaunchIntent) => void;
+  debuggerChainId?: number;
+  debuggerProviderId?: string;
   contractName: string;
   abiItem?: any;
   bytecode?: string;
@@ -118,6 +123,9 @@ export function RequestTab({
   onSnapshotCreated,
   onSnapshotUpdated,
   snapshotsCount = 0,
+  onDebugLocally,
+  debuggerChainId,
+  debuggerProviderId,
 }: RequestTabProps) {
   // Form State
   const [inputs, setInputs] = useState<Record<number, string | string[]>>({});
@@ -141,6 +149,7 @@ export function RequestTab({
   const lastExecutionHadErrorRef = useRef(false);
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
   const [lastCallParams, setLastCallParams] = useState<any>(null);
+  const debuggerOriginRef = useRef<{ chainId?: number; providerId?: string; local: boolean; call?: DebuggerLaunchIntent['call'] } | null>(null);
   const [traceHint, setTraceHint] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"pretty" | "raw" | "trace">(
     "pretty",
@@ -445,6 +454,20 @@ export function RequestTab({
       }
       return buildCallParams();
     })();
+    // Save immutable execution context before any asynchronous send/simulation.
+    // Only supported calldata fields and a provider alias are retained, not URLs.
+    debuggerOriginRef.current = {
+      chainId: globalMode === 'local' ? 31337 : debuggerChainId,
+      providerId: debuggerProviderId,
+      local: globalMode === 'local' || debuggerChainId === 31337,
+      call: callParamsSnapshot ? {
+        to: callParamsSnapshot.to ? String(callParamsSnapshot.to) : undefined,
+        caller: callParamsSnapshot.from ? String(callParamsSnapshot.from) : undefined,
+        data: String(callParamsSnapshot.data || '0x'),
+        value: String(callParamsSnapshot.value || '0'),
+        gas: callParamsSnapshot.gas ? String(callParamsSnapshot.gas) : undefined,
+      } : undefined,
+    };
     setLoading(true);
     setError(null);
     setResponse(null);
@@ -1257,6 +1280,17 @@ export function RequestTab({
             <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
               Response
             </h3>
+            {onDebugLocally && <button
+              className="flex items-center gap-1 rounded border border-indigo-900/60 bg-indigo-950/30 px-2 py-1 text-[10px] text-indigo-300 hover:bg-indigo-900/40 disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={loading || !debuggerOriginRef.current || !(response?.transactionHash || response?.hash || lastTxHash || lastCallParams)}
+              title="Copy the saved execution into the local debugger launch form; never sends a transaction"
+              onClick={() => {
+                const origin = debuggerOriginRef.current;
+                if (!origin) return;
+                const hash = response?.transactionHash || response?.hash || lastTxHash;
+                onDebugLocally({ key: crypto.randomUUID(), mode: hash ? 'replay' : 'fork', txHash: hash ? String(hash) : undefined, chainId: origin.chainId, providerId: origin.providerId, local: origin.local, call: origin.call ? { ...origin.call } : undefined, originLabel: 'Saved request execution · select configured provider alias explicitly' });
+              }}
+            ><Bug size={12} /> Debug locally</button>}
           </div>
           {!error ? (
             <div className="flex bg-slate-800 rounded p-0.5">

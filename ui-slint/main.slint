@@ -1,0 +1,1235 @@
+import { ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { ActionControl, CloseButton, DocTabChip, DockTab, IconButton, MenuRow, MenuTitle, RailIcon, SideHeader, SideRow, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+import { AutomationData, AutomationLogic, AutomationPanel } from "automation.slint";
+export { AutomationData, AutomationLogic, AutomationClient } from "automation.slint";
+import { InvestigationData, InvestigationLogic, InvestigationPanel } from "investigation.slint";
+export { InvestigationData, InvestigationLogic, InvestigationRow } from "investigation.slint";
+import { MacroWorkspace } from "macro.slint";
+export { MacroData, MacroLogic, MacroRow, MacroStep, MacroResult, MacroWorkspace } from "macro.slint";
+import { FoundryWorkspace } from "foundry.slint";
+export { FoundryData, FoundryLogic, FoundryArtifactRow, FoundryWorkspace } from "foundry.slint";
+import { DebugData, DebugLogic, DebugToolbar, DebugCodePane, DebugInspectorPane, DebugInspectionPane, DebugSessionPane } from "debugger.slint";
+export { DebugData, DebugLogic, CodeRow } from "debugger.slint";
+import { ContractData, ContractLogic, ContractViewData, ContractWorkspace, ContractResult, ContractStorage } from "contract.slint";
+export { ContractData, ContractLogic, ContractFunction, ContractViewData } from "contract.slint";
+import { PanelData, PanelLogic, PanelHeader, PanelDragHandle, Splitter, ConsoleView, PanelRow, ConstructorFieldRow, DeploymentView } from "panels.slint";
+export { PanelData, PanelLogic, PanelRow, ConstructorFieldRow, DeploymentView } from "panels.slint";
+export { Theme } from "theme.slint";
+
+export struct ContractRow { name: string, kind: string }
+export struct FunctionRow { name: string, inputs: string, mutability: string }
+export struct InputRow { name: string, kind: string }
+export struct DocTab { title: string, kind: int }
+export struct LogLine { text: string }
+export struct JobRow { id: string, name: string, status: string }
+export struct DeploymentRow { name: string, address: string }
+export struct TextRow { text: string }
+export struct ChainItem { title: string, detail: string, query: string }
+
+export global AppData {
+    in property <int> activity: 0;
+    in property <float> sidebar-width: 250;
+    in property <bool> sidebar-collapsed: false;
+    in property <string> call-status;
+    in property <string> storage-status;
+    in property <string> explorer-status;
+    in property <string> job-output;
+    in property <int> converter-tool: 0;
+    in property <int> converter-mode: 0;
+    in property <[string]> converter-modes;
+    in property <string> converter-hint;
+    in property <string> converter-error;
+    in-out property <string> log-filter;
+    in property <int> menu-open: -1;
+    in property <int> deployment-menu: -1;
+    in property <int> dock-tab: 0;
+    in property <int> doc-kind: 0;
+    in property <int> zoom-percent: 100;
+    in property <string> mode-label;
+    in property <string> chain-label;
+    in property <string> block-label;
+    in property <string> compile-label;
+    in property <string> debugger-label;
+    in property <brush> debugger-tint;
+    in property <string> status-left;
+    in property <string> heading;
+    in property <string> notice;
+    in property <string> workspace-path;
+    in property <bool> workspace-ready: true;
+    in property <bool> startup-screen: false;
+    in property <bool> project-opening: false;
+    in property <string> pending-workspace;
+    in property <bool> workspace-busy: false;
+    in property <bool> folder-picker-busy: false;
+    in property <bool> wallet-busy: false;
+    in property <string> keystore-folder;
+    in property <string> keystore-error;
+    in property <string> pending-keystore-delete;
+    in property <string> pending-keystore-path;
+    in property <bool> show-logs: true;
+    in property <[ContractRow]> contracts;
+    in property <[FunctionRow]> functions;
+    in property <[InputRow]> function-inputs;
+    in property <[DeploymentRow]> deployments;
+    in property <[TextRow]> keystores;
+    in property <[DocTab]> documents;
+    in property <[LogLine]> logs;
+    in property <string> log-text;
+    in property <[JobRow]> jobs;
+    in property <int> active-document: -1;
+    in property <string> selected-contract;
+    in property <int> selected-function: -1;
+    in property <string> selected-name;
+    in property <string> selected-keystore;
+    in property <string> wallet-address;
+    in-out property <string> wallet-password;
+    in-out property <string> keystore-name;
+    in-out property <string> keystore-password;
+    in-out property <string> keystore-confirm;
+    in-out property <string> keystore-import;
+    in-out property <string> address-input;
+    in-out property <string> call-args;
+    in-out property <string> call-value;
+    in property <[ConstructorFieldRow]> constructor-fields;
+    in property <string> constructor-note;
+    in property <string> deployment-value-error;
+    in property <bool> deploy-ready: false;
+    in property <string> deploy-block-reason;
+    in property <bool> deploy-busy: false;
+    in-out property <string> deploy-value: "0";
+    in-out property <string> storage-slot;
+    in-out property <string> converter-input;
+    in-out property <string> explorer-input;
+    in property <string> deploy-output;
+    in property <string> call-output;
+    in property <string> storage-output;
+    in property <string> converter-output;
+    in property <string> explorer-result;
+    in property <[ChainItem]> recent-blocks;
+    in property <[ChainItem]> recent-transactions;
+    in property <string> document-body;
+    in property <bool> debugger-live: false;
+}
+
+export global Logic {
+    callback open-activity(int);
+    callback toggle-menu(int);
+    callback close-menu();
+    callback quit();
+    callback about();
+    callback open-wallet();
+    callback open-folder();
+    callback cancel-open-folder();
+    callback confirm-open-folder();
+    callback open-keystore-folder();
+    callback reveal-keystore();
+    callback request-delete-keystore();
+    callback cancel-delete-keystore();
+    callback confirm-delete-keystore();
+    callback toggle-logs();
+    callback dock-tab-clicked(int);
+    callback recompile();
+    callback open-deploy();
+    callback open-storage();
+    callback constructor-edited(int, string);
+    callback reset-constructor();
+    callback deployment-value-edited(string);
+    callback deploy-contract();
+    callback read-storage();
+    callback select-contract(int);
+    callback select-deployment(int);
+    callback address-edited(string);
+    callback request-input-edited();
+    callback select-function(int);
+    callback select-keystore(int);
+    callback unlock-wallet();
+    callback refresh-wallet();
+    callback create-keystore();
+    callback select-document(int);
+    callback close-document(int);
+    callback simulate-call();
+    callback send-call();
+    callback explorer-search(string);
+    callback explorer-edited(string);
+    callback explorer-open(string);
+    callback fetch-block();
+    callback converter-edited(string);
+    callback set-converter-tool(int);
+    callback new-macro();
+    callback open-foundry-build();
+    callback start-lab();
+    callback debug-continue();
+    callback debug-cancel();
+    callback read-fee();
+    callback dismiss-notice();
+    callback select-zoom(int);
+    callback warp();
+    callback roll();
+    callback snapshot();
+    callback revert();
+    callback trace();
+    callback use-anvil-key(int);
+    callback remove-deployment(int);
+    callback open-deployment-menu(int);
+    callback sidebar-resized(length);
+    callback sidebar-drag-started(length);
+    callback sidebar-drag-finished();
+    callback adjust-sidebar(int);
+    callback reset-sidebar();
+    callback toggle-sidebar();
+    callback select-job(string);
+    callback clear-logs();
+    callback filter-logs(string);
+    callback save-output(string);
+    callback set-converter-mode(int);
+    callback hover-text(string, length, length);
+}
+
+export component Confirmation inherits Rectangle {
+    in property <string> heading;
+    in property <string> detail;
+    in property <string> warning;
+    in property <string> action-label;
+    callback cancelled();
+    callback confirmed();
+    background: #00000088;
+    forward-focus: cancel-button;
+    init => { cancel-button.focus(); }
+    TouchArea { clicked => { } scroll-event(event) => { return accept; } }
+    FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.cancelled(); return accept; }
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                if event.modifiers.shift || event.text == Key.Backtab {
+                    if cancel-button.has-focus { confirm-button.focus(); }
+                    else if confirm-button.has-focus { warning-text.focus(); }
+                    else if warning-text.has-focus { detail-text.focus(); }
+                    else if detail-text.has-focus { heading-text.focus(); }
+                    else { cancel-button.focus(); }
+                } else {
+                    if cancel-button.has-focus { heading-text.focus(); }
+                    else if heading-text.has-focus { detail-text.focus(); }
+                    else if detail-text.has-focus { warning-text.focus(); }
+                    else if warning-text.has-focus { confirm-button.focus(); }
+                    else { cancel-button.focus(); }
+                }
+                return accept;
+            }
+            if event.modifiers.control && !event.modifiers.alt && (event.text == "a" || event.text == "A" || event.text == "c" || event.text == "C") { return reject; }
+            if event.modifiers.control || event.modifiers.alt { return accept; }
+            return reject;
+        }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(36rem, parent.width - 2 * Theme.pad);
+            height: confirmation-content.preferred-height;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.edge;
+            border-radius: Theme.radius;
+            confirmation-content := VerticalLayout {
+                padding: Theme.pad;
+                spacing: 0.75rem;
+                heading-text := SelectableText { text: root.heading; color: Theme.text; font-size: 1rem; font-weight: 600; wrap: word-wrap; min-width: 0px; }
+                detail-text := SelectableText { text: root.detail; color: Theme.text; font-size: 0.8125rem; wrap: word-wrap; min-width: 0px; }
+                warning-text := SelectableText { text: root.warning; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; min-width: 0px; }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 0.5rem;
+                    cancel-button := IconButton { icon: @image-url("icons/stop.svg"); label: "Cancel"; clicked => { root.cancelled(); } }
+                    confirm-button := IconButton { icon: @image-url("icons/wallet.svg"); label: root.action-label; primary: true; clicked => { root.confirmed(); } }
+                }
+            }
+        }
+    }
+}
+
+component Field inherits Rectangle {
+    in property <string> label;
+    in property <string> placeholder-text;
+    in property <InputType> input-type: InputType.text;
+    in property <bool> enabled: true;
+    in-out property <string> text;
+    callback accepted(string);
+    callback edited(string);
+    height: Theme.control-height;
+    min-width: 0px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    forward-focus: input;
+    input := LineEdit {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        font-size: 0.8125rem;
+        enabled: root.enabled;
+        input-type: root.input-type;
+        placeholder-text: root.placeholder-text;
+        accessible-label: root.label;
+        text <=> root.text;
+        accepted => { root.accepted(self.text); }
+        edited => { root.edited(self.text); }
+    }
+    Rectangle {
+        border-width: 1px;
+        border-radius: Theme.radius;
+        border-color: input.has-focus ? Theme.accent : Theme.edge;
+        background: transparent;
+    }
+}
+
+component OutputPane inherits Rectangle {
+    in property <string> text;
+    in property <brush> text-color: Theme.text;
+    min-width: 0px;
+    min-height: 0px;
+    background: Theme.inset;
+    border-width: 1px;
+    border-color: Theme.edge;
+    border-radius: Theme.radius;
+    clip: true;
+    VerticalLayout {
+        padding: 1px;
+        HorizontalLayout {
+            alignment: end;
+            spacing: 0.25rem;
+            IconButton { icon: @image-url("icons/contracts.svg"); label: "Copy output"; enabled: root.text != ""; clicked => { output.select-all(); output.copy(); } }
+            IconButton { icon: @image-url("icons/contracts.svg"); label: "Save output…"; enabled: root.text != ""; clicked => { Logic.save-output(root.text); } }
+        }
+        output := TextEdit {
+            text: root.text;
+            read-only: true;
+            accessible-label: "Output";
+            font-size: 0.75rem;
+            font-family: "Cascadia Mono";
+            wrap: word-wrap;
+            min-width: 0px;
+            min-height: 0px;
+            vertical-stretch: 1;
+        }
+    }
+}
+
+component WalletWorkspace inherits ScrollView {
+    min-width: 0px;
+    min-height: 0px;
+    content-width: self.visible-width;
+    horizontal-scrollbar-policy: always-off;
+    VerticalLayout {
+        padding: Theme.pad;
+        spacing: 0.5rem;
+        alignment: start;
+        SelectableText { text: "Wallet"; color: Theme.text; font-size: 1rem; font-weight: 600; }
+        SelectableText { text: AppData.wallet-address == "" ? "No account unlocked." : "Unlocked address: \{AppData.wallet-address}"; color: AppData.wallet-address == "" ? Theme.muted : Theme.ok; font-size: 0.8125rem; wrap: word-wrap; }
+        SelectableText { text: "Anvil development accounts"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
+        SelectableText { text: "Public test accounts for the local Anvil node only."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        HorizontalLayout {
+            alignment: start; spacing: 0.5rem;
+            IconButton { icon: @image-url("icons/play.svg"); label: "Anvil dev key #0"; enabled: !AppData.wallet-busy && !AppData.deploy-busy; clicked => { Logic.use-anvil-key(0); } }
+            IconButton { icon: @image-url("icons/play.svg"); label: "Anvil dev key #1"; enabled: !AppData.wallet-busy && !AppData.deploy-busy; clicked => { Logic.use-anvil-key(1); } }
+            IconButton { icon: @image-url("icons/play.svg"); label: "Anvil dev key #2"; enabled: !AppData.wallet-busy && !AppData.deploy-busy; clicked => { Logic.use-anvil-key(2); } }
+        }
+        SelectableText { text: "Keystore files"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
+        SelectableText { text: AppData.keystore-folder; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+        HorizontalLayout {
+            alignment: start; spacing: 0.5rem;
+            IconButton { icon: @image-url("icons/wallet.svg"); label: "Open keystore folder"; enabled: !AppData.wallet-busy; clicked => { Logic.open-keystore-folder(); } }
+            IconButton { icon: @image-url("icons/refresh.svg"); label: "Reload keystores"; enabled: !AppData.wallet-busy; clicked => { Logic.refresh-wallet(); } }
+        }
+        if AppData.keystore-error != "": SelectableText { text: AppData.keystore-error; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+        if AppData.keystores.length == 0: SelectableText { text: "No keystore files. Create or import one below, then reload."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+        ListView {
+            height: min(max(Theme.row-height, AppData.keystores.length * Theme.row-height), 8rem);
+            min-width: 0px;
+            for item[index] in AppData.keystores: SideRow { icon: @image-url("icons/wallet.svg"); label: item.text; enabled: !AppData.wallet-busy; selected: AppData.selected-keystore == item.text; clicked => { Logic.select-keystore(index); } }
+        }
+        SelectableText { text: AppData.selected-keystore == "" ? "Select a keystore file to unlock, show or delete it." : "Selected file: \{AppData.selected-keystore}"; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+        SelectableText { text: "Keystore password"; color: Theme.muted; font-size: 0.75rem; }
+        HorizontalLayout {
+            spacing: 0.5rem;
+            Field { label: "Keystore password"; input-type: password; enabled: !AppData.wallet-busy; text <=> AppData.wallet-password; accepted => { if AppData.selected-keystore != "" && !AppData.wallet-busy { Logic.unlock-wallet(); } } }
+            IconButton { icon: @image-url("icons/wallet.svg"); label: "Unlock keystore"; enabled: AppData.selected-keystore != "" && !AppData.wallet-busy; clicked => { Logic.unlock-wallet(); } }
+        }
+        SelectableText { text: "Private key stays in memory; the debugger never uses it."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+        HorizontalLayout {
+            alignment: start; spacing: 0.5rem;
+            IconButton { icon: @image-url("icons/wallet.svg"); label: "Show in folder"; enabled: AppData.selected-keystore != "" && !AppData.wallet-busy; clicked => { Logic.reveal-keystore(); } }
+            IconButton { icon: @image-url("icons/stop.svg"); label: "Delete keystore…"; enabled: AppData.selected-keystore != "" && !AppData.wallet-busy; clicked => { Logic.request-delete-keystore(); } }
+        }
+        if AppData.wallet-busy: SelectableText { text: "Working on keystore…"; color: Theme.muted; font-size: 0.75rem; }
+        Rectangle { height: 1px; background: Theme.edge; }
+        SelectableText { text: "Create an encrypted keystore in ~/.foundry/keystores. The private key is never shown."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        SelectableText { text: "Keystore name"; color: Theme.muted; font-size: 0.75rem; }
+        Field { label: "Keystore name"; placeholder-text: "local-dev"; text <=> AppData.keystore-name; }
+        SelectableText { text: "New keystore password"; color: Theme.muted; font-size: 0.75rem; }
+        Field { label: "New keystore password"; input-type: password; text <=> AppData.keystore-password; }
+        SelectableText { text: "Confirm password"; color: Theme.muted; font-size: 0.75rem; }
+        Field { label: "Confirm password"; input-type: password; text <=> AppData.keystore-confirm; }
+        SelectableText { text: "Existing private key (optional)"; color: Theme.muted; font-size: 0.75rem; }
+        Field { label: "Existing private key"; input-type: password; placeholder-text: "Leave empty to generate a random key"; text <=> AppData.keystore-import; accepted => { Logic.create-keystore(); } }
+        SelectableText { text: "Leave this empty to generate a key with Foundry's OS random generator. A typed key is imported and then cleared."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        HorizontalLayout { alignment: start; IconButton { icon: @image-url("icons/wallet.svg"); label: "Create keystore"; primary: true; clicked => { Logic.create-keystore(); } } }
+    }
+}
+
+component LogsView inherits Rectangle {
+    min-width: 0px; min-height: 0px; background: Theme.inset;
+    VerticalLayout {
+        HorizontalLayout {
+            spacing: 0.375rem;
+            Field { label: "Filter logs"; placeholder-text: "Filter logs"; text <=> AppData.log-filter; edited => { Logic.filter-logs(self.text); } }
+            IconButton { icon: @image-url("icons/stop.svg"); label: "Clear logs"; clicked => { Logic.clear-logs(); } }
+        }
+        TextEdit { text: AppData.log-text; placeholder-text: "No log messages yet."; accessible-label: "Logs"; read-only: true; font-family: "Cascadia Mono"; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; min-height: 0px; vertical-stretch: 1; }
+    }
+}
+
+component JobsView inherits ScrollView {
+    min-width: 0px; min-height: 0px;
+    content-width: self.visible-width;
+    horizontal-scrollbar-policy: always-off;
+    VerticalLayout {
+        padding: Theme.pad; spacing: 0.375rem; alignment: start;
+        if AppData.jobs.length == 0: SelectableText { text: "No jobs in this session."; color: Theme.faint; font-size: 0.75rem; }
+        for job in AppData.jobs: SideRow { icon: @image-url("icons/play.svg"); label: job.name; trailing: job.status; clicked => { Logic.select-job(job.id); } }
+        OutputPane { text: AppData.job-output; height: 8rem; }
+    }
+}
+
+component NavigationView inherits Rectangle {
+    min-width: 0px; min-height: 0px; background: Theme.rail;
+    ScrollView {
+        min-width: 0px; min-height: 0px; content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+        VerticalLayout {
+            spacing: 0.125rem; alignment: start;
+            if AppData.activity == 0: VerticalLayout {
+                SideHeader { title: "Contracts"; }
+                if AppData.contracts.length == 0: SelectableText { text: "Recompile to load workspace contracts."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+                ListView {
+                    height: min(AppData.contracts.length * Theme.row-height, 10.5rem); min-width: 0px;
+                    for row[index] in AppData.contracts: SideRow { icon: @image-url("icons/contracts.svg"); label: row.name; trailing: row.kind; selected: AppData.selected-contract == row.name; clicked => { Logic.select-contract(index); } }
+                }
+                SideHeader { title: "Deployments"; }
+                ListView {
+                    height: min(AppData.deployments.length * Theme.row-height, 8rem); min-width: 0px;
+                    for item[index] in AppData.deployments: HorizontalLayout {
+                        SideRow { icon: @image-url("icons/block.svg"); label: item.name; trailing: ""; selected: AppData.address-input == item.address; clicked => { Logic.select-deployment(index); } }
+                        IconButton { icon: @image-url("icons/stop.svg"); icon-only: true; label: "Remove deployment \{item.name}"; clicked => { Logic.remove-deployment(index); } }
+                    }
+                }
+            }
+            if AppData.activity == 1: VerticalLayout {
+                SideHeader { title: "Chain"; }
+                SelectableText { text: AppData.block-label; color: Theme.text; wrap: word-wrap; }
+                SideRow { icon: @image-url("icons/refresh.svg"); label: "Refresh chain"; clicked => { Logic.fetch-block(); } }
+                SideHeader { title: "Latest blocks"; }
+                if AppData.recent-blocks.length == 0: SelectableText { text: "No blocks yet."; color: Theme.faint; font-size: 0.75rem; }
+                for block in AppData.recent-blocks: SideRow { icon: @image-url("icons/search.svg"); label: block.title; trailing: block.detail; clicked => { Logic.explorer-open(block.query); } }
+            }
+            if AppData.activity == 2: VerticalLayout {
+                SideHeader { title: "Tools"; }
+                SideRow { icon: @image-url("icons/converter.svg"); label: "Hex"; clicked => { Logic.set-converter-tool(0); } }
+                SideRow { icon: @image-url("icons/converter.svg"); label: "Units"; clicked => { Logic.set-converter-tool(1); } }
+                SideRow { icon: @image-url("icons/converter.svg"); label: "Keccak"; clicked => { Logic.set-converter-tool(2); } }
+                SideRow { icon: @image-url("icons/converter.svg"); label: "Selector"; clicked => { Logic.set-converter-tool(3); } }
+            }
+            if AppData.activity == 3: VerticalLayout {
+                SideHeader { title: "Macros"; }
+                SideRow { icon: @image-url("icons/macros.svg"); label: "New macro"; clicked => { Logic.new-macro(); } }
+            }
+            if AppData.activity == 4: VerticalLayout {
+                SideHeader { title: "Session"; }
+                SelectableText { text: AppData.debugger-label; color: AppData.debugger-tint; font-size: 0.8125rem; wrap: word-wrap; }
+                SideHeader { title: "Launch"; }
+                SideRow { icon: @image-url("icons/play.svg"); label: "Offline capture"; enabled: DebugData.can-start; clicked => { DebugLogic.start(); } }
+                SelectableText { text: "Historical, fork call, and Foundry test launchers are not connected in this desktop UI."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+            }
+        }
+    }
+}
+
+component DeployWorkspace inherits ScrollView {
+    in property <string> owner;
+    in property <string> title;
+    in property <DeploymentView> view;
+    min-width: 0px; min-height: 0px;
+    content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+    VerticalLayout {
+        padding: Theme.pad; spacing: 0.5rem; alignment: start;
+        SelectableText { text: root.title; color: Theme.text; font-size: 1rem; font-weight: 600; wrap: word-wrap; }
+        if root.view.fields.length > 0: SelectableText { text: "Enter each constructor argument separately. Use JSON for arrays and tuples."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        SelectableText { text: "Constructor arguments"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
+        if root.view.note != "": SelectableText { text: root.view.note; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+        for field[index] in root.view.fields: VerticalLayout {
+            spacing: 0.375rem;
+            SelectableText { text: "\{field.name} (\{field.kind})"; color: Theme.text; font-size: 0.8125rem; wrap: word-wrap; }
+            Field { label: "\{field.name} (\{field.kind})"; placeholder-text: field.placeholder; text: field.value; edited => { PanelLogic.constructor-edited(root.owner, index, self.text); } }
+            if field.hint != "": SelectableText { text: field.hint; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+            if field.error != "": SelectableText { text: "Error in \{field.name}: \{field.error}"; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; }
+        }
+        HorizontalLayout { alignment: start; IconButton { icon: @image-url("icons/refresh.svg"); label: "Reset constructor fields"; enabled: !root.view.busy; clicked => { PanelLogic.reset-constructor(root.owner); } } }
+        SelectableText { text: "Deployment value (wei)"; color: Theme.muted; font-size: 0.75rem; }
+        Field { label: "Deployment value (wei)"; text: root.view.value; edited => { PanelLogic.deployment-value-edited(root.owner, self.text); } }
+        if root.view.value-error != "": SelectableText { text: "Deployment value error: \{root.view.value-error}"; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; }
+        if !root.view.ready && root.view.block-reason != "": SelectableText { text: "Cannot deploy: \{root.view.block-reason}"; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+        HorizontalLayout { alignment: start; IconButton { icon: @image-url("icons/deploy.svg"); label: root.view.busy ? "Deploying…" : "Deploy to local Anvil"; primary: true; enabled: root.view.ready && !root.view.busy; clicked => { PanelLogic.deploy-contract(root.owner); } } }
+        SelectableText { text: "Deployment output"; color: Theme.muted; font-size: 0.75rem; }
+        OutputPane { text: root.view.output; height: 14rem; }
+    }
+}
+
+export component ExplorerWorkspace inherits ScrollView {
+    min-width: 0px; min-height: 0px;
+    content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+    VerticalLayout {
+        padding: Theme.pad; spacing: 0.625rem; alignment: start;
+        HorizontalLayout {
+            SelectableText { text: "Chain explorer"; color: Theme.text; font-size: 1rem; font-weight: 600; horizontal-stretch: 1; }
+            IconButton { icon: @image-url("icons/search.svg"); label: "Investigation / Repeater"; clicked => { InvestigationLogic.open(); } }
+        }
+        SelectableText { text: "Structured block, transaction, receipt and state reads from the selected local node. Open Investigation for pinned historical queries, Repeater and offline cases."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        SelectableText { text: "Address, transaction hash, or block number"; color: Theme.muted; font-size: 0.75rem; }
+        HorizontalLayout {
+            spacing: 0.375rem;
+            Field { label: "Address, transaction hash, or block number"; text <=> AppData.explorer-input; edited => { Logic.explorer-edited(self.text); } accepted => { Logic.explorer-search(self.text); } }
+            IconButton { icon: @image-url("icons/search.svg"); label: "Look up"; clicked => { Logic.explorer-search(AppData.explorer-input); } }
+        }
+        if AppData.explorer-status != "": SelectableText { text: AppData.explorer-status; color: Theme.muted; font-size: 0.75rem; }
+        OutputPane { text: AppData.explorer-result; height: 12rem; }
+        SelectableText { text: "Latest transactions"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
+        if AppData.recent-transactions.length == 0: SelectableText { text: "No transactions yet. Deploy or send a call, then refresh."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        for tx in AppData.recent-transactions: SideRow { icon: @image-url("icons/search.svg"); label: tx.title; trailing: tx.detail; clicked => { Logic.explorer-open(tx.query); } }
+    }
+}
+
+export component ConverterWorkspace inherits ScrollView {
+    min-width: 0px; min-height: 0px;
+    content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+    VerticalLayout {
+        padding: Theme.pad; spacing: 0.625rem; alignment: start;
+        SelectableText { text: "Converter"; color: Theme.text; font-size: 1rem; font-weight: 600; }
+        SelectableText { text: AppData.converter-hint; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+        SelectableText { text: "Conversion mode"; color: Theme.muted; font-size: 0.75rem; }
+        ComboBox { model: AppData.converter-modes; current-index: AppData.converter-mode; accessible-label: "Conversion mode"; selected(value) => { Logic.set-converter-mode(self.current-index); } }
+        SelectableText { text: "Value to convert"; color: Theme.muted; font-size: 0.75rem; }
+        Field { label: "Value to convert"; text <=> AppData.converter-input; edited => { Logic.converter-edited(self.text); } }
+        if AppData.converter-error != "": SelectableText { text: AppData.converter-error; color: Theme.danger; font-size: 0.8125rem; wrap: word-wrap; min-width: 0px; }
+        OutputPane { text: AppData.converter-output; height: 16rem; }
+    }
+}
+
+component WorkspacePane inherits Rectangle {
+    in property <int> kind: -1;
+    in property <string> owner;
+    in property <int> document-kind;
+    in property <string> document-title;
+    in property <string> document-body;
+    in property <ContractViewData> contract-view;
+    in property <DeploymentView> deployment-view;
+    min-width: 0px; min-height: 0px; background: Theme.canvas;
+    if root.kind == 0: NavigationView { }
+    if root.kind == 1 && root.document-kind == 0: ContractWorkspace { view: root.contract-view; owner: root.owner; }
+    if root.kind == 1 && root.document-kind == 1 && root.owner != "": DeployWorkspace { view: root.deployment-view; owner: root.owner; title: root.document-title; }
+    if root.kind == 1 && root.document-kind == 1 && root.owner == "": VerticalLayout {
+        padding: Theme.pad; alignment: start;
+        SelectableText { text: "Select a deployment document to edit its constructor."; color: Theme.muted; wrap: word-wrap; }
+    }
+    if root.kind == 1 && root.document-kind == 2: WalletWorkspace { }
+    if root.kind == 1 && root.document-kind == 3: VerticalLayout {
+        padding: Theme.pad; spacing: 0.5rem;
+        SelectableText { text: root.document-title; color: Theme.text; font-size: 1rem; font-weight: 600; }
+        OutputPane { text: root.document-body; vertical-stretch: 1; }
+    }
+    if root.kind == 1 && root.document-kind == 4: ExplorerWorkspace { }
+    if root.kind == 1 && root.document-kind == 5: ConverterWorkspace { }
+    if root.kind == 1 && root.document-kind == 6: MacroWorkspace { }
+    if root.kind == 1 && root.document-kind == 7: FoundryWorkspace { }
+    if root.kind == 2: ContractResult { view: root.contract-view; owner: root.owner; }
+    if root.kind == 3: ContractStorage { view: root.contract-view; owner: root.owner; }
+    if root.kind == 4: DebugCodePane { }
+    if root.kind == 5: DebugInspectorPane { }
+    if root.kind == 6: DebugInspectionPane { }
+    if root.kind == 7: DebugSessionPane { }
+    if root.kind == 8: ConsoleView { }
+    if root.kind == 9: LogsView { }
+    if root.kind == 10: JobsView { }
+    if root.kind == 11: InvestigationPanel { }
+}
+
+component PanelZone inherits Rectangle {
+    in property <int> zone;
+    in property <[PanelRow]> tabs;
+    in property <string> active;
+    in property <string> title;
+    in property <string> owner;
+    in property <int> kind: -1;
+    in property <int> document-kind;
+    in property <string> document-title;
+    in property <string> document-body;
+    in property <ContractViewData> contract-view;
+    in property <DeploymentView> deployment-view;
+    in property <int> active-index: 0;
+    in-out property <int> drag-target-index: -1;
+    out property <length> zone-x: self.absolute-position.x;
+    out property <length> zone-y: self.absolute-position.y;
+    callback geometry-changed(int, length, length, length, length);
+    changed zone-x => { root.geometry-changed(root.zone, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+    changed zone-y => { root.geometry-changed(root.zone, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+    changed width => { root.geometry-changed(root.zone, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+    changed height => { root.geometry-changed(root.zone, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+    init => { root.geometry-changed(root.zone, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+    min-width: 0px; min-height: 0px;
+    border-width: PanelData.dragging && PanelData.drag-x >= self.absolute-position.x && PanelData.drag-x < self.absolute-position.x + self.width && PanelData.drag-y >= self.absolute-position.y && PanelData.drag-y < self.absolute-position.y + self.height ? 2px : 0px;
+    border-color: Theme.accent;
+    background: Theme.panel;
+    VerticalLayout {
+        min-width: 0px; min-height: 0px;
+        if root.tabs.length <= 1: PanelHeader { title: root.title; pane-id: root.active; zone: root.zone; tab-index: root.active-index; tab-count: root.tabs.length; }
+        if root.tabs.length > 1: HorizontalLayout {
+            height: Theme.tab-height; min-width: 0px;
+            ScrollView {
+                min-width: 0px; horizontal-stretch: 1;
+                content-width: max(self.visible-width, pane-tabs.preferred-width);
+                content-height: self.visible-height; vertical-scrollbar-policy: always-off;
+                pane-tabs := HorizontalLayout {
+                    alignment: start;
+                    for tab[index] in root.tabs: Rectangle {
+                        width: max(5rem, tab-label.preferred-width + Theme.pad + 1.25rem);
+                        height: Theme.tab-height; horizontal-stretch: 0;
+                        property <bool> drag-hit: PanelData.dragging && PanelData.drag-x >= self.absolute-position.x && PanelData.drag-x < self.absolute-position.x + self.width && PanelData.drag-y >= self.absolute-position.y && PanelData.drag-y < self.absolute-position.y + self.height;
+                        changed drag-hit => {
+                            if self.drag-hit { root.drag-target-index = index; }
+                            else if root.drag-target-index == index { root.drag-target-index = -1; }
+                        }
+                        DockTab {
+                            width: parent.width - 1.25rem; height: parent.height;
+                            label: tab.title; selected: tab.active;
+                            clicked => { PanelLogic.select(tab.id, root.zone); }
+                        }
+                        tab-label := Text { text: tab.title; visible: false; font-size: 0.8125rem; }
+                        PanelDragHandle {
+                            x: parent.width - self.width; width: 1.25rem; height: parent.height;
+                            label: "⋮"; pane-id: tab.id;
+                            clicked => { PanelLogic.select(tab.id, root.zone); }
+                        }
+                    }
+                }
+            }
+            PanelHeader { title: ""; pane-id: root.active; zone: root.zone; tab-index: root.active-index; tab-count: root.tabs.length; width: 110 * Theme.unit; horizontal-stretch: 0; }
+        }
+        WorkspacePane {
+            kind: root.kind; owner: root.owner; document-kind: root.document-kind;
+            document-title: root.document-title; document-body: root.document-body;
+            contract-view: root.contract-view; deployment-view: root.deployment-view;
+            vertical-stretch: 1;
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    in property <bool> panel-host: false;
+    in property <int> host-pane: 0;
+    in property <string> host-owner;
+    in-out property <string> hover-label;
+    in-out property <length> hover-x;
+    in-out property <length> hover-y;
+    private property <bool> hover-visible: false;
+    private property <bool> welcome-investigation: InvestigationData.visible && ((PanelData.left-visible && PanelData.left-kind == 11) || (PanelData.center-visible && PanelData.center-kind == 11) || (PanelData.right-visible && PanelData.right-kind == 11) || (PanelData.bottom-visible && PanelData.bottom-kind == 11));
+    changed hover-label => { root.hover-visible = false; }
+    Timer {
+        interval: 500ms;
+        running: root.hover-label != "" && !root.hover-visible;
+        triggered => { root.hover-visible = true; }
+    }
+    in-out property <int> deployment-menu-index: -1;
+    in-out property <length> deployment-menu-x;
+    in-out property <length> deployment-menu-y;
+    private property <length> left-drop-x;
+    private property <length> left-drop-y;
+    private property <length> left-drop-width;
+    private property <length> left-drop-height;
+    private property <length> center-drop-x;
+    private property <length> center-drop-y;
+    private property <length> center-drop-width;
+    private property <length> center-drop-height;
+    private property <length> right-drop-x;
+    private property <length> right-drop-y;
+    private property <length> right-drop-width;
+    private property <length> right-drop-height;
+    private property <length> bottom-drop-x;
+    private property <length> bottom-drop-y;
+    private property <length> bottom-drop-width;
+    private property <length> bottom-drop-height;
+    private property <int> left-drop-index: -1;
+    private property <int> center-drop-index: -1;
+    private property <int> right-drop-index: -1;
+    private property <int> bottom-drop-index: -1;
+    function update-drop-zone(zone: int, x: length, y: length, width: length, height: length) {
+        if zone == 0 { root.left-drop-x = x; root.left-drop-y = y; root.left-drop-width = width; root.left-drop-height = height; }
+        if zone == 1 { root.center-drop-x = x; root.center-drop-y = y; root.center-drop-width = width; root.center-drop-height = height; }
+        if zone == 2 { root.right-drop-x = x; root.right-drop-y = y; root.right-drop-width = width; root.right-drop-height = height; }
+        if zone == 3 { root.bottom-drop-x = x; root.bottom-drop-y = y; root.bottom-drop-width = width; root.bottom-drop-height = height; }
+    }
+    function move-to-zone(pane: string, zone: int, target: int, count: int, active: string, active-index: int) {
+        if target >= 0 && (active != pane || target != active-index) { PanelLogic.move(pane, zone, target); }
+        else if target < 0 { PanelLogic.move(pane, zone, max(0, count - 1)); }
+    }
+    public function drop-pane(pane: string, x: length, y: length) {
+        if root.panel-host || PanelData.blocked { return; }
+        if PanelData.bottom-visible && (PanelData.maximized == "" || PanelData.maximized == PanelData.bottom-active) && x >= root.bottom-drop-x && x < root.bottom-drop-x + root.bottom-drop-width && y >= root.bottom-drop-y && y < root.bottom-drop-y + root.bottom-drop-height {
+            PanelLogic.move(pane, 3, root.bottom-drop-index >= 0 ? root.bottom-drop-index : PanelData.bottom-tabs.length - 1);
+        } else if PanelData.right-visible && (PanelData.maximized == "" || PanelData.maximized == PanelData.right-active) && x >= root.right-drop-x && x < root.right-drop-x + root.right-drop-width && y >= root.right-drop-y && y < root.right-drop-y + root.right-drop-height {
+            PanelLogic.move(pane, 2, root.right-drop-index >= 0 ? root.right-drop-index : PanelData.right-tabs.length - 1);
+        } else if PanelData.left-visible && (!AppData.sidebar-collapsed || PanelData.maximized == PanelData.left-active) && (PanelData.maximized == "" || PanelData.maximized == PanelData.left-active) && x >= root.left-drop-x && x < root.left-drop-x + root.left-drop-width && y >= root.left-drop-y && y < root.left-drop-y + root.left-drop-height {
+            PanelLogic.move(pane, 0, root.left-drop-index >= 0 ? root.left-drop-index : PanelData.left-tabs.length - 1);
+        } else if PanelData.center-visible && (PanelData.maximized == "" || PanelData.maximized == PanelData.center-active) && x >= root.center-drop-x && x < root.center-drop-x + root.center-drop-width && y >= root.center-drop-y && y < root.center-drop-y + root.center-drop-height {
+            PanelLogic.move(pane, 1, root.center-drop-index >= 0 ? root.center-drop-index : PanelData.center-tabs.length - 1);
+        }
+    }
+    title: root.panel-host && PanelData.pane-title != "" ? "Chasm - \{PanelData.pane-title}" : "Chasm";
+    accessible-role: region;
+    accessible-label: root.panel-host ? PanelData.pane-id : "Chasm workspace";
+    preferred-width: root.panel-host ? 900px : 1360px;
+    preferred-height: root.panel-host ? 650px : 820px;
+    min-width: root.panel-host ? 420px : 1180px;
+    min-height: root.panel-host ? 260px : 720px;
+    background: Theme.canvas;
+    default-font-family: "Segoe UI";
+    default-font-size: 16px * Theme.zoom;
+    changed height => { PanelLogic.viewport-changed(); }
+    changed width => { PanelLogic.viewport-changed(); }
+    init => { Palette.color-scheme = ColorScheme.dark; }
+
+    app-scope := FocusScope {
+        visible: !root.panel-host;
+        enabled: !root.panel-host && !PanelData.blocked && AppData.workspace-ready && !AutomationData.visible && AutomationData.approval-id == "";
+        focus-on-tab-navigation: false;
+        capture-key-pressed(event) => {
+            if PanelData.blocked { return accept; }
+            if event.text == Key.Escape { root.hover-label = ""; }
+            if event.text == Key.Escape && AppData.pending-keystore-delete != "" {
+                Logic.cancel-delete-keystore();
+                return accept;
+            }
+            if event.text == Key.Escape && AppData.pending-workspace != "" {
+                Logic.cancel-open-folder();
+                return accept;
+            }
+            if AppData.pending-keystore-delete != "" || AppData.pending-workspace != "" {
+                return accept;
+            }
+            if event.modifiers.control && !event.modifiers.alt && (event.text == "o" || event.text == "O") {
+                Logic.open-folder();
+                return accept;
+            }
+            if event.text == Key.Escape && AppData.menu-open >= 0 {
+                Logic.close-menu();
+                return accept;
+            }
+            if event.modifiers.control && !event.modifiers.alt && (event.text == "b" || event.text == "B") {
+                Logic.recompile();
+                return accept;
+            }
+            return reject;
+        }
+        Rectangle {
+            VerticalLayout {
+                Rectangle {
+                    height: Theme.menu-height;
+                    background: Theme.bar;
+                    HorizontalLayout {
+                        padding-left: 0.5rem;
+                        spacing: 0px;
+                        Rectangle {
+                            width: 1rem;
+                            horizontal-stretch: 0;
+                            Image {
+                                source: @image-url("icons/logo.svg");
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                width: 1rem;
+                                height: 1rem;
+                                colorize: Theme.accent;
+                                accessible-role: none;
+                            }
+                        }
+                        SelectableText {
+                            text: "Chasm";
+                            color: Theme.text;
+                            font-size: 0.8125rem;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            width: 3rem;
+                            horizontal-alignment: center;
+                            horizontal-stretch: 0;
+                        }
+                        file-menu := MenuTitle { label: "File"; open: AppData.menu-open == 0; clicked => { Logic.toggle-menu(0); } pointer-entered(x, y) => { root.hover-label = "File"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                        workspace-menu := MenuTitle { label: "Workspace"; open: AppData.menu-open == 1; clicked => { Logic.toggle-menu(1); } pointer-entered(x, y) => { root.hover-label = "Workspace"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                        run-menu := MenuTitle { label: "Run"; open: AppData.menu-open == 2; clicked => { Logic.toggle-menu(2); } pointer-entered(x, y) => { root.hover-label = "Run"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                        view-menu := MenuTitle { label: "View"; open: AppData.menu-open == 3; clicked => { Logic.toggle-menu(3); } pointer-entered(x, y) => { root.hover-label = "View"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                        panels-menu := MenuTitle { label: "Panels"; open: AppData.menu-open == 6; clicked => { Logic.toggle-menu(6); } }
+                        tools-menu := MenuTitle { label: "Tools"; open: AppData.menu-open == 4; clicked => { Logic.toggle-menu(4); } pointer-entered(x, y) => { root.hover-label = "Tools"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                        help-menu := MenuTitle { label: "Help"; open: AppData.menu-open == 5; clicked => { Logic.toggle-menu(5); } pointer-entered(x, y) => { root.hover-label = "Help"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                        SelectableText { text: AppData.status-left; color: Theme.faint; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; min-width: 0px; }
+                        Rectangle { width: 0.5rem; horizontal-stretch: 0; }
+                    }
+                }
+
+                if AppData.activity != 4: Rectangle {
+                    height: Theme.toolbar-height;
+                    background: Theme.panel;
+                    ScrollView {
+                        min-width: 0px;
+                        min-height: 0px;
+                        content-width: max(self.visible-width, toolbar-content.preferred-width);
+                        content-height: self.visible-height;
+                        vertical-scrollbar-policy: always-off;
+                        toolbar-content := HorizontalLayout {
+                            padding-left: 0.375rem;
+                            padding-right: 0.5rem;
+                            spacing: 0.25rem;
+                            IconButton { icon: @image-url("icons/contracts.svg"); label: "Open project"; enabled: !AppData.workspace-busy && !AppData.folder-picker-busy; clicked => { Logic.open-folder(); } }
+                            if AppData.activity == 0: IconButton { icon: @image-url("icons/refresh.svg"); label: "Recompile"; clicked => { Logic.recompile(); } }
+                            if AppData.activity == 0: IconButton { icon: @image-url("icons/deploy.svg"); label: "Deploy"; enabled: AppData.selected-contract != ""; clicked => { Logic.open-deploy(); } }
+                            if AppData.activity == 0: IconButton { icon: @image-url("icons/storage.svg"); label: "Open storage"; enabled: AppData.selected-contract != ""; clicked => { Logic.open-storage(); } }
+                            Rectangle { width: 1px; background: Theme.edge; horizontal-stretch: 0; }
+                            IconButton { icon: @image-url("icons/workspace.svg"); label: "Layout"; clicked => { Logic.toggle-menu(6); } }
+                            Rectangle { horizontal-stretch: 1; }
+                            SelectableText { text: AppData.mode-label; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                            SelectableText { text: AppData.chain-label; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                            SelectableText { text: AppData.block-label; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                        }
+                    }
+                }
+                if (PanelData.left-kind >= 4 && PanelData.left-kind <= 7) || (PanelData.center-kind >= 4 && PanelData.center-kind <= 7) || (PanelData.right-kind >= 4 && PanelData.right-kind <= 7) || (PanelData.bottom-kind >= 4 && PanelData.bottom-kind <= 7): DebugToolbar { }
+                Rectangle { height: 1px; background: Theme.edge; }
+
+                Rectangle {
+                    min-height: 0px;
+                    vertical-stretch: 1;
+                    HorizontalLayout {
+                        Rectangle {
+                            width: Theme.rail-width;
+                            horizontal-stretch: 0;
+                            background: Theme.rail;
+                            ScrollView {
+                                min-width: 0px;
+                                min-height: 0px;
+                                content-width: self.visible-width;
+                                content-height: max(self.visible-height, rail-content.preferred-height);
+                                horizontal-scrollbar-policy: always-off;
+                                rail-content := VerticalLayout {
+                                    padding-top: 0.3125rem;
+                                    spacing: 0.125rem;
+                                    Rectangle {
+                                        height: 2.375rem;
+                                        Image {
+                                            source: @image-url("icons/logo.svg");
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            width: 1.25rem;
+                                            height: 1.25rem;
+                                            colorize: Theme.accent;
+                                            accessible-role: none;
+                                        }
+                                    }
+                                    RailIcon { icon: @image-url("icons/contracts.svg"); label: "Contracts"; selected: AppData.activity == 0; clicked => { Logic.open-activity(0); } pointer-entered(x, y) => { root.hover-label = "Contracts"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                                    RailIcon { icon: @image-url("icons/search.svg"); label: "Explorer"; selected: AppData.activity == 1; clicked => { Logic.open-activity(1); } pointer-entered(x, y) => { root.hover-label = "Explorer"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                                    RailIcon { icon: @image-url("icons/converter.svg"); label: "Converter"; selected: AppData.activity == 2; clicked => { Logic.open-activity(2); } pointer-entered(x, y) => { root.hover-label = "Converter"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                                    RailIcon { icon: @image-url("icons/macros.svg"); label: "Macros"; selected: AppData.activity == 3; clicked => { Logic.open-activity(3); } pointer-entered(x, y) => { root.hover-label = "Macros"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                                    RailIcon { icon: @image-url("icons/debugger.svg"); label: "Debugger"; selected: AppData.activity == 4; clicked => { Logic.open-activity(4); } pointer-entered(x, y) => { root.hover-label = "Debugger"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                                    Rectangle { vertical-stretch: 1; }
+                                    RailIcon { icon: @image-url("icons/wallet.svg"); label: "Wallet"; selected: AppData.doc-kind == 2; clicked => { Logic.open-wallet(); } pointer-entered(x, y) => { root.hover-label = "Wallet"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                                }
+                            }
+                        }
+                        Rectangle { width: 1px; background: Theme.edge; }
+
+                        if PanelData.left-visible && (!AppData.sidebar-collapsed || PanelData.maximized == PanelData.left-active) && (PanelData.maximized == "" || PanelData.maximized == PanelData.left-active): PanelZone {
+                            preferred-width: PanelData.maximized == PanelData.left-active ? 0px : min(PanelData.left-width * Theme.unit, 400 * Theme.unit);
+                            horizontal-stretch: PanelData.maximized == PanelData.left-active ? 1 : 0;
+                            geometry-changed(zone, x, y, width, height) => { root.update-drop-zone(zone, x, y, width, height); }
+                            drag-target-index <=> root.left-drop-index;
+                            zone: 0; tabs: PanelData.left-tabs; active: PanelData.left-active; active-index: PanelData.left-active-index;
+                            kind: PanelData.left-kind; title: PanelData.left-title; owner: PanelData.left-owner;
+                            document-kind: PanelData.left-document-kind; document-title: PanelData.left-document-title; document-body: PanelData.left-document-body;
+                            contract-view: PanelData.left-contract; deployment-view: PanelData.left-deployment;
+                        }
+                        if PanelData.left-visible && !AppData.sidebar-collapsed && PanelData.maximized == "": Splitter {
+                            zone: 0; extent: PanelData.left-width; width: 6 * Theme.unit; horizontal-stretch: 0;
+                        }
+
+                        if PanelData.maximized == "" || PanelData.maximized == PanelData.center-active || PanelData.maximized == PanelData.bottom-active: center-stack := Rectangle {
+                            min-width: 0px;
+                            min-height: 0px;
+                            horizontal-stretch: 1;
+                            background: Theme.canvas;
+                            clip: true;
+                            VerticalLayout {
+                                if PanelData.maximized == "" && AppData.documents.length == 0: Rectangle {
+                                    height: Theme.menu-height;
+                                    background: Theme.canvas;
+                                    HorizontalLayout {
+                                        padding-left: Theme.pad;
+                                        padding-right: Theme.pad;
+                                        spacing: 0.625rem;
+                                        SelectableText { text: AppData.heading; color: Theme.text; font-size: 0.8125rem; font-weight: 600; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-stretch: 1; }
+                                        SelectableText { text: AppData.compile-label; color: Theme.faint; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                                    }
+                                }
+                                if PanelData.maximized == "" && AppData.documents.length > 0 && AppData.activity != 4: Rectangle {
+                                    height: Theme.tab-height;
+                                    background: Theme.bar;
+                                    ScrollView {
+                                        min-width: 0px;
+                                        min-height: 0px;
+                                        content-width: max(self.visible-width, document-tabs.preferred-width);
+                                        content-height: self.visible-height;
+                                        vertical-scrollbar-policy: always-off;
+                                        document-tabs := HorizontalLayout {
+                                            spacing: 1px;
+                                            alignment: start;
+                                            for doc[index] in AppData.documents: DocTabChip {
+                                                title: doc.title;
+                                                kind: doc.kind;
+                                                selected: AppData.active-document == index;
+                                                clicked => { Logic.select-document(index); }
+                                                closed => { Logic.close-document(index); }
+                                            }
+                                        }
+                                    }
+                                }
+                                if PanelData.maximized == "": Rectangle { height: 1px; background: Theme.edge; }
+
+                                if PanelData.center-visible && (PanelData.maximized == "" || PanelData.maximized == PanelData.center-active): PanelZone {
+                                    geometry-changed(zone, x, y, width, height) => { root.update-drop-zone(zone, x, y, width, height); }
+                                    drag-target-index <=> root.center-drop-index;
+                                    zone: 1; tabs: PanelData.center-tabs; active: PanelData.center-active; active-index: PanelData.center-active-index;
+                                    kind: PanelData.center-kind; title: PanelData.center-title; owner: PanelData.center-owner;
+                                    document-kind: PanelData.center-document-kind; document-title: PanelData.center-document-title; document-body: PanelData.center-document-body;
+                                    contract-view: PanelData.center-contract; deployment-view: PanelData.center-deployment;
+                                    vertical-stretch: 1;
+                                }
+
+                                if PanelData.bottom-visible && PanelData.maximized == "": Splitter {
+                                    horizontal: true; zone: 3; extent: PanelData.bottom-height;
+                                    height: 6 * Theme.unit; vertical-stretch: 0;
+                                }
+                                if PanelData.bottom-visible && (PanelData.maximized == "" || PanelData.maximized == PanelData.bottom-active): PanelZone {
+                                    preferred-height: PanelData.maximized == PanelData.bottom-active ? 0px : min(PanelData.bottom-height, PanelData.bottom-limit) * Theme.unit;
+                                    vertical-stretch: PanelData.maximized == PanelData.bottom-active ? 1 : 0;
+                                    geometry-changed(zone, x, y, width, height) => { root.update-drop-zone(zone, x, y, width, height); }
+                                    drag-target-index <=> root.bottom-drop-index;
+                                    zone: 3; tabs: PanelData.bottom-tabs; active: PanelData.bottom-active; active-index: PanelData.bottom-active-index;
+                                    kind: PanelData.bottom-kind; title: PanelData.bottom-title; owner: PanelData.bottom-owner;
+                                    document-kind: PanelData.bottom-document-kind; document-title: PanelData.bottom-document-title; document-body: PanelData.bottom-document-body;
+                                    contract-view: PanelData.bottom-contract; deployment-view: PanelData.bottom-deployment;
+                                }
+                            }
+                        }
+                        if PanelData.right-visible && PanelData.maximized == "": Splitter {
+                            zone: 2; extent: PanelData.right-width;
+                            width: 6 * Theme.unit; horizontal-stretch: 0;
+                        }
+                        if PanelData.right-visible && (PanelData.maximized == "" || PanelData.maximized == PanelData.right-active): PanelZone {
+                            preferred-width: PanelData.maximized == PanelData.right-active ? 0px : min(PanelData.right-width * Theme.unit, 480 * Theme.unit);
+                            horizontal-stretch: PanelData.maximized == PanelData.right-active ? 1 : 0;
+                            geometry-changed(zone, x, y, width, height) => { root.update-drop-zone(zone, x, y, width, height); }
+                            drag-target-index <=> root.right-drop-index;
+                            zone: 2; tabs: PanelData.right-tabs; active: PanelData.right-active; active-index: PanelData.right-active-index;
+                            kind: PanelData.right-kind; title: PanelData.right-title; owner: PanelData.right-owner;
+                            document-kind: PanelData.right-document-kind; document-title: PanelData.right-document-title; document-body: PanelData.right-document-body;
+                            contract-view: PanelData.right-contract; deployment-view: PanelData.right-deployment;
+                        }
+                    }
+                }
+
+                if AppData.notice != "": Rectangle {
+                    height: 4.5rem;
+                    border-width: 1px;
+                    border-color: Theme.edge;
+                    background: Theme.inset;
+                    HorizontalLayout {
+                        padding: 0.5rem;
+                        spacing: 0.5rem;
+                        SelectableText { text: "Notice"; color: Theme.danger; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                        ScrollView {
+                            min-width: 0px;
+                            min-height: 0px;
+                            content-width: self.visible-width;
+                            horizontal-scrollbar-policy: always-off;
+                            SelectableText { text: AppData.notice; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+                        }
+                        CloseButton { y: (parent.height - self.height) / 2; label: "Dismiss notice"; clicked => { Logic.dismiss-notice(); } }
+                    }
+                }
+                Rectangle {
+                    height: Theme.status-height;
+                    background: Theme.bar;
+                    HorizontalLayout {
+                        padding-left: Theme.pad;
+                        padding-right: Theme.pad;
+                        spacing: 0.875rem;
+                        SelectableText { text: AppData.status-left; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; min-width: 0px; }
+                        SelectableText { text: AppData.compile-label; color: Theme.faint; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                        SelectableText { text: AppData.debugger-label; color: AppData.debugger-tint; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; min-width: 0px; }
+                        SelectableText { text: AppData.block-label; color: Theme.faint; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                        SelectableText { text: "Chasm 0.1.0"; color: Theme.faint; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                    }
+                }
+            }
+
+            if AppData.deployment-menu >= 0: TouchArea {
+                clicked => { Logic.open-deployment-menu(-1); }
+            }
+            if AppData.deployment-menu >= 0: Rectangle {
+                x: deployment-menu-x.clamp(Theme.pad, max(Theme.pad, root.width - self.width - Theme.pad));
+                y: deployment-menu-y.clamp(Theme.pad, max(Theme.pad, root.height - self.height - Theme.pad));
+                width: 12rem;
+                height: deployment-menu-content.preferred-height;
+                background: Theme.panel;
+                border-width: 1px;
+                border-color: Theme.edge;
+                border-radius: Theme.radius;
+                deployment-menu-content := VerticalLayout {
+                    padding: 0.25rem;
+                    MenuRow { label: "Remove deployment"; clicked => { Logic.remove-deployment(AppData.deployment-menu); Logic.open-deployment-menu(-1); } }
+                }
+            }
+            if root.hover-label != "" && root.hover-visible && AppData.menu-open < 0 && AppData.pending-workspace == "" && AppData.pending-keystore-delete == "": Rectangle {
+                x: (root.hover-x < Theme.rail-width ? Theme.rail-width + 6px : root.hover-x).clamp(4px, max(4px, root.width - self.width - 4px));
+                y: (root.hover-x < Theme.rail-width ? root.hover-y - 2.625rem : root.hover-y + 6px).clamp(4px, max(4px, root.height - self.height - 4px));
+                width: hover-tip.preferred-width + 0.75rem;
+                height: 1.5rem;
+                background: Theme.panel;
+                border-width: 1px;
+                border-color: Theme.edge;
+                border-radius: Theme.radius;
+                hover-tip := Text {
+                    x: 0.375rem;
+                    text: root.hover-label;
+                    color: Theme.text;
+                    font-size: 0.75rem;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
+            if AppData.menu-open >= 0: TouchArea {
+                clicked => { Logic.close-menu(); }
+            }
+            if AppData.menu-open >= 0: Rectangle {
+                private property <length> anchor-x: AppData.menu-open == 0 ? file-menu.absolute-position.x
+                    : AppData.menu-open == 1 ? workspace-menu.absolute-position.x
+                    : AppData.menu-open == 2 ? run-menu.absolute-position.x
+                    : AppData.menu-open == 3 ? view-menu.absolute-position.x
+                    : AppData.menu-open == 4 ? tools-menu.absolute-position.x
+                    : AppData.menu-open == 6 ? panels-menu.absolute-position.x : help-menu.absolute-position.x;
+                private property <length> anchor-y: file-menu.absolute-position.y + file-menu.height;
+                x: anchor-x.clamp(Theme.pad, max(Theme.pad, root.width - self.width - Theme.pad));
+                y: anchor-y.clamp(Theme.pad, max(Theme.pad, root.height - self.height - Theme.pad));
+                width: min(18rem, root.width - 2 * Theme.pad);
+                height: min(menu-content.preferred-height, root.height - 2 * Theme.pad);
+                background: Theme.panel;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.edge;
+                drop-shadow-blur: 0.75rem;
+                drop-shadow-color: #00000088;
+                drop-shadow-offset-y: 0.25rem;
+                ScrollView {
+                    min-width: 0px;
+                    min-height: 0px;
+                    content-width: self.visible-width;
+                    horizontal-scrollbar-policy: always-off;
+                    menu-content := VerticalLayout {
+                        padding: 0.25rem;
+                        spacing: 0px;
+                        alignment: start;
+                        if AppData.menu-open == 0: VerticalLayout {
+                            MenuRow { label: "Open Folder…"; shortcut: "Ctrl+O"; enabled: !AppData.workspace-busy && !AppData.folder-picker-busy && !AppData.wallet-busy; clicked => { Logic.open-folder(); } }
+                            MenuRow { label: "Recompile workspace"; shortcut: "Ctrl+B"; clicked => { Logic.recompile(); Logic.close-menu(); } }
+                            MenuRow { label: "Quit Chasm"; clicked => { Logic.quit(); } }
+                        }
+                        if AppData.menu-open == 1: VerticalLayout {
+                            MenuRow { label: "Deploy selected contract"; enabled: AppData.selected-contract != ""; clicked => { Logic.open-deploy(); Logic.close-menu(); } }
+                            MenuRow { label: "Open storage"; enabled: AppData.selected-contract != ""; clicked => { Logic.open-storage(); Logic.close-menu(); } }
+                            MenuRow { label: "Wallet"; clicked => { Logic.open-wallet(); Logic.close-menu(); } }
+                            MenuRow { label: "Reload keystores"; clicked => { Logic.refresh-wallet(); Logic.close-menu(); } }
+                        }
+                        if AppData.menu-open == 2: VerticalLayout {
+                            MenuRow { label: "Start WorkshopVault"; enabled: !AppData.debugger-live; clicked => { Logic.start-lab(); Logic.close-menu(); } }
+                            MenuRow { label: "Continue"; enabled: DebugData.can-command; clicked => { Logic.debug-continue(); Logic.close-menu(); } }
+                            MenuRow { label: "Read fee"; enabled: AppData.debugger-live; clicked => { Logic.read-fee(); Logic.close-menu(); } }
+                            MenuRow { label: "Cancel session"; enabled: AppData.debugger-live; clicked => { Logic.debug-cancel(); Logic.close-menu(); } }
+                        }
+                        if AppData.menu-open == 3: VerticalLayout {
+                            MenuRow { label: "Toggle sidebar"; checked: !AppData.sidebar-collapsed; clicked => { Logic.toggle-sidebar(); Logic.close-menu(); } }
+                            MenuRow { label: "Narrower sidebar"; clicked => { PanelLogic.resize(0, max(120, PanelData.left-width - 20)); } }
+                            MenuRow { label: "Wider sidebar"; clicked => { PanelLogic.resize(0, min(4096, PanelData.left-width + 20)); } }
+                            MenuRow { label: "Reset sidebar width"; clicked => { PanelLogic.resize(0, 250); Logic.close-menu(); } }
+                            MenuRow { label: "Show Logs"; clicked => { PanelLogic.dock("logs", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Zoom 100%"; checked: AppData.zoom-percent == 100; clicked => { Logic.select-zoom(0); } }
+                            MenuRow { label: "Zoom 110%"; checked: AppData.zoom-percent == 110; clicked => { Logic.select-zoom(1); } }
+                            MenuRow { label: "Zoom 125%"; checked: AppData.zoom-percent == 125; clicked => { Logic.select-zoom(2); } }
+                            MenuRow { label: "Zoom 150%"; checked: AppData.zoom-percent == 150; clicked => { Logic.select-zoom(3); } }
+                        }
+                        if AppData.menu-open == 4: VerticalLayout {
+                            MenuRow { label: "Contracts"; clicked => { Logic.open-activity(0); Logic.close-menu(); } }
+                            MenuRow { label: "Explorer"; clicked => { Logic.open-activity(1); Logic.close-menu(); } }
+                            MenuRow { label: "Converter"; clicked => { Logic.open-activity(2); Logic.close-menu(); } }
+                            MenuRow { label: "Macros"; clicked => { Logic.open-activity(3); Logic.close-menu(); } }
+                            MenuRow { label: "Trusted Foundry Build"; clicked => { Logic.open-foundry-build(); Logic.close-menu(); } }
+                            MenuRow { label: "Debugger"; clicked => { Logic.open-activity(4); Logic.close-menu(); } }
+                            MenuRow { label: "Investigation / Repeater"; clicked => { InvestigationLogic.open(); Logic.close-menu(); } }
+                            MenuRow { label: "Automation / AI Access"; clicked => { AutomationLogic.open(); Logic.close-menu(); } }
+                        }
+                        if AppData.menu-open == 5: VerticalLayout {
+                            MenuRow { label: "About Chasm desktop"; clicked => { Logic.about(); Logic.close-menu(); } }
+                        }
+                        if AppData.menu-open == 6: VerticalLayout {
+                            MenuRow { label: "Contracts layout"; clicked => { PanelLogic.preset(0); Logic.close-menu(); } }
+                            MenuRow { label: "Debugging layout"; clicked => { PanelLogic.preset(1); Logic.close-menu(); } }
+                            MenuRow { label: "Investigation layout"; clicked => { PanelLogic.preset(2); Logic.close-menu(); } }
+                            MenuRow { label: "Reset layout / Bring panels back"; clicked => { PanelLogic.reset(); Logic.close-menu(); } }
+                            MenuRow { label: "Show Navigation"; clicked => { PanelLogic.dock("navigation", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Document"; clicked => { PanelLogic.dock("document", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Call Result"; clicked => { PanelLogic.dock("call_result", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Storage"; clicked => { PanelLogic.dock("storage", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Debug Code"; clicked => { PanelLogic.dock("debug_code", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Debug Inspector"; clicked => { PanelLogic.dock("debug_inspector", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Debug Inspection"; clicked => { PanelLogic.dock("debug_inspection", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Debug Session"; clicked => { PanelLogic.dock("debug_session", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Console"; clicked => { PanelLogic.dock("console", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Logs"; clicked => { PanelLogic.dock("logs", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Jobs"; clicked => { PanelLogic.dock("jobs", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show Investigation"; clicked => { InvestigationLogic.open(); Logic.close-menu(); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if root.panel-host: FocusScope {
+        enabled: !PanelData.blocked;
+        focus-on-tab-navigation: false;
+        capture-key-pressed(event) => { if PanelData.blocked { return accept; } return reject; }
+        VerticalLayout {
+            min-width: 0px; min-height: 0px;
+            PanelHeader { title: PanelData.pane-title; pane-id: PanelData.pane-id; floating: true; }
+            if root.host-pane >= 4 && root.host-pane <= 7: DebugToolbar { }
+            WorkspacePane {
+                kind: root.host-pane; owner: root.host-owner;
+                document-kind: PanelData.document-kind; document-title: PanelData.document-title; document-body: PanelData.document-body;
+                contract-view: PanelData.contract-view; deployment-view: PanelData.deployment-view;
+                vertical-stretch: 1;
+            }
+        }
+    }
+    if !root.panel-host && !AppData.workspace-ready: Rectangle {
+        init => { welcome-scope.focus(); }
+        background: Theme.canvas;
+        forward-focus: welcome-scope;
+        welcome-scope := FocusScope {
+            enabled: !PanelData.blocked && !AutomationData.visible && AutomationData.approval-id == "";
+            capture-key-pressed(event) => {
+                if PanelData.blocked || AppData.project-opening || AppData.folder-picker-busy { return accept; }
+                if event.modifiers.control && !event.modifiers.alt && (event.text == "o" || event.text == "O") {
+                    Logic.open-folder();
+                    return accept;
+                }
+                return reject;
+            }
+            if root.welcome-investigation: VerticalLayout {
+                min-width: 0px; min-height: 0px;
+                HorizontalLayout {
+                    padding: Theme.pad; spacing: 0.5rem;
+                    SelectableText { text: "Chasm"; color: Theme.text; font-weight: 600; horizontal-stretch: 1; vertical-alignment: center; }
+                    IconButton { icon: @image-url("icons/contracts.svg"); label: "Open Project / Folder"; enabled: !AppData.folder-picker-busy && !AppData.project-opening; clicked => { Logic.open-folder(); } }
+                    IconButton { icon: @image-url("icons/stop.svg"); label: "Close Investigation"; clicked => { InvestigationLogic.close(); } }
+                }
+                InvestigationPanel { vertical-stretch: 1; }
+            }
+            if !root.welcome-investigation: VerticalLayout {
+                padding: 3rem;
+                spacing: 1rem;
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    spacing: 1rem;
+                    Image { source: @image-url("icons/logo.svg"); width: 2.5rem; height: 2.5rem; colorize: Theme.accent; accessible-role: none; }
+                    SelectableText { text: "Chasm"; color: Theme.text; font-size: 2rem; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                }
+                SelectableText {
+                    text: AppData.project-opening ? "Opening project…" : AppData.startup-screen ? "Open a project to begin" : "Could not open project";
+                    color: Theme.text; font-size: 1.25rem; font-weight: 600; wrap: word-wrap; min-width: 0px;
+                }
+                SelectableText {
+                    text: AppData.project-opening ? "Preparing the workspace and starting local services in the background." : "Choose a Solidity or Foundry project folder. Local services start only after you open a project.";
+                    color: Theme.muted; font-size: 0.875rem; wrap: word-wrap; min-width: 0px;
+                }
+                if AppData.workspace-path != "": SelectableText { text: AppData.workspace-path; color: Theme.faint; font-size: 0.8125rem; wrap: word-wrap; min-width: 0px; }
+                if AppData.notice != "": SelectableText { text: AppData.notice; color: Theme.danger; font-size: 0.8125rem; wrap: word-wrap; min-width: 0px; }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 0.75rem;
+                    open-project := IconButton { icon: @image-url("icons/contracts.svg"); label: "Open Project / Folder"; primary: true; enabled: !AppData.folder-picker-busy && !AppData.project-opening; clicked => { Logic.open-folder(); } }
+                    IconButton { icon: @image-url("icons/search.svg"); label: "Investigation / Open for Analysis"; enabled: !AppData.project-opening && !AppData.folder-picker-busy; clicked => { InvestigationLogic.open(); } }
+                    IconButton { icon: @image-url("icons/wallet.svg"); label: "Automation / AI Access"; enabled: !AppData.project-opening && !AppData.folder-picker-busy; clicked => { AutomationLogic.open(); } }
+                    IconButton { icon: @image-url("icons/stop.svg"); label: "Quit Chasm"; enabled: !AppData.project-opening && !AppData.folder-picker-busy; clicked => { Logic.quit(); } }
+                }
+                SelectableText { text: "Ctrl+O to open a project"; color: Theme.faint; font-size: 0.75rem; }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+    }
+    if PanelData.blocked: FocusScope {
+        focus-on-tab-navigation: false;
+        init => { self.focus(); }
+        capture-key-pressed(event) => { return accept; }
+        background-blocker := Rectangle {
+            background: root.panel-host ? #00000088 : transparent;
+            TouchArea { clicked => { } scroll-event(event) => { return accept; } }
+            if root.panel-host: SelectableText { text: "Finish the current action in the main window."; color: Theme.text; wrap: word-wrap; }
+        }
+    }
+    if !root.panel-host && (AppData.workspace-busy || AppData.folder-picker-busy): Rectangle {
+        background: #00000088;
+        TouchArea { clicked => { } scroll-event(event) => { return accept; } }
+        SelectableText { text: AppData.workspace-busy ? "Closing the current project…" : "Choose a folder in the Windows dialog."; color: Theme.text; font-size: 1rem; }
+    }
+    if !root.panel-host && AppData.pending-workspace != "": Confirmation {
+        heading: "Open another project?";
+        detail: AppData.pending-workspace;
+        warning: "This closes the current Anvil and debugger session. Open tabs, constructor drafts, local deployments and chain state will reset. Saved macros remain on disk.";
+        action-label: "Open project";
+        cancelled => { Logic.cancel-open-folder(); }
+        confirmed => { Logic.confirm-open-folder(); }
+    }
+    if !root.panel-host && AutomationData.visible: AutomationPanel { enabled: AutomationData.approval-id == ""; }
+    if !root.panel-host && AutomationData.approval-id != "": Confirmation {
+        private property <string> displayed-approval-id;
+        init => { self.displayed-approval-id = AutomationData.approval-id; }
+        heading: "Approve AI request?";
+        detail: AutomationData.approval-detail;
+        warning: "Only approve a request you recognize. This approval applies once to the displayed client, parameters and workspace. It expires after two minutes or when its context changes.";
+        action-label: AutomationData.approval-action;
+        cancelled => { AutomationLogic.reject(self.displayed-approval-id); }
+        confirmed => { AutomationLogic.accept(self.displayed-approval-id); }
+    }
+    if !root.panel-host && AppData.pending-keystore-delete != "": Confirmation {
+        heading: "Delete keystore?";
+        detail: "\{AppData.pending-keystore-delete}\n\{AppData.pending-keystore-path}";
+        warning: "This permanently deletes the local encrypted key file. Make a backup first: without another copy you may lose access to the account. The blockchain account and funds are not deleted.";
+        action-label: "Delete keystore";
+        cancelled => { Logic.cancel-delete-keystore(); }
+        confirmed => { Logic.confirm-delete-keystore(); }
+    }
+    if PanelData.blocked && DebugData.can-cancel: IconButton {
+        x: root.width - self.width - 4px;
+        y: 0px;
+        icon: @image-url("icons/stop.svg"); label: "Cancel worker";
+        clicked => { DebugLogic.cancel(); }
+    }
+}

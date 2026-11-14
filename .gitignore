@@ -6,3 +6,7 @@ dist/
 .DS_Store
 *.chasm/
 .hermes/
+.mypy_cache/
+.zcode/
+*.rs.tmp.*
+contracts/chasm-macro-evidence.json

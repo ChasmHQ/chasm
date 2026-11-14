@@ -1,0 +1,372 @@
+export global Theme {
+    in property <float> zoom: 1;
+    out property <length> unit: 1px * zoom;
+    out property <length> rail-width: 48 * unit;
+    out property <length> sidebar-width: 250 * unit;
+    out property <length> menu-height: 28 * unit;
+    out property <length> toolbar-height: 40 * unit;
+    out property <length> tab-height: 32 * unit;
+    out property <length> dock-height: 150 * unit;
+    out property <length> status-height: 26 * unit;
+    out property <length> control-height: 30 * unit;
+    out property <length> row-height: 28 * unit;
+    out property <length> pad: 12 * unit;
+    out property <length> radius: 3 * unit;
+    out property <brush> canvas: #1e1e1e;
+    out property <brush> rail: #181818;
+    out property <brush> bar: #252525;
+    out property <brush> panel: #252525;
+    out property <brush> inset: #191919;
+    out property <brush> hover: #303030;
+    out property <brush> selected: #3a3a3a;
+    out property <brush> line: #333333;
+    out property <brush> edge: #505050;
+    out property <brush> text: #e0e0e0;
+    out property <brush> muted: #b8b8b8;
+    out property <brush> faint: #aaaaaa;
+    out property <brush> icon: #b9b9b9;
+    out property <brush> icon-active: #ededed;
+    out property <brush> accent: #d7ba7d;
+    out property <brush> accent-hover: #e3c88f;
+    out property <brush> accent-pressed: #c7aa70;
+    out property <brush> accent-ink: #181818;
+    out property <brush> ok: #a1c49b;
+    out property <brush> warn: #e0af68;
+    out property <brush> danger: #ffaaaa;
+    out property <brush> badge: #343434;
+    out property <color> selection-background: #d7ba7d;
+    out property <color> selection-foreground: #181818;
+}
+
+export component ActionControl inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <bool> selected;
+    in property <bool> checkable;
+    in property <bool> primary;
+    out property <bool> has-focus: focus.has-focus;
+    out property <bool> hovered: touch.has-hover;
+    out property <bool> pressed: touch.pressed;
+    callback clicked();
+    callback pointer-entered(length, length);
+    callback pointer-exited();
+    callback pointer-event(PointerEvent);
+    out property <length> pointer-x: touch.mouse-x;
+    out property <length> pointer-y: touch.mouse-y;
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.selected;
+    accessible-action-default => {
+        if root.enabled { root.clicked(); }
+    }
+    border-width: 1px;
+    border-color: focus.has-focus && root.enabled ? (root.primary ? Theme.accent-ink : Theme.accent) : transparent;
+    background: !root.enabled ? transparent
+        : root.primary ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : touch.pressed ? Theme.selected
+        : root.selected ? Theme.selected
+        : touch.has-hover ? Theme.hover : transparent;
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down { root.pointer-exited(); }
+            root.pointer-event(event);
+        }
+        changed has-hover => {
+            if self.has-hover { root.pointer-entered(root.absolute-position.x, root.absolute-position.y + root.height); }
+            else { root.pointer-exited(); }
+        }
+        clicked => {
+            focus.focus();
+            root.clicked();
+        }
+    }
+    focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == Key.Space {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    @children
+}
+
+export component IconButton inherits ActionControl {
+    in property <image> icon;
+    in property <bool> icon-only;
+    height: Theme.control-height;
+    min-width: content.min-width;
+    preferred-width: content.preferred-width;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: Theme.radius;
+    content := HorizontalLayout {
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+        spacing: 0.375rem;
+        alignment: center;
+        Rectangle {
+            width: 1rem;
+            horizontal-stretch: 0;
+            Image {
+                source: root.icon;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 1rem;
+                height: 1rem;
+                colorize: !root.enabled ? Theme.faint : root.primary ? Theme.accent-ink : root.selected ? Theme.icon-active : Theme.icon;
+                accessible-role: none;
+            }
+        }
+        if !root.icon-only && root.label != "": Text {
+            text: root.label;
+            color: !root.enabled ? Theme.faint : root.primary ? Theme.accent-ink : Theme.text;
+            font-size: 0.8125rem;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+            accessible-role: none;
+        }
+    }
+}
+
+export component CloseButton inherits ActionControl {
+    label: "Close";
+    width: 1.5rem;
+    height: 1.5rem;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: Theme.radius;
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: "×";
+        color: root.hovered ? Theme.text : Theme.muted;
+        font-size: 1rem;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+}
+
+export component RailIcon inherits ActionControl {
+    in property <image> icon;
+    checkable: true;
+    height: 2.625rem;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    Rectangle {
+        x: 0px;
+        width: 3 * Theme.unit;
+        height: 1.375rem;
+        y: (parent.height - self.height) / 2;
+        background: Theme.accent;
+        visible: root.selected;
+    }
+    Image {
+        source: root.icon;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 1.25rem;
+        height: 1.25rem;
+        colorize: root.selected ? Theme.icon-active : Theme.icon;
+        accessible-role: none;
+    }
+}
+
+export component MenuTitle inherits ActionControl {
+    in property <bool> open;
+    selected: root.open;
+    height: Theme.menu-height;
+    min-width: content.min-width;
+    preferred-width: content.preferred-width;
+    horizontal-stretch: 0;
+    content := HorizontalLayout {
+        padding-left: 0.5625rem;
+        padding-right: 0.5625rem;
+        Text {
+            text: root.label;
+            color: root.open ? Theme.text : Theme.muted;
+            font-size: 0.8125rem;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+            accessible-role: none;
+        }
+    }
+}
+
+export component MenuRow inherits ActionControl {
+    in property <string> shortcut;
+    in property <bool> checked;
+    checkable: root.checked;
+    selected: root.checked;
+    height: Theme.row-height;
+    min-width: 0px;
+    HorizontalLayout {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+        spacing: 0.625rem;
+        Text {
+            text: root.label;
+            color: root.enabled ? Theme.text : Theme.faint;
+            font-size: 0.8125rem;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+            accessible-role: none;
+        }
+        Text {
+            text: root.checked ? "✓" : root.shortcut;
+            color: Theme.muted;
+            font-size: 0.75rem;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+            accessible-role: none;
+        }
+    }
+}
+
+export component SideHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> trailing;
+    height: 1.75rem;
+    vertical-stretch: 0;
+    HorizontalLayout {
+        padding-left: Theme.pad;
+        padding-right: Theme.pad;
+        spacing: 0.375rem;
+        Text {
+            text: root.title;
+            color: Theme.muted;
+            font-size: 0.75rem;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        if root.trailing != "": Text {
+            text: root.trailing;
+            color: Theme.faint;
+            font-size: 0.75rem;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+        }
+    }
+}
+
+export component SideRow inherits ActionControl {
+    in property <image> icon;
+    in property <string> trailing;
+    in property <bool> accent;
+    checkable: true;
+    height: Theme.row-height;
+    min-width: 0px;
+    vertical-stretch: 0;
+    HorizontalLayout {
+        padding-left: Theme.pad;
+        padding-right: Theme.pad;
+        spacing: 0.375rem;
+        Rectangle {
+            width: 0.875rem;
+            horizontal-stretch: 0;
+            Image {
+                source: root.icon;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 0.875rem;
+                height: 0.875rem;
+                colorize: root.selected ? Theme.icon-active : Theme.icon;
+                accessible-role: none;
+            }
+        }
+        Text {
+            text: root.label;
+            color: !root.enabled ? Theme.faint : root.selected ? Theme.text : root.accent ? Theme.accent : Theme.muted;
+            font-size: 0.8125rem;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+            accessible-role: none;
+        }
+        if root.trailing != "": Text {
+            text: root.trailing;
+            color: Theme.faint;
+            font-size: 0.75rem;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+            accessible-role: none;
+        }
+    }
+}
+
+export component DocTabChip inherits ActionControl {
+    in property <string> title;
+    in property <int> kind;
+    callback closed();
+    label: root.title;
+    checkable: true;
+    width: 10.625rem;
+    height: Theme.tab-height;
+    horizontal-stretch: 0;
+    Rectangle {
+        y: 0px;
+        width: parent.width;
+        height: 2 * Theme.unit;
+        background: Theme.accent;
+        visible: root.selected;
+    }
+    Text {
+        x: 0.75rem;
+        y: 0px;
+        width: max(0px, parent.width - 2.75rem);
+        height: parent.height;
+        text: root.title;
+        color: root.selected ? Theme.text : Theme.muted;
+        font-size: 0.8125rem;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+    CloseButton {
+        x: parent.width - self.width - 0.125rem;
+        y: (parent.height - self.height) / 2;
+        label: "Close \{root.title}";
+        clicked => { root.closed(); }
+    }
+}
+
+export component DockTab inherits ActionControl {
+    checkable: true;
+    height: Theme.tab-height;
+    min-width: content.min-width;
+    preferred-width: content.preferred-width;
+    horizontal-stretch: 0;
+    Rectangle {
+        y: parent.height - self.height;
+        width: parent.width;
+        height: 2 * Theme.unit;
+        background: Theme.accent;
+        visible: root.selected;
+    }
+    content := HorizontalLayout {
+        padding-left: Theme.pad;
+        padding-right: Theme.pad;
+        Text {
+            text: root.label;
+            color: root.selected ? Theme.text : Theme.muted;
+            font-size: 0.8125rem;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+            accessible-role: none;
+        }
+    }
+}
+
