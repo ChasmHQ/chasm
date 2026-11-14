@@ -201,9 +201,10 @@ export component DebugCodePane inherits Rectangle {
                     height: 1.5rem;
                     background: row.current ? Theme.selected : Theme.inset;
                     HorizontalLayout {
-                        spacing: 0.25rem;
+                        spacing: 0.5rem;
                         SelectableText { width: 1.25rem; horizontal-stretch: 0; text: row.current ? ">" : ""; color: Theme.accent; font-family: "Cascadia Mono"; vertical-alignment: center; horizontal-alignment: center; }
-                        SelectableText { width: 6rem; horizontal-stretch: 0; text: row.position; color: row.current ? Theme.accent : Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; wrap: no-wrap; overflow: elide; }
+                        // Line numbers need a few digits; disassembly PCs like 0x1a2b need more.
+                        SelectableText { width: DebugData.code-mode == 0 ? 3rem : 4.5rem; horizontal-stretch: 0; text: row.position; color: row.current ? Theme.accent : Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; horizontal-alignment: right; wrap: no-wrap; overflow: elide; }
                         SelectableText { text: row.text; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; horizontal-alignment: left; wrap: no-wrap; horizontal-stretch: 1; }
                     }
                 }

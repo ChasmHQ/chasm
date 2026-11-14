@@ -1,7 +1,7 @@
 //! Renders every main view at the supported window sizes and zoom levels.
 //! Set `CHASM_VIEW_CAPTURES` to an existing absolute directory to write PPM
 //! captures for visual review; without it the test only checks that every
-//! view renders at the expected size.
+//! view renders at the expected size. `CHASM_VIEW_ONLY` narrows the views.
 use super::*;
 use serde_json::json;
 
@@ -52,6 +52,8 @@ fn every_view_renders_at_supported_sizes_and_zooms() {
     if let Some(directory) = &directory {
         assert!(directory.is_absolute() && directory.is_dir(), "Capture directory must already exist and be absolute");
     }
+    // `CHASM_VIEW_ONLY=debugger,wallet` limits a capture run to those views.
+    let only = std::env::var("CHASM_VIEW_ONLY").ok();
     // (name, preparation) applied to a fresh layout for each capture.
     let views: [(&str, fn(&mut DesktopState)); 9] = [
         ("contract", |state| state.select_contract(0)),
@@ -68,6 +70,9 @@ fn every_view_renders_at_supported_sizes_and_zooms() {
         ui.window().set_size(slint::LogicalSize::new(width, height));
         for (index, zoom) in session::ZOOM_LEVELS.iter().enumerate() {
             for (name, prepare) in views {
+                if only.as_ref().is_some_and(|only| !only.split(',').any(|view| view == name)) {
+                    continue;
+                }
                 {
                     let mut state = state.lock().unwrap();
                     state.zoom = *zoom;

@@ -1473,7 +1473,30 @@ fn code_rows(snapshot: &super::debug_session::Snapshot, mode: i32) -> (String, V
                 current: false,
             }]
         });
+    let rows = if mode == 0 { dedent(rows) } else { rows };
     (title, rows)
+}
+
+/// Drop the indentation every non-blank line of the window shares, so a
+/// function deep inside a contract starts at the gutter. Relative
+/// indentation between the lines is kept.
+fn dedent(rows: Vec<CodeRow>) -> Vec<CodeRow> {
+    let common = rows
+        .iter()
+        .filter(|row| !row.text.trim().is_empty())
+        .map(|row| row.text.len() - row.text.trim_start_matches([' ', '\t']).len())
+        .min()
+        .unwrap_or(0);
+    if common == 0 {
+        return rows;
+    }
+    rows.into_iter()
+        .map(|row| {
+            let text = row.text.as_str();
+            let cut = text.len() - text.trim_start_matches([' ', '\t']).len();
+            CodeRow { text: text[cut.min(common)..].into(), ..row }
+        })
+        .collect()
 }
 /// The at-a-glance execution card: PC, gas left, call depth, opcode and step.
 fn execution_stats(status: &Value) -> Vec<ExecStat> {
@@ -1568,6 +1591,16 @@ fn window_params(memory: &str, slots: &str, source: &str, pc: &str) -> Result<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_window_drops_only_shared_indentation() {
+        let row = |text: &str| CodeRow { position: "1".into(), text: text.into(), current: false };
+        let rows = dedent(vec![row("    function f() {"), row(""), row("        x = 1;"), row("    }")]);
+        let texts: Vec<_> = rows.iter().map(|row| row.text.to_string()).collect();
+        assert_eq!(texts, ["function f() {", "", "    x = 1;", "}"]);
+        let flush = dedent(vec![row("contract A {"), row("    uint x;")]);
+        assert_eq!(flush[1].text, "    uint x;");
+    }
+
     #[test]
     fn execution_card_and_breakpoint_follow_the_paused_status() {
         let status = json!({

@@ -907,15 +907,19 @@ export component MainWindow inherits Window {
                                         // strip scrolls and keeps the active tab in view.
                                         property <length> chip: clamp(self.visible-width / max(1, AppData.documents.length) - 1px, 7rem, 10.625rem);
                                         property <int> active: AppData.active-document;
+                                        // The active tab widens to show its whole title (text + inset + close button).
+                                        property <length> active-chip: clamp(active-title.preferred-width + 3rem, self.chip, max(self.chip, self.visible-width / 2));
+                                        active-title := Text { visible: false; text: AppData.active-document >= 0 ? AppData.documents[AppData.active-document].title : ""; font-size: 0.8125rem; }
                                         function reveal() {
                                             if self.active < 0 { return; }
                                             let left = self.active * (self.chip + 1px);
                                             if left + self.content-x < 0px {
                                                 self.content-x = -left;
-                                            } else if left + self.chip + self.content-x > self.visible-width {
-                                                self.content-x = min(0px, self.visible-width - left - self.chip);
+                                            } else if left + self.active-chip + self.content-x > self.visible-width {
+                                                self.content-x = min(0px, self.visible-width - left - self.active-chip);
                                             }
                                         }
+                                        changed active-chip => { self.reveal(); }
                                         changed active => { self.reveal(); }
                                         changed chip => { self.reveal(); }
                                         changed visible-width => { self.reveal(); }
@@ -928,7 +932,7 @@ export component MainWindow inherits Window {
                                             spacing: 1px;
                                             alignment: start;
                                             for doc[index] in AppData.documents: DocTabChip {
-                                                width: document-scroll.chip;
+                                                width: index == AppData.active-document ? document-scroll.active-chip : document-scroll.chip;
                                                 title: doc.title;
                                                 kind: doc.kind;
                                                 selected: AppData.active-document == index;
