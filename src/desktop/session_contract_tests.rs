@@ -361,3 +361,42 @@ fn stale_network_and_confirmation_do_not_rebind_or_edit_targets() {
         token.network_epoch
     );
 }
+
+#[test]
+fn revert_drops_post_snapshot_deployments_and_rebinds_survivors() {
+    const OLD: &str = "0x1111111111111111111111111111111111111111";
+    const NEW: &str = "0x2222222222222222222222222222222222222222";
+    let mut state = bank_state();
+    state.select_contract(0);
+    let a = state.current_document_id().unwrap();
+    let token = state.begin_request(Operation::Deploy, "deploy old", false);
+    state.complete_deployment(&a, "Bank", OLD, &token).unwrap();
+    state.record_snapshot("0x5".into());
+    let token = state.begin_request(Operation::Deploy, "deploy new", false);
+    let b = state.complete_deployment(&a, "Bank", NEW, &token).unwrap().unwrap();
+    let before = state.network_epoch;
+
+    state.apply_revert();
+
+    assert_eq!(state.network_epoch, before + 1);
+    assert!(state.snapshot_id.is_empty(), "Anvil consumes the snapshot");
+    let addresses: Vec<_> = state.deployments.iter().map(|d| d.address.as_str()).collect();
+    assert_eq!(addresses, [OLD], "the post-snapshot contract no longer exists");
+    let target = |state: &DesktopState, id: &str| {
+        let doc = state.documents.iter().find(|doc| doc.id == id).unwrap();
+        doc.contract_view.target.clone().unwrap()
+    };
+    let survivor = target(&state, &a);
+    assert_eq!(survivor.network_epoch, state.network_epoch);
+    assert_eq!(survivor.deployment_id, state.deployment_id(0));
+    assert_ne!(
+        target(&state, &b).network_epoch,
+        state.network_epoch,
+        "a document for a reverted deployment must not reach the chain"
+    );
+    let id = state.deployment_id(0).unwrap();
+    assert!(state.select_deployment_by_id(&id));
+    // The reverted address can be deployed again in the new context.
+    let token = state.begin_request(Operation::Deploy, "redeploy", false);
+    assert!(state.complete_deployment(&a, "Bank", NEW, &token).is_ok());
+}

@@ -38,10 +38,15 @@ struct LayoutAutosave {
     unchanged_since: Option<Instant>,
     persisted: Option<serde_json::Value>,
     last_failure: Option<Instant>,
+    /// Set when a rejected saved layout could not be backed up.
+    disabled: bool,
 }
 
 impl LayoutAutosave {
     fn observe(&mut self, snapshot: &serde_json::Value, now: Instant) -> bool {
+        if self.disabled {
+            return false;
+        }
         if self.observed.as_ref() != Some(snapshot) {
             self.observed = Some(snapshot.clone());
             self.unchanged_since = Some(now);
@@ -109,7 +114,17 @@ pub fn bind(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle, inv
                     state.layout = layout;
                 }
                 Err(_) => {
-                    state.lock().unwrap().notice = "Saved layout was invalid. A safe default layout is in use.".into()
+                    // Autosave will replace the rejected layout, so keep a copy first.
+                    let settings = workspace.join(".chasm/desktop-settings.json");
+                    let backup = workspace.join(".chasm/desktop-settings.rejected.json");
+                    state.lock().unwrap().notice = match std::fs::copy(&settings, &backup) {
+                        Ok(_) => "Saved layout was invalid. A safe default layout is in use; the previous settings were kept in .chasm/desktop-settings.rejected.json.".into(),
+                        Err(_) => {
+                            // Without a backup, do not overwrite the user's file.
+                            registry.borrow_mut().autosave.disabled = true;
+                            "Saved layout was invalid and could not be backed up. A safe default layout is in use and will not be saved this session.".into()
+                        }
+                    };
                 }
             }
         }
@@ -1173,9 +1188,12 @@ fn reset(registry: &Hosts, preset: Preset) {
 fn layout_snapshot(registry: &Hosts, final_save: bool) -> Option<(std::path::PathBuf, serde_json::Value)> {
     let (state, epoch, captures) = {
         let registry = registry.try_borrow().ok()?;
+        // A minimized window reports a parked off-screen position and a tiny
+        // size; it keeps the geometry already stored in the layout instead.
         let captures = registry
             .windows
             .values()
+            .filter(|window| !window.ui.window().is_minimized())
             .map(|window| capture(window).map(|geometry| (window.id.clone(), geometry)))
             .collect::<Option<Vec<_>>>()?;
         (registry.state.clone(), registry.workspace_epoch, captures)
@@ -1220,6 +1238,9 @@ fn autosave_tick(registry: &Hosts) {
 }
 
 fn save_layout(registry: &Hosts) {
+    if registry.borrow().autosave.disabled {
+        return;
+    }
     if let Some((workspace, snapshot)) = layout_snapshot(registry, true) {
         if session::save_setting_fields(&workspace, &[("layout", snapshot.clone())]).is_ok() {
             registry.borrow_mut().autosave.saved(snapshot);

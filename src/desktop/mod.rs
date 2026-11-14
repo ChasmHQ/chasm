@@ -74,6 +74,9 @@ impl Drop for Services {
 
 impl Services {
     async fn shutdown(mut self) -> anyhow::Result<()> {
+        // Release port 8545 first: the remaining steps can wait several
+        // seconds, and a user who force-closes then must not orphan the node.
+        self.anvil.stop();
         self.manager.shutdown().await;
         if let Some(shutdown) = self.gateway_shutdown.take() {
             let _ = shutdown.send(());
@@ -85,7 +88,6 @@ impl Services {
                 let _ = (&mut self.gateway).await;
             }
         }
-        self.anvil.stop();
         Ok(())
     }
 }
@@ -252,15 +254,21 @@ async fn recover_startup<T>(future: impl std::future::Future<Output = anyhow::Re
 
 async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
     let root = platform::validate_workspace(&cli.path).map_err(anyhow::Error::msg)?;
-    let mut config = ChasmConfig::load(&root).unwrap_or_default();
-    if let Some(oz) = crate::config::scan_openzeppelin(&root) {
+    // A broken chasm.toml is reported and left untouched rather than replaced.
+    let (mut config, mut config_warning) = match ChasmConfig::load(&root) {
+        Ok(config) => (Some(config), None),
+        Err(error) => (None, Some(format!("{error}. Remappings from it are not applied; fix the file and recompile."))),
+    };
+    if let (Some(config), Some(oz)) = (config.as_mut(), crate::config::scan_openzeppelin(&root)) {
         let remapping = crate::config::generate_remapping(&oz, &root);
         if !config.remappings.iter().any(|item| item.contains("@openzeppelin")) {
             config.add_remapping(remapping);
-            let _ = config.save(&root);
+            if let Err(error) = config.save(&root) {
+                config_warning = Some(format!("Could not save .chasm/chasm.toml: {error}"));
+            }
         }
     }
-    let remappings = config.remappings.clone();
+    let remappings = config.map(|config| config.remappings).unwrap_or_default();
 
     let mut listener = None;
     for _ in 0..75 {
@@ -325,6 +333,10 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
             state.notice = error.clone();
             state.push_log(error);
         }
+    }
+    if let Some(warning) = config_warning {
+        state.notice = warning.clone();
+        state.push_log(warning);
     }
     let rpc = state.rpc.clone();
     state.block_number = tokio::task::spawn_blocking(move || cast_block_number(&rpc)).await.ok().and_then(Result::ok).unwrap_or(0);
@@ -615,7 +627,10 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
         let weak = weak.clone();
         runtime_compile.spawn(async move {
             let root = held.lock().unwrap().workspace.clone();
-            let remappings = ChasmConfig::load(&root).unwrap_or_default().remappings;
+            let (remappings, config_warning) = match ChasmConfig::load(&root) {
+                Ok(config) => (config.remappings, None),
+                Err(error) => (Vec::new(), Some(format!("{error}. Remappings from it are not applied."))),
+            };
             let compiled = tokio::task::spawn_blocking(move || compile_workspace_report(&root, remappings)).await;
             let _ = slint::invoke_from_event_loop(move || {
                 let mut state = held.lock().unwrap();
@@ -629,7 +644,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                             state.compile_label = format!("{} contracts", report.contracts.len());
                             state.notice.clear();
                             state.replace_compiled_contracts(report.contracts);
-                            if let Some(warning) = warning {
+                            for warning in [config_warning, warning].into_iter().flatten() {
                                 if !state.notice.is_empty() { state.notice.push('\n'); }
                                 state.notice.push_str(&warning);
                             }
@@ -947,6 +962,12 @@ fn rpc_closure(
                 paint(&weak, &held);
                 return;
             };
+            if matches!(action, RpcAction::Revert) && state.snapshot_id.is_empty() {
+                state.notice = "Take a snapshot first. Revert only returns to a snapshot taken in this session.".into();
+                drop(state);
+                paint(&weak, &held);
+                return;
+            }
             state.rpc_busy = true;
             (state.rpc.clone(), state.snapshot_id.clone(), lease)
         };
@@ -958,10 +979,7 @@ fn rpc_closure(
                 RpcAction::Warp => cast_rpc(&rpc, "evm_increaseTime", &["3600".to_string()]),
                 RpcAction::Roll => cast_rpc(&rpc, "evm_mine", &[]),
                 RpcAction::Snapshot => cast_rpc(&rpc, "evm_snapshot", &[]),
-                RpcAction::Revert => {
-                    let id = if snapshot_id.is_empty() { "0x1".to_string() } else { snapshot_id.clone() };
-                    cast_rpc(&rpc, "evm_revert", &[id])
-                }
+                RpcAction::Revert => cast_rpc(&rpc, "evm_revert", &[snapshot_id.clone()]),
             })
             .await;
             let _ = slint::invoke_from_event_loop(move || {
@@ -974,10 +992,20 @@ fn rpc_closure(
                             RpcAction::Warp => state.status_left = "Warped chain +1 hour".into(),
                             RpcAction::Roll => state.status_left = "Mined one block".into(),
                             RpcAction::Snapshot => {
-                                state.snapshot_id = out.clone();
+                                state.record_snapshot(out.clone());
                                 state.status_left = format!("Snapshot {out}");
                             }
-                            RpcAction::Revert => state.status_left = "Reverted to snapshot".into(),
+                            // `cast` exits successfully even when Anvil answers `false`
+                            // for an unknown or already-consumed snapshot.
+                            RpcAction::Revert if out != "true" => {
+                                state.snapshot_id.clear();
+                                state.notice = "Anvil did not revert: the snapshot is unknown or was already used. Take a new snapshot.".into();
+                                state.status_left = "Revert rejected".into();
+                            }
+                            RpcAction::Revert => {
+                                state.apply_revert();
+                                state.status_left = "Reverted to snapshot".into();
+                            }
                         }
                         let line = state.status_left.clone();
                         state.push_log(line);

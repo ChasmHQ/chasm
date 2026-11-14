@@ -8,30 +8,50 @@ use walkdir::WalkDir;
 pub struct ChasmConfig {
     #[serde(default)]
     pub remappings: Vec<String>,
+    /// Keys Chasm does not manage (for example foundry.toml settings) are
+    /// kept verbatim so saving remappings never drops the user's settings.
+    #[serde(flatten)]
+    pub other: toml::Table,
 }
 
 impl ChasmConfig {
     /// Baca config dari {root_dir}/.chasm/chasm.toml
-    /// Jika file tidak ada, return default (empty)
+    /// Jika file tidak ada, return default (empty). A file that exists but
+    /// cannot be read or parsed is an error, never an empty config: callers
+    /// that save afterwards would otherwise overwrite the user's file.
     pub fn load(root_dir: &Path) -> Result<Self> {
         let config_path = root_dir.join(".chasm").join("chasm.toml");
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
-            let config: ChasmConfig = toml::from_str(&content)?;
+            let config: ChasmConfig = toml::from_str(&content).map_err(|error| {
+                anyhow::anyhow!("{} is not valid TOML: {error}", config_path.display())
+            })?;
             Ok(config)
         } else {
             Ok(ChasmConfig::default())
         }
     }
 
-    /// Tulis config ke {root_dir}/.chasm/chasm.toml (buat direktori jika belum ada)
+    /// Tulis config ke {root_dir}/.chasm/chasm.toml (buat direktori jika belum ada).
+    /// The file is replaced atomically so a crash cannot leave it truncated.
     pub fn save(&self, root_dir: &Path) -> Result<()> {
         let chasm_dir = root_dir.join(".chasm");
         std::fs::create_dir_all(&chasm_dir)?;
         let config_path = chasm_dir.join("chasm.toml");
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(config_path, content)?;
+        let mut file = tempfile::NamedTempFile::new_in(&chasm_dir)?;
+        std::io::Write::write_all(&mut file, content.as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist(&config_path).map_err(|error| error.error)?;
         Ok(())
+    }
+
+    /// Load, edit and save in one step. A file that cannot be parsed is left
+    /// untouched and reported, instead of being replaced by the edit alone.
+    pub fn update(root_dir: &Path, edit: impl FnOnce(&mut Self)) -> Result<()> {
+        let mut config = Self::load(root_dir)?;
+        edit(&mut config);
+        config.save(root_dir)
     }
 
     /// Tambahkan remapping jika belum ada (hindari duplikat)
@@ -182,3 +202,40 @@ pub fn global_oz_path(version: &str) -> PathBuf {
     global_lib_dir().join(format!("openzeppelin-contracts@{}", version))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(root: &Path, text: &str) -> PathBuf {
+        let path = root.join(".chasm").join("chasm.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn saving_remappings_keeps_settings_chasm_does_not_manage() {
+        let root = tempfile::tempdir().unwrap();
+        let path = write(
+            root.path(),
+            "remappings = [\"a/=lib/a/\"]\nsolc_version = \"0.8.24\"\n\n[profile.default]\noptimizer = true\n",
+        );
+        ChasmConfig::update(root.path(), |config| config.replace_oz_remapping("@openzeppelin/contracts/=oz/".into())).unwrap();
+        let saved: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["solc_version"].as_str(), Some("0.8.24"));
+        assert_eq!(saved["profile"]["default"]["optimizer"].as_bool(), Some(true));
+        let remappings = saved["remappings"].as_array().unwrap();
+        assert_eq!(remappings.len(), 2);
+    }
+
+    #[test]
+    fn an_unparseable_config_is_reported_and_never_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        let broken = "remappings = [\"a/=lib/a/\"\n";
+        let path = write(root.path(), broken);
+        assert!(ChasmConfig::load(root.path()).is_err());
+        assert!(ChasmConfig::update(root.path(), |config| config.add_remapping("b/=b/".into())).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+        assert!(ChasmConfig::load(&root.path().join("missing")).unwrap().remappings.is_empty());
+    }
+}

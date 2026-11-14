@@ -17,6 +17,10 @@ pub fn find_available_port(preferred: u16) -> u16 {
 
 pub struct AnvilNode {
     process: Option<Child>,
+    /// Kills the node when Chasm exits by any path, including a hard kill
+    /// that skips `Drop`. Declared after `process` so it closes last.
+    #[cfg(windows)]
+    job: Option<KillOnCloseJob>,
     port: u16,
     fork_url: Option<String>,
     fork_block: Option<u64>,
@@ -27,6 +31,8 @@ impl AnvilNode {
     pub fn new(port: u16) -> Self {
         Self {
             process: None,
+            #[cfg(windows)]
+            job: None,
             port,
             fork_url: None,
             fork_block: None,
@@ -37,20 +43,15 @@ impl AnvilNode {
     /// Spawn the node without inheriting a console: null stdio, and on Windows
     /// `CREATE_NO_WINDOW` so desktop builds never flash a terminal window.
     pub fn new_silent(port: u16) -> Self {
-        Self {
-            process: None,
-            port,
-            fork_url: None,
-            fork_block: None,
-            silent: true,
-        }
+        let mut node = Self::new(port);
+        node.silent = true;
+        node
     }
 
     pub fn start(&mut self) -> anyhow::Result<()> {
         self.ensure_not_running()?;
         let child = self.base_command().spawn()?;
-
-        self.process = Some(child);
+        self.adopt(child)?;
         self.fork_url = None;
         self.fork_block = None;
         Ok(())
@@ -62,9 +63,25 @@ impl AnvilNode {
         apply_fork_args(&mut cmd, &fork_url, fork_block);
 
         let child = cmd.spawn()?;
-        self.process = Some(child);
+        self.adopt(child)?;
         self.fork_url = Some(fork_url);
         self.fork_block = fork_block;
+        Ok(())
+    }
+
+    /// Contain the child before keeping it. A node that cannot be contained
+    /// is killed rather than left able to outlive Chasm on the shared port.
+    fn adopt(&mut self, mut child: Child) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        match KillOnCloseJob::containing(&child) {
+            Ok(job) => self.job = Some(job),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("Could not contain Anvil in a process job: {error}");
+            }
+        }
+        self.process = Some(child);
         Ok(())
     }
 
@@ -149,6 +166,10 @@ impl AnvilNode {
             let _ = child.kill();
             let _ = child.wait();
         }
+        #[cfg(windows)]
+        {
+            self.job = None;
+        }
     }
 
     pub fn is_running(&self) -> bool {
@@ -174,6 +195,44 @@ fn apply_fork_args(cmd: &mut Command, fork_url: &str, fork_block: Option<u64>) {
 impl Drop for AnvilNode {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Held only for its handle: closing it is what kills the contained node.
+#[cfg(windows)]
+struct KillOnCloseJob(#[allow(dead_code)] std::os::windows::io::OwnedHandle);
+
+#[cfg(windows)]
+impl KillOnCloseJob {
+    fn containing(child: &Child) -> std::io::Result<Self> {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if configured == 0
+            || unsafe { AssignProcessToJobObject(handle.as_raw_handle(), child.as_raw_handle()) } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(handle))
     }
 }
 

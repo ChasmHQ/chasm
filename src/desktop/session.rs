@@ -2,7 +2,7 @@ use super::deployment::{validate_draft, ConstructorSpec, DeploymentDraft};
 use super::jobs::{self, JobEntry, JobId, JobTracker, Operation, RequestToken};
 use crate::compiler::Compiler;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -219,6 +219,8 @@ pub struct DesktopState {
     pub trace_output: String,
     pub last_tx: String,
     pub snapshot_id: String,
+    /// Deployments that existed when `snapshot_id` was taken; they survive a revert.
+    snapshot_deployments: HashSet<(String, String)>,
     pub menu_open: i32,
     pub deployment_menu: i32,
     pub dock_tab: i32,
@@ -357,6 +359,7 @@ impl DesktopState {
             trace_output: "No trace yet. Deploy or send a call, then open Trace.".into(),
             last_tx: String::new(),
             snapshot_id: String::new(),
+            snapshot_deployments: HashSet::new(),
             menu_open: -1,
             deployment_menu: -1,
             dock_tab: 0,
@@ -547,16 +550,7 @@ impl DesktopState {
 
     pub fn deployment_id(&self, index: usize) -> Option<String> {
         let deployment = self.deployments.get(index)?;
-        Some(super::application::entity_id(
-            self,
-            "deployment",
-            &format!(
-                "{}:{}:{}",
-                self.deployment_epoch(deployment),
-                deployment.name,
-                deployment.address.to_lowercase()
-            ),
-        ))
+        Some(self.deployment_id_for(deployment))
     }
 
     pub fn select_deployment(&mut self, index: i32) {
@@ -1103,6 +1097,76 @@ impl DesktopState {
         self.notice.clear();
         self.status_left = format!("Using Anvil dev key #{index}");
         self.push_log(format!("Using Anvil dev key #{index} (local only)"));
+    }
+
+    pub fn record_snapshot(&mut self, id: String) {
+        self.snapshot_deployments = self
+            .deployments
+            .iter()
+            .filter(|deployment| self.deployment_epoch(deployment) == self.network_epoch)
+            .map(deployment_key)
+            .collect();
+        self.snapshot_id = id;
+    }
+
+    /// Anvil consumed the snapshot and rolled the chain back. Start a new
+    /// network context: deployments from after the snapshot no longer exist,
+    /// so they are dropped, and every other open target becomes stale except
+    /// documents bound to a deployment that predates the snapshot.
+    pub fn apply_revert(&mut self) {
+        let previous = self.network_epoch;
+        self.network_epoch = previous.wrapping_add(1);
+        let kept = std::mem::take(&mut self.snapshot_deployments);
+        self.snapshot_id.clear();
+        let mut surviving_ids = HashMap::new();
+        let mut dropped = 0;
+        let deployments = std::mem::take(&mut self.deployments);
+        for deployment in deployments {
+            let key = deployment_key(&deployment);
+            let current = self.deployment_epoch(&deployment) == previous;
+            if current && kept.contains(&key) {
+                let old_id = self.deployment_id_for(&deployment);
+                self.deployment_epochs.insert(key, self.network_epoch);
+                surviving_ids.insert(old_id, self.deployment_id_for(&deployment));
+                self.deployments.push(deployment);
+            } else if current {
+                // The address can be reused by the next deployment after a revert.
+                self.deployment_epochs.remove(&key);
+                dropped += 1;
+            } else {
+                self.deployments.push(deployment);
+            }
+        }
+        for doc in self.documents.iter_mut().filter(|doc| doc.kind == 0) {
+            let Some(target) = doc.contract_view.target.as_mut() else { continue };
+            if target.network_epoch != previous {
+                continue;
+            }
+            if let Some(id) = target.deployment_id.as_ref().and_then(|id| surviving_ids.get(id)) {
+                target.deployment_id = Some(id.clone());
+                target.network_epoch = self.network_epoch;
+            }
+            doc.contract_view.revision = doc.contract_view.revision.wrapping_add(1);
+        }
+        self.view_revision = self.view_revision.wrapping_add(1);
+        if dropped > 0 {
+            self.notice = format!(
+                "Reverted to snapshot. {dropped} deployment(s) made after it no longer exist and were removed."
+            );
+        }
+    }
+
+    fn deployment_id_for(&self, deployment: &Deployment) -> String {
+        super::application::entity_id(
+            self,
+            "deployment",
+            &format!(
+                "{}:{}:{}",
+                self.deployment_epoch(deployment),
+                deployment.name,
+                deployment.address.to_lowercase()
+            ),
+        )
     }
 
     pub fn remove_deployment(&mut self, index: i32) -> bool {
@@ -2203,44 +2267,22 @@ pub fn create_keystore(
         return Err(format!("A keystore named {name} already exists."));
     }
     let imported = imported_key.trim();
-    let mut command = cast_command();
-    if imported.is_empty() {
-        // Foundry generates the keypair from the OS CSPRNG. No key is returned to the UI.
-        command.args([
-            "wallet",
-            "new",
-            &dir.display().to_string(),
-            &name,
-            "--unsafe-password",
-            password,
-        ]);
+    // Encrypt in-process: a password or key on a `cast` command line is
+    // readable by any process of this user while it runs.
+    let mut rng = rand::rngs::OsRng;
+    let created = if imported.is_empty() {
+        // The keypair comes from the OS CSPRNG. No key is returned to the UI.
+        ethers::signers::LocalWallet::new_keystore(&dir, &mut rng, password, Some(&name)).map(drop)
     } else {
         address_from_private_key(imported)?;
-        command.args([
-            "wallet",
-            "import",
-            &name,
-            "--keystore-dir",
-            &dir.display().to_string(),
-            "--private-key",
-            imported,
-            "--unsafe-password",
-            password,
-        ]);
-    }
-    let output = command
-        .output()
-        .map_err(|error| format!("cast not found: {error}"))?;
-    if output.status.success() {
-        return Ok(name);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Err(redact_keystore_secret(if stderr.trim().is_empty() {
-        &stdout
-    } else {
-        &stderr
-    }))
+        let secret = ethers::utils::hex::decode(imported.trim_start_matches("0x"))
+            .map_err(|_| "The private key is not valid hex.".to_string())?;
+        ethers::signers::LocalWallet::encrypt_keystore(&dir, &mut rng, secret, password, Some(&name))
+            .map(drop)
+    };
+    created
+        .map(|()| name)
+        .map_err(|error| redact_keystore_secret(&format!("Keystore creation failed: {error}")))
 }
 
 fn redact_keystore_secret(text: &str) -> String {
@@ -2265,35 +2307,13 @@ pub fn cast_unlock(name: &str, password: &str) -> Result<(String, String), Strin
     }
     let path =
         super::keystore::KeystoreStore::new(super::keystore::default_root()?).file_path(name)?;
-    let output = cast_command()
-        .arg("wallet")
-        .arg("decrypt-keystore")
-        .arg(path)
-        .arg("--unsafe-password")
-        .arg(password)
-        .output()
-        .map_err(|_| "Could not start Foundry to unlock the keystore.".to_string())?;
-    if !output.status.success() {
-        return Err(
-            "Could not unlock the keystore. Check the password and file permissions.".into(),
-        );
-    }
-    let output = String::from_utf8_lossy(&output.stdout);
-    let key = output
-        .lines()
-        .find(|line| line.to_ascii_lowercase().contains("private key"))
-        .and_then(extract_key)
-        .or_else(|| output.lines().find_map(extract_key))
-        .ok_or_else(|| "Could not unlock the keystore. Check the password.".to_string())?;
-    let address = output
-        .lines()
-        .find(|line| line.to_ascii_lowercase().contains("address"))
-        .and_then(extract_address)
-        .or_else(|| address_from_private_key(&key).ok())
-        .ok_or_else(|| {
-            "The keystore unlocked, but its address could not be derived.".to_string()
-        })?;
-    Ok((key, address))
+    // Decrypt in-process so the password never appears on a command line.
+    let wallet = ethers::signers::LocalWallet::decrypt_keystore(&path, password).map_err(|_| {
+        "Could not unlock the keystore. Check the password and file permissions.".to_string()
+    })?;
+    use ethers::signers::Signer;
+    let key = format!("0x{}", ethers::utils::hex::encode(wallet.signer().to_bytes()));
+    Ok((key, format!("{:?}", wallet.address())))
 }
 
 fn address_from_private_key(key: &str) -> Result<String, String> {
@@ -3748,6 +3768,33 @@ mod tests {
         .unwrap()
         .eq_ignore_ascii_case("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"));
         assert!(create_keystore("bad", "one", "two", "0x1234").is_err());
+    }
+
+    /// Keystores made by `cast wallet import` before this change still unlock.
+    #[test]
+    #[ignore = "needs a keystore at CHASM_CAST_KEYSTORE written by cast with password pw"]
+    fn cast_written_keystores_still_unlock() {
+        let path = std::env::var("CHASM_CAST_KEYSTORE").unwrap();
+        let wallet = ethers::signers::LocalWallet::decrypt_keystore(path, "pw").unwrap();
+        use ethers::signers::Signer;
+        assert!(format!("{:?}", wallet.address())
+            .eq_ignore_ascii_case("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"));
+    }
+
+    #[test]
+    fn keystores_round_trip_in_process_without_cast() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        let mut rng = rand::rngs::OsRng;
+        let secret = ethers::utils::hex::decode(&key[2..]).unwrap();
+        ethers::signers::LocalWallet::encrypt_keystore(dir.path(), &mut rng, secret, "pw", Some("dev"))
+            .unwrap();
+        let wallet = ethers::signers::LocalWallet::decrypt_keystore(dir.path().join("dev"), "pw").unwrap();
+        use ethers::signers::Signer;
+        assert_eq!(format!("0x{}", ethers::utils::hex::encode(wallet.signer().to_bytes())), key);
+        assert!(format!("{:?}", wallet.address())
+            .eq_ignore_ascii_case("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"));
+        assert!(ethers::signers::LocalWallet::decrypt_keystore(dir.path().join("dev"), "wrong").is_err());
     }
 
     #[test]

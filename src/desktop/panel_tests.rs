@@ -223,6 +223,9 @@ fn autosave_waits_for_stable_changes_and_deduplicates_success() {
     autosave.last_failure = Some(start + Duration::from_millis(20_750));
     assert!(!autosave.observe(&first, start + Duration::from_secs(21)));
     assert!(autosave.observe(&first, start + Duration::from_millis(21_500)));
+    autosave.disabled = true;
+    assert!(!autosave.observe(&changed, start + Duration::from_secs(30)));
+    assert!(!autosave.observe(&changed, start + Duration::from_secs(60)));
 }
 
 #[test]

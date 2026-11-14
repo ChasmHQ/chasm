@@ -246,9 +246,14 @@ async fn web_main(args: Cli) -> anyhow::Result<()> {
     tracing::info!("Starting ChainSmith...");
 
     // ── OZ scan & remapping setup ────────────────────────────────────────────
-    let mut chasm_config = config::ChasmConfig::load(&root_dir).unwrap_or_default();
+    // A broken chasm.toml is reported and left untouched rather than replaced.
+    let mut chasm_config = config::ChasmConfig::load(&root_dir)
+        .inspect_err(|e| tracing::warn!("{e}; its remappings are not applied"))
+        .ok();
 
-    if let Some(oz_path) = config::scan_openzeppelin(&root_dir) {
+    if let (Some(chasm_config), Some(oz_path)) =
+        (chasm_config.as_mut(), config::scan_openzeppelin(&root_dir))
+    {
         tracing::info!("Found openzeppelin-contracts at: {:?}", oz_path);
         let remapping = config::generate_remapping(&oz_path, &root_dir);
         let had_oz = chasm_config.remappings.iter().any(|r| r.contains("@openzeppelin"));
@@ -261,10 +266,12 @@ async fn web_main(args: Cli) -> anyhow::Result<()> {
             }
         }
     } else {
-        tracing::info!("No openzeppelin-contracts found in project. Skipping remapping setup.");
+        tracing::info!("No openzeppelin-contracts remapping setup was performed.");
     }
 
-    let remappings = Arc::new(Mutex::new(chasm_config.remappings.clone()));
+    let remappings = Arc::new(Mutex::new(
+        chasm_config.map(|config| config.remappings).unwrap_or_default(),
+    ));
 
     // ── Channel for broadcasting updates ─────────────────────────────────────
     let (tx, _rx) = broadcast::channel(100);
@@ -427,9 +434,7 @@ async fn oz_use_local(State(state): State<Arc<AppState>>) -> Response {
     }
 
     let remapping = config::generate_remapping(&dest, root);
-    let mut cfg = config::ChasmConfig::load(root).unwrap_or_default();
-    cfg.replace_oz_remapping(remapping.clone());
-    if let Err(e) = cfg.save(root) {
+    if let Err(e) = config::ChasmConfig::update(root, |cfg| cfg.replace_oz_remapping(remapping.clone())) {
         tracing::warn!("Failed to save chasm.toml: {}", e);
     }
     {
@@ -515,9 +520,7 @@ async fn oz_install_local(
 
     // Update chasm.toml with new remapping
     let remapping = config::generate_remapping(&dest, root);
-    let mut cfg = config::ChasmConfig::load(root).unwrap_or_default();
-    cfg.replace_oz_remapping(remapping.clone());
-    if let Err(e) = cfg.save(root) {
+    if let Err(e) = config::ChasmConfig::update(root, |cfg| cfg.replace_oz_remapping(remapping.clone())) {
         tracing::warn!("Failed to save chasm.toml: {}", e);
     }
 
@@ -637,9 +640,7 @@ async fn oz_apply_global_version(state: &Arc<AppState>, version: &str) -> Respon
     // Generate remapping dengan absolute path ke global dir
     let remapping = config::generate_remapping(&oz_path, root);
 
-    let mut cfg = config::ChasmConfig::load(root).unwrap_or_default();
-    cfg.replace_oz_remapping(remapping.clone());
-    if let Err(e) = cfg.save(root) {
+    if let Err(e) = config::ChasmConfig::update(root, |cfg| cfg.replace_oz_remapping(remapping.clone())) {
         tracing::warn!("Gagal menyimpan chasm.toml: {}", e);
     }
 
