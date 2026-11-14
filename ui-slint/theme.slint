@@ -103,6 +103,10 @@ export component ActionControl inherits Rectangle {
 export component IconButton inherits ActionControl {
     in property <image> icon;
     in property <bool> icon-only;
+    // Optional key hint drawn dimmed after the label, for example "F5".
+    in property <string> shortcut;
+    // Optional shorter text shown instead of the label; `label` stays the accessible name.
+    in property <string> short-label;
     height: Theme.control-height;
     min-width: content.min-width;
     preferred-width: content.preferred-width;
@@ -128,9 +132,17 @@ export component IconButton inherits ActionControl {
             }
         }
         if !root.icon-only && root.label != "": Text {
-            text: root.label;
+            text: root.short-label != "" ? root.short-label : root.label;
             color: !root.enabled ? Theme.faint : root.primary ? Theme.accent-ink : Theme.text;
             font-size: 0.8125rem;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+            accessible-role: none;
+        }
+        if !root.icon-only && root.shortcut != "": Text {
+            text: root.shortcut;
+            color: Theme.faint;
+            font-size: 0.6875rem;
             vertical-alignment: center;
             horizontal-stretch: 0;
             accessible-role: none;
@@ -262,6 +274,17 @@ export component SideHeader inherits Rectangle {
     }
 }
 
+/// Sidebar body text aligned with SideHeader and SideRow labels.
+export component SideNote inherits HorizontalLayout {
+    in property <string> text;
+    in property <brush> color: Theme.text;
+    in property <length> font-size: 0.8125rem;
+    in property <TextWrap> wrap: word-wrap;
+    padding-left: Theme.pad;
+    padding-right: Theme.pad;
+    Text { text: root.text; color: root.color; font-size: root.font-size; wrap: root.wrap; min-width: 0px; horizontal-stretch: 1; }
+}
+
 export component SideRow inherits ActionControl {
     in property <image> icon;
     in property <string> trailing;
@@ -364,7 +387,10 @@ export component DockTab inherits ActionControl {
             color: root.selected ? Theme.text : Theme.muted;
             font-size: 0.8125rem;
             vertical-alignment: center;
-            horizontal-stretch: 0;
+            horizontal-stretch: 1;
+            // A tab given less than its preferred width shows "…" instead of cutting a glyph.
+            min-width: 0px;
+            overflow: elide;
             accessible-role: none;
         }
     }

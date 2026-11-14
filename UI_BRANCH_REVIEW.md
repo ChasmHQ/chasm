@@ -23,6 +23,18 @@ The cached local refs initially matched; fetching revealed the newer upstream ch
 | Textual code-following and manual inspection | Follow execution only in code; other inspectors keep their independent selection |
 | Browser command prompt | Not copied; native exposes bounded typed operations and discard-only Solidity evaluation |
 
+### 2026-11-14 port from `0b403f0`
+
+The fetched `origin/UI` delta is 119 commits. 117 of them are the debugger engine history (REVM migration, stepping fixes, checkpoints, MCP) and already exist in the sibling `debugger` repository, so they are not re-applied here. Only `0b403f0` (`UI.html`, `web.py`) is new UI work. It is not merged. These behaviors were ported into the native workbench:
+
+| `0b403f0` behavior | Native adaptation |
+|---|---|
+| F5/F7/F8/F9 debugger keys with key hints | F5 Continue, F7 Step opcode, F10 Next line, F11 Step line, Shift+F11 Finish, F9 Breakpoint here. Hints are shown on the toolbar when it is wide enough. Keys act only in the Debugger activity while a paused session accepts commands. |
+| Breakpoint button at the current location | **Breakpoint here** adds a breakpoint at the paused `File.sol:LINE` through the existing typed `breakpoint add` operation. It is disabled on bytecode-only stops. |
+| EXECUTION card (PC, gas, depth, opcode, step) | Execution card above the Inspector tabs. It wraps to more rows when narrow. |
+
+The browser server, the free-form command prompt and the `--web` CLI flags were not copied. The native console and typed operations already cover them within the existing control boundary.
+
 The existing React debugger is also a behavior reference for session-envelope ordering and for separating baseline receipt agreement, current EVM outcome, worker completion and divergence. These indicators are not combined into a single verified flag. Offline captures may be synthetic.
 
 ## Native scope

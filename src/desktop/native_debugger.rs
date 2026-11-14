@@ -1,6 +1,6 @@
 use super::debug_session::{Acceptance, DebugSession, Envelope, Phase, Ticket};
 use super::session::{self, DesktopState};
-use super::{CodeRow, DebugData, DebugLogic, Logic, MainWindow};
+use super::{CodeRow, DebugData, DebugLogic, ExecStat, Logic, MainWindow};
 use serde_json::{json, Value};
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 use std::sync::{Arc, Mutex};
@@ -120,6 +120,27 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     let rt = runtime.clone();
     ui.global::<DebugLogic>()
         .on_refresh(move || command(weak.clone(), held.clone(), rt.clone(), "refresh", json!({})));
+    let weak = ui.as_weak();
+    let held = state.clone();
+    let rt = runtime.clone();
+    ui.global::<DebugLogic>().on_breakpoint_here(move || {
+        let location = held
+            .lock()
+            .unwrap()
+            .debug
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| breakpoint_location(&snapshot.status));
+        if let Some(location) = location {
+            command(
+                weak.clone(),
+                held.clone(),
+                rt.clone(),
+                "breakpoint",
+                json!({"action":"add","location":location}),
+            );
+        }
+    });
     let weak = ui.as_weak();
     let held = state.clone();
     let rt = runtime.clone();
@@ -1231,6 +1252,13 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     project_draft!("around-pc", get_around_pc, set_around_pc);
     if let Some(snapshot) = &debug.snapshot {
         let status = &snapshot.status;
+        let execution = execution_stats(status);
+        if data.get_execution().row_count() != execution.len()
+            || execution.iter().enumerate().any(|(index, stat)| data.get_execution().row_data(index).as_ref() != Some(stat))
+        {
+            data.set_execution(super::model(execution));
+        }
+        data.set_breakpoint_here(breakpoint_location(status).unwrap_or_default().into());
         data.set_location(
             format!(
                 "PC {} · {} · {}:{}",
@@ -1343,6 +1371,10 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
         pane_text!(&snapshot.panes.diff, get_diff_text, set_diff_text);
     } else {
         data.set_location("No paused execution context".into());
+        if data.get_execution().row_count() > 0 {
+            data.set_execution(super::model(Vec::<ExecStat>::new()));
+        }
+        data.set_breakpoint_here("".into());
         data.set_baseline("No baseline supplied".into());
         data.set_outcome("EVM outcome: not reported".into());
         data.set_completion("Worker completion: not started".into());
@@ -1443,6 +1475,45 @@ fn code_rows(snapshot: &super::debug_session::Snapshot, mode: i32) -> (String, V
         });
     (title, rows)
 }
+/// The at-a-glance execution card: PC, gas left, call depth, opcode and step.
+fn execution_stats(status: &Value) -> Vec<ExecStat> {
+    let pc = status["pc"]
+        .as_u64()
+        .map(|pc| format!("0x{pc:x}"))
+        .unwrap_or_else(|| display(&status["pc"]));
+    let gas = &status["gas"];
+    let gas = gas["remaining"]
+        .as_u64()
+        .or_else(|| status["gas_remaining"].as_u64())
+        .or_else(|| gas.as_u64())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unavailable".into());
+    let opcode = status["mnemonic"]
+        .as_str()
+        .or_else(|| status["opcode"].as_str())
+        .unwrap_or("unavailable");
+    [
+        ("PC", pc),
+        ("Gas left", gas),
+        ("Depth", display(&status["depth"])),
+        ("Opcode", opcode.into()),
+        ("Step", display(&status["step"])),
+    ]
+    .into_iter()
+    .map(|(label, value)| ExecStat { label: label.into(), value: value.into() })
+    .collect()
+}
+
+/// `File.sol:LINE` for the paused source line, the location a breakpoint at
+/// the current position uses. Opcode-only stops have no source location.
+fn breakpoint_location(status: &Value) -> Option<String> {
+    let location = &status["location"];
+    let file = location["file"].as_str().filter(|file| !file.is_empty())?;
+    let line = location["line"].as_u64()?;
+    let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    Some(format!("{name}:{line}"))
+}
+
 fn display(value: &Value) -> String {
     match value {
         Value::Null => "unavailable".into(),
@@ -1497,6 +1568,26 @@ fn window_params(memory: &str, slots: &str, source: &str, pc: &str) -> Result<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn execution_card_and_breakpoint_follow_the_paused_status() {
+        let status = json!({
+            "pc": 50, "mnemonic": "SSTORE", "depth": 1, "step": 812,
+            "gas": {"remaining": 29_000_000u64, "used": 1000},
+            "location": {"file": "src/contracts/WorkshopVault.sol", "line": 20}
+        });
+        let stats: Vec<_> = execution_stats(&status)
+            .into_iter()
+            .map(|stat| format!("{}={}", stat.label, stat.value))
+            .collect();
+        assert_eq!(stats, ["PC=0x32", "Gas left=29000000", "Depth=1", "Opcode=SSTORE", "Step=812"]);
+        assert_eq!(breakpoint_location(&status).as_deref(), Some("WorkshopVault.sol:20"));
+        // A bytecode-only stop offers no source breakpoint; the card still renders.
+        let bytecode = json!({"pc": 7, "opcode": "0x5b"});
+        assert_eq!(breakpoint_location(&bytecode), None);
+        assert_eq!(execution_stats(&bytecode)[3].value, "0x5b");
+        assert_eq!(execution_stats(&bytecode)[1].value, "unavailable");
+    }
+
     #[test]
     fn rendering_reads_opcode_text_and_clears_previous_session_panes() {
         i_slint_backend_testing::init_no_event_loop();

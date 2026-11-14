@@ -25,6 +25,8 @@ pub(crate) mod debug_session;
 mod debug_transport;
 #[cfg(test)]
 mod debug_layout_tests;
+#[cfg(test)]
+mod view_capture_tests;
 mod native_debugger;
 mod jobs;
 mod macro_model;

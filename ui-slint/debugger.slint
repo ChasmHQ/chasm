@@ -3,6 +3,7 @@ import { DockTab, IconButton, Theme } from "theme.slint";
 import { SelectableText } from "selectable-text.slint";
 
 export struct CodeRow { position: string, text: string, current: bool }
+export struct ExecStat { label: string, value: string }
 
 export global DebugData {
     in-out property <int> launch-mode: 0;
@@ -50,6 +51,9 @@ export global DebugData {
     in-out property <int> workspace-tab: 0;
     in-out property <bool> show-dock: false;
     in property <[CodeRow]> code-rows;
+    in property <[ExecStat]> execution;
+    // `File.sol:LINE` of the paused source line; empty when paused on bytecode only.
+    in property <string> breakpoint-here;
     in-out property <string> run-to;
     in-out property <string> evaluate-input;
     in-out property <string> memory-offset;
@@ -62,6 +66,7 @@ export global DebugLogic {
     callback start();
     callback launch-edited();
     callback navigate(string);
+    callback breakpoint-here();
     callback cancel();
     callback refresh();
     callback code-mode(int);
@@ -160,13 +165,19 @@ export component DebugCodePane inherits Rectangle {
                 spacing: 0.25rem;
                 DockTab { label: "Source"; selected: DebugData.code-mode == 0; enabled: DebugData.source-available; clicked => { DebugLogic.code-mode(0); } }
                 DockTab { label: "Disassembly"; selected: DebugData.code-mode == 1; clicked => { DebugLogic.code-mode(1); } }
-                if DebugData.code-mode == 0: DebugField { draft-id: "source-start"; width: 12rem; label: "Source start"; enabled: DebugData.can-command; text <=> DebugData.source-start; }
-                if DebugData.code-mode == 1: DebugField { draft-id: "around-pc"; width: 12rem; label: "Around PC"; enabled: DebugData.can-command; text <=> DebugData.around-pc; }
-                IconButton { icon: @image-url("icons/search.svg"); label: "Read window"; enabled: DebugData.has-snapshot && DebugData.can-command; clicked => { DebugLogic.read-window(); } }
-                IconButton { icon: @image-url("icons/search.svg"); label: "Back to PC"; enabled: DebugData.current-code-index >= 0; clicked => { root.follow-pc(); } }
             }
         }
-        SelectableText { text: DebugData.code-title; color: Theme.muted; font-size: 0.75rem; wrap: no-wrap; overflow: elide; min-width: 0px; }
+        // The window field gets its own row so it is never squeezed under the tabs.
+        HorizontalLayout {
+            height: Theme.control-height;
+            spacing: 0.25rem;
+            padding-left: 0.25rem;
+            if DebugData.code-mode == 0: DebugField { draft-id: "source-start"; label: "Source start"; enabled: DebugData.can-command; text <=> DebugData.source-start; }
+            if DebugData.code-mode == 1: DebugField { draft-id: "around-pc"; label: "Around PC"; enabled: DebugData.can-command; text <=> DebugData.around-pc; }
+            IconButton { icon: @image-url("icons/search.svg"); label: "Read window"; short-label: "Read"; enabled: DebugData.has-snapshot && DebugData.can-command; clicked => { DebugLogic.read-window(); } }
+            IconButton { icon: @image-url("icons/search.svg"); label: "Back to PC"; short-label: "PC"; enabled: DebugData.current-code-index >= 0; clicked => { root.follow-pc(); } }
+        }
+        Text { text: DebugData.code-title; color: Theme.muted; font-size: 0.75rem; wrap: no-wrap; overflow: elide; min-width: 0px; }
         Rectangle {
             background: Theme.inset;
             border-width: 1px;
@@ -193,11 +204,32 @@ export component DebugCodePane inherits Rectangle {
                         spacing: 0.25rem;
                         SelectableText { width: 1.25rem; horizontal-stretch: 0; text: row.current ? ">" : ""; color: Theme.accent; font-family: "Cascadia Mono"; vertical-alignment: center; horizontal-alignment: center; }
                         SelectableText { width: 6rem; horizontal-stretch: 0; text: row.position; color: row.current ? Theme.accent : Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; wrap: no-wrap; overflow: elide; }
-                        SelectableText { text: row.text; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; wrap: no-wrap; horizontal-stretch: 1; }
+                        SelectableText { text: row.text; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; horizontal-alignment: left; wrap: no-wrap; horizontal-stretch: 1; }
                     }
                 }
             }
         }
+    }
+}
+
+/// At-a-glance PC, gas, depth, opcode and step, wrapping onto more rows when narrow.
+component ExecutionCard inherits Rectangle {
+    private property <length> cell: 7.5rem;
+    private property <int> columns: max(1, min(DebugData.execution.length, floor(self.width / self.cell)));
+    min-width: 0px;
+    height: DebugData.execution.length == 0 ? 0px : ceil(DebugData.execution.length / self.columns) * 2.5rem + 0.5rem;
+    visible: DebugData.execution.length > 0;
+    background: Theme.inset;
+    border-width: 1px;
+    border-color: Theme.edge;
+    clip: true;
+    for stat[index] in DebugData.execution: VerticalLayout {
+        x: 0.5rem + mod(index, root.columns) * (root.width - 1rem) / root.columns;
+        y: 0.25rem + floor(index / root.columns) * 2.5rem;
+        width: (root.width - 1rem) / root.columns;
+        height: 2.5rem;
+        SelectableText { text: stat.label; color: Theme.muted; font-size: 0.6875rem; wrap: no-wrap; overflow: elide; min-width: 0px; }
+        SelectableText { text: stat.value; font-family: "Cascadia Mono"; font-size: 0.8125rem; wrap: no-wrap; overflow: elide; min-width: 0px; }
     }
 }
 
@@ -209,6 +241,7 @@ export component DebugInspectorPane inherits Rectangle {
     border-color: Theme.edge;
     VerticalLayout {
         padding: 1px;
+        ExecutionCard { }
         ScrollView {
             height: Theme.control-height;
             min-width: 0px;
@@ -254,10 +287,15 @@ export component DebugInspectionPane inherits Rectangle {
                 DockTab { label: "Logs"; selected: DebugData.inspect-tab == 4; clicked => { DebugLogic.inspect-tab(4); } }
                 DockTab { label: "Gas"; selected: DebugData.inspect-tab == 5; clicked => { DebugLogic.inspect-tab(5); } }
                 DockTab { label: "Last-stop diff"; selected: DebugData.inspect-tab == 6; clicked => { DebugLogic.inspect-tab(6); } }
-                if DebugData.inspect-tab == 1: DebugField { draft-id: "memory-offset"; width: 13rem; label: "Offset"; enabled: DebugData.can-command; text <=> DebugData.memory-offset; }
-                if DebugData.inspect-tab == 2: DebugField { draft-id: "storage-slots"; width: 13rem; label: "Slots"; enabled: DebugData.can-command; text <=> DebugData.storage-slots; }
-                if DebugData.inspect-tab == 1 || DebugData.inspect-tab == 2: IconButton { icon: @image-url("icons/search.svg"); label: "Read window"; enabled: DebugData.has-snapshot && DebugData.can-command; clicked => { DebugLogic.read-window(); } }
             }
+        }
+        if DebugData.inspect-tab == 1 || DebugData.inspect-tab == 2: HorizontalLayout {
+            height: Theme.control-height;
+            spacing: 0.25rem;
+            padding-left: 0.25rem;
+            if DebugData.inspect-tab == 1: DebugField { draft-id: "memory-offset"; label: "Offset"; enabled: DebugData.can-command; text <=> DebugData.memory-offset; }
+            if DebugData.inspect-tab == 2: DebugField { draft-id: "storage-slots"; label: "Slots"; enabled: DebugData.can-command; text <=> DebugData.storage-slots; }
+            IconButton { icon: @image-url("icons/search.svg"); label: "Read window"; short-label: "Read"; enabled: DebugData.has-snapshot && DebugData.can-command; clicked => { DebugLogic.read-window(); } }
         }
         Rectangle {
             min-width: 0px; min-height: 0px; vertical-stretch: 1;
@@ -273,10 +311,17 @@ export component DebugInspectionPane inherits Rectangle {
 }
 
 export component DebugToolbar inherits Rectangle {
+    // Measured in 16px text units so the tiers follow zoom: wide rows show
+    // full labels and key hints, narrower rows drop hints, then switch to
+    // short labels. Buttons never shrink below their text, so nothing overlaps.
+    private property <length> text-unit: 16px * Theme.zoom;
+    private property <bool> hints: self.width >= 92 * self.text-unit;
+    private property <bool> full: self.width >= 66 * self.text-unit;
     height: Theme.control-height;
     min-width: 0px;
     background: Theme.panel;
     HorizontalLayout {
+        spacing: 0.25rem;
         ScrollView {
             min-width: 0px;
             content-width: max(self.visible-width, commands.preferred-width);
@@ -284,17 +329,19 @@ export component DebugToolbar inherits Rectangle {
             vertical-scrollbar-policy: always-off;
             commands := HorizontalLayout {
                 alignment: start; spacing: 0.25rem;
-                IconButton { icon: @image-url("icons/play.svg"); label: DebugData.launch-mode == 0 ? "Start synthetic fixture" : DebugData.launch-mode == 1 ? "Start trusted Foundry target" : "Start offline capture"; primary: DebugData.can-start; enabled: DebugData.can-start; clicked => { DebugLogic.start(); } }
-                IconButton { icon: @image-url("icons/play.svg"); label: "Continue"; enabled: DebugData.can-command; clicked => { DebugLogic.navigate("continue"); } }
-                IconButton { icon: @image-url("icons/call.svg"); label: "Step opcode"; enabled: DebugData.can-command; clicked => { DebugLogic.navigate("step_opcode"); } }
-                IconButton { icon: @image-url("icons/call.svg"); label: "Step line"; enabled: DebugData.can-command && DebugData.source-available; clicked => { DebugLogic.navigate("step_line"); } }
-                IconButton { icon: @image-url("icons/call.svg"); label: "Next line"; enabled: DebugData.can-command && DebugData.source-available; clicked => { DebugLogic.navigate("next_line"); } }
-                IconButton { icon: @image-url("icons/call.svg"); label: "Finish"; enabled: DebugData.can-command; clicked => { DebugLogic.navigate("finish"); } }
+                IconButton { icon: @image-url("icons/play.svg"); label: DebugData.launch-mode == 0 ? "Start synthetic fixture" : DebugData.launch-mode == 1 ? "Start trusted Foundry target" : "Start offline capture"; short-label: root.full ? "" : "Start"; primary: DebugData.can-start; enabled: DebugData.can-start; clicked => { DebugLogic.start(); } }
+                IconButton { icon: @image-url("icons/play.svg"); label: "Continue"; short-label: root.full ? "" : "Go"; shortcut: root.hints ? "F5" : ""; enabled: DebugData.can-command; clicked => { DebugLogic.navigate("continue"); } }
+                IconButton { icon: @image-url("icons/call.svg"); label: "Step opcode"; short-label: root.full ? "" : "Op"; shortcut: root.hints ? "F7" : ""; enabled: DebugData.can-command; clicked => { DebugLogic.navigate("step_opcode"); } }
+                IconButton { icon: @image-url("icons/call.svg"); label: "Step line"; short-label: root.full ? "" : "Step"; shortcut: root.hints ? "F11" : ""; enabled: DebugData.can-command && DebugData.source-available; clicked => { DebugLogic.navigate("step_line"); } }
+                IconButton { icon: @image-url("icons/call.svg"); label: "Next line"; short-label: root.full ? "" : "Next"; shortcut: root.hints ? "F10" : ""; enabled: DebugData.can-command && DebugData.source-available; clicked => { DebugLogic.navigate("next_line"); } }
+                IconButton { icon: @image-url("icons/call.svg"); label: "Finish"; short-label: root.full ? "" : "Out"; shortcut: root.hints ? "Shift+F11" : ""; enabled: DebugData.can-command; clicked => { DebugLogic.navigate("finish"); } }
+                IconButton { icon: @image-url("icons/debugger.svg"); label: "Breakpoint here"; short-label: root.full ? "" : "Break"; shortcut: root.hints ? "F9" : ""; enabled: DebugData.can-command && DebugData.breakpoint-here != ""; clicked => { DebugLogic.breakpoint-here(); } }
                 IconButton { icon: @image-url("icons/refresh.svg"); label: "Restart"; enabled: DebugData.restart-available; clicked => { DebugLogic.navigate("restart"); } }
                 IconButton { icon: @image-url("icons/refresh.svg"); label: "Refresh"; enabled: DebugData.can-refresh; clicked => { DebugLogic.refresh(); } }
             }
         }
-        IconButton { icon: @image-url("icons/stop.svg"); label: "Cancel worker"; enabled: DebugData.can-cancel; clicked => { DebugLogic.cancel(); } }
+        Rectangle { width: 1px; background: Theme.edge; horizontal-stretch: 0; }
+        IconButton { icon: @image-url("icons/stop.svg"); label: "Cancel worker"; short-label: root.full ? "" : "Cancel"; enabled: DebugData.can-cancel; clicked => { DebugLogic.cancel(); } }
     }
 }
 

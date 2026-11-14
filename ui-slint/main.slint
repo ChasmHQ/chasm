@@ -1,5 +1,5 @@
 import { ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { ActionControl, CloseButton, DocTabChip, DockTab, IconButton, MenuRow, MenuTitle, RailIcon, SideHeader, SideRow, Theme } from "theme.slint";
+import { ActionControl, CloseButton, DocTabChip, DockTab, IconButton, MenuRow, MenuTitle, RailIcon, SideHeader, SideNote, SideRow, Theme } from "theme.slint";
 import { SelectableText } from "selectable-text.slint";
 import { AutomationData, AutomationLogic, AutomationPanel } from "automation.slint";
 export { AutomationData, AutomationLogic, AutomationClient } from "automation.slint";
@@ -10,7 +10,7 @@ export { MacroData, MacroLogic, MacroRow, MacroStep, MacroResult, MacroWorkspace
 import { FoundryWorkspace } from "foundry.slint";
 export { FoundryData, FoundryLogic, FoundryArtifactRow, FoundryWorkspace } from "foundry.slint";
 import { DebugData, DebugLogic, DebugToolbar, DebugCodePane, DebugInspectorPane, DebugInspectionPane, DebugSessionPane } from "debugger.slint";
-export { DebugData, DebugLogic, CodeRow } from "debugger.slint";
+export { DebugData, DebugLogic, CodeRow, ExecStat } from "debugger.slint";
 import { ContractData, ContractLogic, ContractViewData, ContractWorkspace, ContractResult, ContractStorage } from "contract.slint";
 export { ContractData, ContractLogic, ContractFunction, ContractViewData } from "contract.slint";
 import { PanelData, PanelLogic, PanelHeader, PanelDragHandle, Splitter, ConsoleView, PanelRow, ConstructorFieldRow, DeploymentView } from "panels.slint";
@@ -407,7 +407,7 @@ component NavigationView inherits Rectangle {
             spacing: 0.125rem; alignment: start;
             if AppData.activity == 0: VerticalLayout {
                 SideHeader { title: "Contracts"; }
-                if AppData.contracts.length == 0: SelectableText { text: "Recompile to load workspace contracts."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+                if AppData.contracts.length == 0: SideNote { text: "Recompile to load workspace contracts."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
                 ListView {
                     height: min(AppData.contracts.length * Theme.row-height, 10.5rem); min-width: 0px;
                     for row[index] in AppData.contracts: SideRow { icon: @image-url("icons/contracts.svg"); label: row.name; trailing: row.kind; selected: AppData.selected-contract == row.name; clicked => { Logic.select-contract(index); } }
@@ -423,10 +423,10 @@ component NavigationView inherits Rectangle {
             }
             if AppData.activity == 1: VerticalLayout {
                 SideHeader { title: "Chain"; }
-                SelectableText { text: AppData.block-label; color: Theme.text; wrap: word-wrap; }
+                SideNote { text: AppData.block-label; color: Theme.text; wrap: word-wrap; }
                 SideRow { icon: @image-url("icons/refresh.svg"); label: "Refresh chain"; clicked => { Logic.fetch-block(); } }
                 SideHeader { title: "Latest blocks"; }
-                if AppData.recent-blocks.length == 0: SelectableText { text: "No blocks yet."; color: Theme.faint; font-size: 0.75rem; }
+                if AppData.recent-blocks.length == 0: SideNote { text: "No blocks yet."; color: Theme.faint; font-size: 0.75rem; }
                 for block in AppData.recent-blocks: SideRow { icon: @image-url("icons/search.svg"); label: block.title; trailing: block.detail; clicked => { Logic.explorer-open(block.query); } }
             }
             if AppData.activity == 2: VerticalLayout {
@@ -442,10 +442,10 @@ component NavigationView inherits Rectangle {
             }
             if AppData.activity == 4: VerticalLayout {
                 SideHeader { title: "Session"; }
-                SelectableText { text: AppData.debugger-label; color: AppData.debugger-tint; font-size: 0.8125rem; wrap: word-wrap; }
+                SideNote { text: AppData.debugger-label; color: AppData.debugger-tint; font-size: 0.8125rem; wrap: word-wrap; }
                 SideHeader { title: "Launch"; }
                 SideRow { icon: @image-url("icons/play.svg"); label: "Offline capture"; enabled: DebugData.can-start; clicked => { DebugLogic.start(); } }
-                SelectableText { text: "Historical, fork call, and Foundry test launchers are not connected in this desktop UI."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+                SideNote { text: "Historical, fork call, and Foundry test launchers are not connected in this desktop UI."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
             }
         }
     }
@@ -590,14 +590,20 @@ component PanelZone inherits Rectangle {
         if root.tabs.length <= 1: PanelHeader { title: root.title; pane-id: root.active; zone: root.zone; tab-index: root.active-index; tab-count: root.tabs.length; }
         if root.tabs.length > 1: HorizontalLayout {
             height: Theme.tab-height; min-width: 0px;
-            ScrollView {
-                min-width: 0px; horizontal-stretch: 1;
-                content-width: max(self.visible-width, pane-tabs.preferred-width);
-                content-height: self.visible-height; vertical-scrollbar-policy: always-off;
+            pane-strip := Rectangle {
+                // Fixed size hints keep the tabs' widths from feeding back into this strip.
+                min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; clip: true;
+                // Each tab wants label + both DockTab paddings + the drag grip. When the
+                // header is too narrow the active tab keeps up to half of it and the
+                // others share the rest, eliding their labels instead of cutting glyphs.
+                property <length> fair: self.width / max(1, root.tabs.length);
+                property <length> active-share: max(self.fair, self.width / 2);
+                property <length> other-share: max(3rem, (self.width - self.active-share) / max(1, root.tabs.length - 1));
                 pane-tabs := HorizontalLayout {
+                    x: 0px; width: parent.width; height: parent.height;
                     alignment: start;
                     for tab[index] in root.tabs: Rectangle {
-                        width: max(5rem, tab-label.preferred-width + Theme.pad + 1.25rem);
+                        width: min(max(5rem, tab-label.preferred-width + 2 * Theme.pad + 1.25rem), tab.active ? pane-strip.active-share : pane-strip.other-share);
                         height: Theme.tab-height; horizontal-stretch: 0;
                         property <bool> drag-hit: PanelData.dragging && PanelData.drag-x >= self.absolute-position.x && PanelData.drag-x < self.absolute-position.x + self.width && PanelData.drag-y >= self.absolute-position.y && PanelData.drag-y < self.absolute-position.y + self.height;
                         changed drag-hit => {
@@ -618,7 +624,7 @@ component PanelZone inherits Rectangle {
                     }
                 }
             }
-            PanelHeader { title: ""; pane-id: root.active; zone: root.zone; tab-index: root.active-index; tab-count: root.tabs.length; width: 110 * Theme.unit; horizontal-stretch: 0; }
+            PanelHeader { title: ""; pane-id: root.active; zone: root.zone; tab-index: root.active-index; tab-count: root.tabs.length; compact: true; width: 2.5rem; horizontal-stretch: 0; }
         }
         WorkspacePane {
             kind: root.kind; owner: root.owner; document-kind: root.document-kind;
@@ -644,6 +650,9 @@ export component MainWindow inherits Window {
         running: root.hover-label != "" && !root.hover-visible;
         triggered => { root.hover-visible = true; }
     }
+    // Space the two side zones may share; the center document keeps at least
+    // 38% of the window (and 360px) at any zoom, so it is never squeezed shut.
+    private property <length> side-cap: max(0px, min(root.width * 0.62, root.width - 360px));
     in-out property <int> deployment-menu-index: -1;
     in-out property <length> deployment-menu-x;
     in-out property <length> deployment-menu-y;
@@ -732,6 +741,16 @@ export component MainWindow inherits Window {
             if event.modifiers.control && !event.modifiers.alt && (event.text == "b" || event.text == "B") {
                 Logic.recompile();
                 return accept;
+            }
+            // Debugger keys follow the usual IDE layout. They only act while a
+            // paused session accepts commands, so they never type into fields.
+            if AppData.activity == 4 && DebugData.can-command && !event.modifiers.control && !event.modifiers.alt {
+                if event.text == Key.F5 && !event.modifiers.shift { DebugLogic.navigate("continue"); return accept; }
+                if event.text == Key.F11 && event.modifiers.shift { DebugLogic.navigate("finish"); return accept; }
+                if event.text == Key.F11 && DebugData.source-available { DebugLogic.navigate("step_line"); return accept; }
+                if event.text == Key.F10 && DebugData.source-available { DebugLogic.navigate("next_line"); return accept; }
+                if event.text == Key.F7 { DebugLogic.navigate("step_opcode"); return accept; }
+                if event.text == Key.F9 && DebugData.breakpoint-here != "" { DebugLogic.breakpoint-here(); return accept; }
             }
             return reject;
         }
@@ -849,7 +868,7 @@ export component MainWindow inherits Window {
                         Rectangle { width: 1px; background: Theme.edge; }
 
                         if PanelData.left-visible && (!AppData.sidebar-collapsed || PanelData.maximized == PanelData.left-active) && (PanelData.maximized == "" || PanelData.maximized == PanelData.left-active): PanelZone {
-                            preferred-width: PanelData.maximized == PanelData.left-active ? 0px : min(PanelData.left-width * Theme.unit, 400 * Theme.unit);
+                            preferred-width: PanelData.maximized == PanelData.left-active ? 0px : min(PanelData.left-width * Theme.unit, 400 * Theme.unit, root.side-cap * 0.42);
                             horizontal-stretch: PanelData.maximized == PanelData.left-active ? 1 : 0;
                             geometry-changed(zone, x, y, width, height) => { root.update-drop-zone(zone, x, y, width, height); }
                             drag-target-index <=> root.left-drop-index;
@@ -883,7 +902,23 @@ export component MainWindow inherits Window {
                                 if PanelData.maximized == "" && AppData.documents.length > 0 && AppData.activity != 4: Rectangle {
                                     height: Theme.tab-height;
                                     background: Theme.bar;
-                                    ScrollView {
+                                    document-scroll := ScrollView {
+                                        // Tabs share the strip down to a readable minimum; past that the
+                                        // strip scrolls and keeps the active tab in view.
+                                        property <length> chip: clamp(self.visible-width / max(1, AppData.documents.length) - 1px, 7rem, 10.625rem);
+                                        property <int> active: AppData.active-document;
+                                        function reveal() {
+                                            if self.active < 0 { return; }
+                                            let left = self.active * (self.chip + 1px);
+                                            if left + self.content-x < 0px {
+                                                self.content-x = -left;
+                                            } else if left + self.chip + self.content-x > self.visible-width {
+                                                self.content-x = min(0px, self.visible-width - left - self.chip);
+                                            }
+                                        }
+                                        changed active => { self.reveal(); }
+                                        changed chip => { self.reveal(); }
+                                        changed visible-width => { self.reveal(); }
                                         min-width: 0px;
                                         min-height: 0px;
                                         content-width: max(self.visible-width, document-tabs.preferred-width);
@@ -893,6 +928,7 @@ export component MainWindow inherits Window {
                                             spacing: 1px;
                                             alignment: start;
                                             for doc[index] in AppData.documents: DocTabChip {
+                                                width: document-scroll.chip;
                                                 title: doc.title;
                                                 kind: doc.kind;
                                                 selected: AppData.active-document == index;
@@ -935,7 +971,7 @@ export component MainWindow inherits Window {
                             width: 6 * Theme.unit; horizontal-stretch: 0;
                         }
                         if PanelData.right-visible && (PanelData.maximized == "" || PanelData.maximized == PanelData.right-active): PanelZone {
-                            preferred-width: PanelData.maximized == PanelData.right-active ? 0px : min(PanelData.right-width * Theme.unit, 480 * Theme.unit);
+                            preferred-width: PanelData.maximized == PanelData.right-active ? 0px : min(PanelData.right-width * Theme.unit, 480 * Theme.unit, root.side-cap * 0.58);
                             horizontal-stretch: PanelData.maximized == PanelData.right-active ? 1 : 0;
                             geometry-changed(zone, x, y, width, height) => { root.update-drop-zone(zone, x, y, width, height); }
                             drag-target-index <=> root.right-drop-index;
@@ -1098,10 +1134,10 @@ export component MainWindow inherits Window {
                             MenuRow { label: "Show Document"; clicked => { PanelLogic.dock("document", -1); Logic.close-menu(); } }
                             MenuRow { label: "Show Call Result"; clicked => { PanelLogic.dock("call_result", -1); Logic.close-menu(); } }
                             MenuRow { label: "Show Storage"; clicked => { PanelLogic.dock("storage", -1); Logic.close-menu(); } }
-                            MenuRow { label: "Show Debug Code"; clicked => { PanelLogic.dock("debug_code", -1); Logic.close-menu(); } }
-                            MenuRow { label: "Show Debug Inspector"; clicked => { PanelLogic.dock("debug_inspector", -1); Logic.close-menu(); } }
-                            MenuRow { label: "Show Debug Inspection"; clicked => { PanelLogic.dock("debug_inspection", -1); Logic.close-menu(); } }
-                            MenuRow { label: "Show Debug Session"; clicked => { PanelLogic.dock("debug_session", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show debugger Code"; clicked => { PanelLogic.dock("debug_code", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show debugger Inspector"; clicked => { PanelLogic.dock("debug_inspector", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show debugger Low-level"; clicked => { PanelLogic.dock("debug_inspection", -1); Logic.close-menu(); } }
+                            MenuRow { label: "Show debugger Session"; clicked => { PanelLogic.dock("debug_session", -1); Logic.close-menu(); } }
                             MenuRow { label: "Show Console"; clicked => { PanelLogic.dock("console", -1); Logic.close-menu(); } }
                             MenuRow { label: "Show Logs"; clicked => { PanelLogic.dock("logs", -1); Logic.close-menu(); } }
                             MenuRow { label: "Show Jobs"; clicked => { PanelLogic.dock("jobs", -1); Logic.close-menu(); } }
