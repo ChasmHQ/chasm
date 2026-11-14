@@ -124,18 +124,40 @@ pub struct StartFailure {
     pub ambiguous: bool,
 }
 
+/// Launches with the stored owner token, renewing it once when the gateway
+/// reports that this browser owner expired. `csrf` holds the token to keep.
 pub async fn start(
     http: &reqwest::Client,
-    csrf: &str,
+    csrf: &mut String,
     request: &PreparedLaunch,
 ) -> Result<Value, StartFailure> {
-    send_start_at(http, csrf, request, BASE)
+    let failure = |(message, ambiguous)| StartFailure {
+        message,
+        request: request.clone(),
+        ambiguous,
+    };
+    if !csrf.is_empty() {
+        match launch_at(http, csrf, request, BASE).await {
+            Launch::Done(result) => return result.map_err(failure),
+            Launch::OwnerExpired => {}
+        }
+    }
+    *csrf = super::session::establish_debugger(http)
         .await
-        .map_err(|(message, ambiguous)| StartFailure {
-            message,
-            request: request.clone(),
-            ambiguous,
-        })
+        .map_err(|message| failure((message, false)))?;
+    match launch_at(http, csrf, request, BASE).await {
+        Launch::Done(result) => result.map_err(failure),
+        Launch::OwnerExpired => Err(failure((OWNER_LOST.into(), false))),
+    }
+}
+
+const OWNER_LOST: &str = "The debugger gateway did not keep the renewed owner; no worker was accepted.";
+
+enum Launch {
+    Done(Result<Value, (String, bool)>),
+    /// The owner idled out before this request; it had no live worker, so
+    /// nothing was accepted and a renewed owner may safely retry.
+    OwnerExpired,
 }
 
 pub async fn reconcile_cancel(
@@ -152,9 +174,13 @@ async fn reconcile_at(
     request: &PreparedLaunch,
     base: &str,
 ) -> Result<(), String> {
-    let value = send_start_at(http, csrf, request, base)
-        .await
-        .map_err(|(message, _)| format!("Could not reconcile the original launch: {message}"))?;
+    // An expired owner cannot own a live worker, so the original launch is
+    // either absent or already disposed.
+    let value = match launch_at(http, csrf, request, base).await {
+        Launch::OwnerExpired => return Ok(()),
+        Launch::Done(result) => result
+            .map_err(|(message, _)| format!("Could not reconcile the original launch: {message}"))?,
+    };
     let session = value["id"]
         .as_str()
         .ok_or("Cannot identify the launch to dispose it.")?;
@@ -177,14 +203,27 @@ async fn reconcile_at(
     }
 }
 
+#[cfg(test)]
 async fn send_start_at(
     http: &reqwest::Client,
     csrf: &str,
     request: &PreparedLaunch,
     base: &str,
 ) -> Result<Value, (String, bool)> {
+    match launch_at(http, csrf, request, base).await {
+        Launch::Done(result) => result,
+        Launch::OwnerExpired => Err((OWNER_LOST.into(), false)),
+    }
+}
+
+async fn launch_at(
+    http: &reqwest::Client,
+    csrf: &str,
+    request: &PreparedLaunch,
+    base: &str,
+) -> Launch {
     let url = format!("{base}/api/debugger/sessions");
-    let response = http
+    let response = match http
         .post(&url)
         .header("host", HOST)
         .header("x-chasm-csrf", csrf)
@@ -193,18 +232,41 @@ async fn send_start_at(
         .body(request.body.clone())
         .send()
         .await
-        .map_err(|_| {
-            (
+    {
+        Ok(response) => response,
+        Err(_) => {
+            return Launch::Done(Err((
                 "Launch acknowledgement was lost or timed out; its outcome is not known.".into(),
                 true,
-            )
-        })?;
+            )))
+        }
+    };
     if response.url().as_str() != url {
-        return Err((
+        return Launch::Done(Err((
             "Launch acknowledgement was redirected; reconcile the original request.".into(),
             true,
-        ));
+        )));
     }
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        let bytes = read_bounded(response, MAX_RESOURCE_REPLY).await.unwrap_or_default();
+        if owner_expired(&bytes) {
+            return Launch::OwnerExpired;
+        }
+        return Launch::Done(Err((
+            format!("The gateway rejected this launch ({}).", reqwest::StatusCode::FORBIDDEN),
+            false,
+        )));
+    }
+    Launch::Done(read_launch(response).await)
+}
+
+pub(super) fn owner_expired(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body).is_ok_and(|value| {
+        value["error"]["code"].as_str() == Some(crate::debugger::OWNER_EXPIRED)
+    })
+}
+
+async fn read_launch(response: reqwest::Response) -> Result<Value, (String, bool)> {
     let status = response.status();
     if !status.is_success() {
         // A conflicting or failed server response may follow an earlier accepted POST.
@@ -577,6 +639,7 @@ mod tests {
         lost_ack: bool,
         malformed_ack: bool,
         response_status: Option<StatusCode>,
+        response_body: Option<String>,
     }
 
     async fn launch(
@@ -586,7 +649,8 @@ mod tests {
         let mut state = state.lock().unwrap();
         state.requests.push(bytes.to_vec());
         if let Some(status) = state.response_status {
-            return (status, "fixture rejection".into());
+            let body = state.response_body.clone();
+            return (status, body.unwrap_or_else(|| "fixture rejection".into()));
         }
         if let Some(original) = &state.accepted {
             if original != &bytes.to_vec() {
@@ -693,6 +757,38 @@ mod tests {
                     .await
                     .unwrap_err();
             assert_eq!(ambiguous, expected_ambiguous, "status {status}");
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn only_an_expired_owner_rejection_allows_renewal() {
+        let expired = json!({"error": {"code": crate::debugger::OWNER_EXPIRED, "message": "x"}});
+        for (body, renew) in [
+            (expired.to_string(), true),
+            (json!({"error": {"code": "forbidden", "message": "x"}}).to_string(), false),
+            ("fixture rejection".to_string(), false),
+        ] {
+            let state = Arc::new(Mutex::new(Fixture {
+                response_status: Some(StatusCode::FORBIDDEN),
+                response_body: Some(body.clone()),
+                ..Fixture::default()
+            }));
+            let (base, server) = fixture(state.clone()).await;
+            let prepared = DebugLaunchRequest::Synthetic.prepare().unwrap();
+            let http = reqwest::Client::new();
+            match launch_at(&http, "stale-csrf", &prepared, &base).await {
+                Launch::OwnerExpired => assert!(renew, "{body}"),
+                Launch::Done(result) => {
+                    assert!(!renew, "{body}");
+                    assert!(!result.unwrap_err().1, "a plain 403 accepted nothing");
+                }
+            }
+            // An expired owner holds no worker, so reconciliation is a no-op.
+            if renew {
+                reconcile_at(&http, "stale-csrf", &prepared, &base).await.unwrap();
+                assert_eq!(state.lock().unwrap().deletes, 0);
+            }
             server.abort();
         }
     }

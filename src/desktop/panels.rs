@@ -984,6 +984,7 @@ fn float_panel(registry: &Hosts, key: &str) {
         state.layout = next;
     }
     registry.borrow_mut().windows.insert(id.stable_key(), Floating { ui, id });
+    forget_focus(registry);
     refresh_all();
 }
 
@@ -1132,7 +1133,13 @@ fn hide_panel(registry: &Hosts, key: &str) {
     if let Some(window) = window {
         dispose(window);
     }
+    forget_focus(registry);
     refresh_all();
+}
+/// Placement changed under the cached focus, so the next navigation to the
+/// same document must restore its pane instead of being treated as a no-op.
+fn forget_focus(registry: &Hosts) {
+    registry.borrow_mut().last_focus = None;
 }
 fn reset(registry: &Hosts, preset: Preset) {
     let state = registry.borrow().state.clone();
@@ -1160,6 +1167,7 @@ fn reset(registry: &Hosts, preset: Preset) {
     for window in windows {
         dispose(window);
     }
+    forget_focus(registry);
     refresh_all();
 }
 fn layout_snapshot(registry: &Hosts, final_save: bool) -> Option<(std::path::PathBuf, serde_json::Value)> {

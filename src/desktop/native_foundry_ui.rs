@@ -1,5 +1,6 @@
 use super::{FoundryArtifactRow, FoundryData, FoundryLogic, MainWindow};
 use slint::{ComponentHandle, ModelRc, VecModel};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::native_foundry::{FoundryController, FoundryPhase};
@@ -88,15 +89,24 @@ pub fn wire(
     let weak_controller = Arc::downgrade(&controller);
     let weak = ui.as_weak();
     let held = state.clone();
+    // Slint handles can only be upgraded on the event loop, so a closed host
+    // reports back through this flag and its watcher stops on the next change.
+    let host_closed = Arc::new(AtomicBool::new(false));
     runtime.spawn(async move {
         while changes.changed().await.is_ok() {
+            if host_closed.load(Ordering::Acquire) {
+                return;
+            }
             let Some(controller) = weak_controller.upgrade() else { return };
             let weak = weak.clone();
             let held = held.clone();
+            let host_closed = host_closed.clone();
             let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak.upgrade() {
-                    render_controller(&ui, &controller);
-                }
+                let Some(ui) = weak.upgrade() else {
+                    host_closed.store(true, Ordering::Release);
+                    return;
+                };
+                render_controller(&ui, &controller);
                 super::paint(&weak, &held);
             });
         }

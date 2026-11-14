@@ -1358,3 +1358,43 @@ fn run_models_reject_unknown_fields_duplicate_ids_and_unbounded_private_data() {
         assert_eq!(serde_json::from_str::<RunStatus>(&encoded).unwrap(), status);
     }
 }
+
+#[test]
+fn erc20_token_wording_is_public_but_assigned_credentials_are_not() {
+    let mut scenario = definition(vec![
+        step("token", raw_call(ADDRESS)),
+        step(
+            "read",
+            StepKind::AbiCall {
+                artifact_id: "artifact-1234".into(),
+                signature: "token()".into(),
+                mode: AbiCallMode::Read,
+                target: "${step.token.returnData}".into(),
+                args: vec![json!("${var.token}")],
+                signer: Signer::AnvilAccount0,
+                value: "0".into(),
+                gas_limit: "500000".into(),
+            },
+        ),
+    ]);
+    scenario.name = "Approve token".into();
+    scenario.description = "Read the key holder balance".into();
+    scenario.variables.insert("token".into(), json!(ADDRESS));
+    assert!(!sensitive_text("Approve token"));
+    assert!(!sensitive_text("${step.token.contractAddress}"));
+    assert!(!sensitive_text("token()"));
+    for leaked in ["token=synthetic", "key: synthetic", "api token = synthetic"] {
+        assert!(sensitive_text(leaked), "{leaked}");
+    }
+    let mut leaked = scenario.clone();
+    leaked.description = "token=synthetic-marker".into();
+    let errors = leaked.validate().unwrap_err();
+    assert!(has(&errors, "secret_or_url"));
+    assert!(!format!("{errors:?}").contains("synthetic-marker"));
+    let text = serde_json::to_vec(&scenario).unwrap();
+    decode_macro(&text).expect("ERC-20 wording is not a secret");
+    scenario.validate_storage().expect("ERC-20 wording is storable");
+    let mut keyed = scenario.clone();
+    keyed.variables.insert("token".into(), json!("synthetic-access-token"));
+    assert!(has(&keyed.validate_storage().unwrap_err(), "secret_key"));
+}

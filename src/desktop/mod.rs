@@ -913,10 +913,9 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     native_macro::wire(ui, state, runtime.clone());
     native_macro::set_platform(state, Some(Arc::new(macro_platform::NativeMacroPlatform)));
     let foundry = native_foundry_ui::wire(ui, state, runtime.clone());
-    native_macro::set_executor(
-        state,
-        Some(Arc::new(macro_executor::TrustedMacroExecutor::new(state.clone(), foundry))),
-    );
+    native_macro::ensure_executor(state, || {
+        Arc::new(macro_executor::TrustedMacroExecutor::new(state.clone(), foundry))
+    });
     native_debugger::wire(ui, state, runtime.clone());
     native_contract::wire(ui, state, runtime);
 }

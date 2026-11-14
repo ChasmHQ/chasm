@@ -192,6 +192,10 @@ async fn bootstrap_and_security_boundaries() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        // Only the missing-owner case may be renewed by re-opening capabilities.
+        let bytes = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let code = serde_json::from_slice::<Value>(&bytes).unwrap()["error"]["code"].clone();
+        assert_eq!(code == OWNER_EXPIRED, !cookie, "cookie={cookie}");
     }
     let response = h
         .app

@@ -306,7 +306,7 @@ fn update_summary(state: &mut DesktopState) {
 fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle) {
     let prepared = {
         let mut state = held.lock().unwrap();
-        if state.transition_pending() || !state.workspace_ready || state.csrf.is_empty() {
+        if state.transition_pending() || !state.workspace_ready {
             return;
         }
         let request = match launch_request(&state).and_then(|request| request.prepare()) {
@@ -333,8 +333,16 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle) {
     };
     super::paint(&weak, &held);
     runtime.spawn(async move {
-        let (client, ticket, request, synthetic) = prepared;
-        let result = super::debug_transport::start(&client.http, &client.csrf, &request).await;
+        let (mut client, ticket, request, synthetic) = prepared;
+        let issued = client.csrf.clone();
+        let result = super::debug_transport::start(&client.http, &mut client.csrf, &request).await;
+        if client.csrf != issued {
+            let mut state = held.lock().unwrap();
+            if same_workspace(&state, &client) {
+                state.csrf = client.csrf.clone();
+                state.debugger_label = "Debugger ready".into();
+            }
+        }
         match result {
             Ok(value) => {
                 let id = value.get("id").and_then(Value::as_str).map(str::to_string);
@@ -922,7 +930,11 @@ async fn poll_simple(
             .as_ref()
             .ok()
             .is_some_and(|value| value.get("busy") == Some(&json!(false)));
-        let _ = deliver(&weak, &held, &client, &ticket, result).await;
+        let accepted = deliver(&weak, &held, &client, &ticket, result).await;
+        if let Acceptance::Cancel(orphan) = accepted {
+            let _ = session::cancel_debugger(&client.http, &client.csrf, &orphan).await;
+            return;
+        }
         if settled {
             return;
         }
@@ -1178,7 +1190,6 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_can_start(
         state.workspace_ready
             && !state.transition_pending()
-            && !state.csrf.is_empty()
             && debug.can_start(),
     );
     let commands_enabled = state.workspace_ready && !state.transition_pending();

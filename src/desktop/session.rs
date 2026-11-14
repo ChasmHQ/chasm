@@ -2410,13 +2410,18 @@ pub async fn cancel_debugger(
         .await
         .map_err(|_| "Could not confirm debugger cancellation.".to_string())?;
     if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(response
-            .text()
-            .await
-            .unwrap_or_else(|_| "cancel failed".into()))
+        return Ok(());
     }
+    let status = response.status();
+    let body = response.bytes().await.unwrap_or_default();
+    // The gateway only expires owners without an active session, so there is
+    // no worker left to dispose.
+    if status == reqwest::StatusCode::FORBIDDEN
+        && super::debug_transport::owner_expired(&body)
+    {
+        return Ok(());
+    }
+    Err(String::from_utf8(body.to_vec()).unwrap_or_else(|_| "cancel failed".into()))
 }
 
 pub fn classify_chain_query(query: &str) -> ChainQuery {

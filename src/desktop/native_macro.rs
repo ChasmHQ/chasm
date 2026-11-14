@@ -706,6 +706,16 @@ pub fn set_executor(state: &State, executor: Option<Arc<dyn MacroExecutor>>) {
     }
 }
 
+/// Install the executor only when this session has none. Floating hosts re-run
+/// wiring; replacing the executor there would cancel the shared in-flight run.
+pub fn ensure_executor(state: &State, executor: impl FnOnce() -> Arc<dyn MacroExecutor>) {
+    let Some(controller) = controller_for(state) else { return };
+    if controller.executor.lock().unwrap().is_some() {
+        return;
+    }
+    set_executor(state, Some(executor()));
+}
+
 pub fn set_platform(state: &State, platform: Option<Arc<dyn MacroPlatform>>) {
     if let Some(controller) = controller_for(state) {
         *controller.platform.lock().unwrap() = platform;

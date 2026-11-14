@@ -30,6 +30,9 @@ use std::{
 use tokio::sync::broadcast;
 use worker::Worker;
 
+/// Error code clients use to tell an expired browser owner from other 403s.
+pub const OWNER_EXPIRED: &str = "owner_expired";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GatewayError {
     pub code: String,
@@ -54,6 +57,16 @@ impl GatewayError {
     }
     fn forbidden(message: &str) -> Self {
         Self::new(StatusCode::FORBIDDEN, "forbidden", message)
+    }
+    /// Distinct from other 403s: the owner idled out or never existed, so the
+    /// client may re-open capabilities. Idle expiry never removes the owner of
+    /// an active session, so no worker of that owner is still running.
+    fn owner_expired() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            OWNER_EXPIRED,
+            "Open debugger capabilities first to establish browser ownership.",
+        )
     }
     fn conflict(message: &str) -> Self {
         Self::new(StatusCode::CONFLICT, "conflict", message)
@@ -285,7 +298,7 @@ impl Manager {
         }
         let mut registry = self.registry.lock().unwrap();
         if !registry.owners.contains_key(&owner.0) {
-            return Err(GatewayError::forbidden("Unknown debugger browser owner."));
+            return Err(GatewayError::owner_expired());
         }
         if registry.resources.len() >= 64
             || registry.resources.values().map(|r| r.size).sum::<usize>() + bytes.len()

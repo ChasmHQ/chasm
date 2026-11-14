@@ -115,12 +115,7 @@ pub(super) async fn protect(
                 ));
                 (owner, csrf)
             }
-            _ => {
-                return GatewayError::forbidden(
-                    "Open debugger capabilities first to establish browser ownership.",
-                )
-                .into_response()
-            }
+            _ => return GatewayError::owner_expired().into_response(),
         }
     };
     manager

@@ -482,9 +482,26 @@ fn sensitive_text(text: &str) -> bool {
     .any(|word| compact.contains(word))
         || lower.contains("://")
         || lower.contains("bearer ")
-        || lower
-            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-            .any(|word| word == "token" || word == "key")
+        || assigns_credential(&lower)
+}
+
+/// `token`/`key` are ordinary ERC-20 and ABI words ("Approve token",
+/// `${step.token.contractAddress}`, `token()`). They only look like a leaked
+/// credential when a value is assigned to them, as in `token=…` or `key: …`.
+fn assigns_credential(lower: &str) -> bool {
+    let bytes = lower.as_bytes();
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    ["token", "key"].iter().any(|name| {
+        lower.match_indices(name).any(|(start, _)| {
+            let end = start + name.len();
+            let bounded = (start == 0 || !word(bytes[start - 1]))
+                && bytes.get(end).is_none_or(|byte| !word(*byte));
+            bounded
+                && lower[end..]
+                    .trim_start()
+                    .starts_with(['=', ':'])
+        })
+    })
 }
 
 #[derive(Default)]
@@ -499,6 +516,7 @@ enum ScreenScope {
     Steps,
     Step,
     Kind,
+    Variables,
 }
 
 fn screen_value(
@@ -559,13 +577,16 @@ fn screen_value(
             }
         }
         Value::Object(map) => {
-            let probe_kind = scope == ScreenScope::Kind
-                && map.get("type").and_then(Value::as_str) == Some("probe_gas_sweep");
+            // A probe's `token` field and a top-level variable named `token`
+            // hold an ERC-20 address, not a credential.
+            let token_slot = scope == ScreenScope::Variables
+                || (scope == ScreenScope::Kind
+                    && map.get("type").and_then(Value::as_str) == Some("probe_gas_sweep"));
             for (index, (key, item)) in map.iter().enumerate() {
                 if key.len() > MAX_STRING_BYTES {
                     push(errors, path, "string_limit", "A JSON key exceeds 64 KiB.");
                 }
-                let public_token_address = probe_kind
+                let public_token_address = token_slot
                     && key == "token"
                     && item.as_str().is_some_and(|text| {
                         valid_address(text) || parse_reference(text).is_ok()
@@ -580,6 +601,7 @@ fn screen_value(
                 }
                 let item_scope = match (scope, key.as_str()) {
                     (ScreenScope::Macro, "steps") => ScreenScope::Steps,
+                    (ScreenScope::Macro, "variables") => ScreenScope::Variables,
                     (ScreenScope::Step, "kind") => ScreenScope::Kind,
                     _ => ScreenScope::Public,
                 };
