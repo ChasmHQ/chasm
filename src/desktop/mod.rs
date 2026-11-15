@@ -529,7 +529,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
         });
     }
     on_void!(ui, state, on_about, |state: &mut DesktopState| {
-        state.notice = "Chasm desktop 0.1.0 — Rust binary, local-only. Debugger: sibling chasm_debugger worker.".into();
+        state.notice = "Chasm desktop 0.1.0. Rust binary, local only. Debugger: sibling chasm_debugger worker.".into();
     });
     on_void!(ui, state, on_dismiss_notice, |state: &mut DesktopState| state.notice.clear());
 
@@ -767,7 +767,14 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                         if confirmed {
                             if let Some(address) = address {
                                 match state.complete_deployment(&origin, &name, &address, &token) {
-                                    Ok(Some(_)) => { state.notice.clear(); state.status_left = format!("Deployed {name}"); }
+                                    Ok(Some(instance)) => {
+                                        state.notice.clear();
+                                        state.status_left = format!("Deployed {name}");
+                                        // Land on the new instance so its functions are one click away.
+                                        if let Some(index) = state.documents.iter().position(|doc| doc.id == instance) {
+                                            state.select_document(index as i32);
+                                        }
+                                    }
                                     Ok(None) => state.status_left = format!("Deployed {name}; the originating tab was closed"),
                                     Err(error) => state.notice = error,
                                 }
@@ -789,6 +796,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                     }
                 }
                 drop(state);
+                panels::focus_current();
                 paint(&weak_task, &held_task);
             });
         });

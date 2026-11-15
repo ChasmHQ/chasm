@@ -86,7 +86,6 @@ iwr -useb https://raw.githubusercontent.com/ChasmHQ/chasm/main/uninstall.ps1 | i
 **Prerequisites:**
 - **Rust**: Required to build the backend.
 - **Foundry**: Required for the underlying simulation and tracing tools (`anvil`, `cast`, `forge`).
-- **Node.js**: Required to build the UI assets once.
 
 **Steps:**
 1. Clone the repository:
@@ -94,20 +93,14 @@ iwr -useb https://raw.githubusercontent.com/ChasmHQ/chasm/main/uninstall.ps1 | i
    git clone https://github.com/ChasmHQ/chasm
    cd chasm
    ```
-2. Build the UI and binary:
-   - **macOS / Linux:**
-     ```bash
-     ./build.sh
-     ```
-   - **Windows (PowerShell):**
-     ```powershell
-     ./build.ps1
-     ```
-3. Run Chasm from any Solidity project directory:
+2. Build the desktop binary (no Node.js step; the UI is compiled from `ui-slint/`):
+   ```bash
+   cargo build --release
+   ```
+3. Run Chasm from any Solidity project directory. It opens the native desktop window:
    ```bash
    ./target/release/chasm ./contracts
    ```
-4. Open the web UI at http://localhost:3000
 
 ## Usage
 Launch Chasm in any folder containing Solidity files by running `chasm .`. The tool will automatically detect your contracts, allowing you to deploy them to a local node or attach to existing addresses on any network. Use the activity bar to switch between the Contract Workspace and the Blockchain Explorer.
@@ -123,7 +116,7 @@ The repository's canonical [Chasm bug bounty skill](.agents/skills/chasm-bugboun
 
 The current Rust/Slint desktop opens a Welcome screen without starting project services, then uses an owned silent local node when a project is opened. The native Debugger now has Code, Inspector, Inspection and Evaluation views, backed by the existing isolated gateway/REVM worker. Its bundled WorkshopVault preset is synthetic offline data; Solidity evaluation discards effects and no broadcast is involved. The complete browser launch forms and remote debugger commands are not yet ported to the native control API.
 
-See [UI branch review](UI_BRANCH_REVIEW.md) for the fetched upstream revisions and selective-port decisions, [native parity status](NATIVE_PARITY.md) for delivered versus planned capabilities, and [API/MCP documentation](AI_CONTROL.md) for local pairing and the current action catalog. The historical screenshots and web feature list above are not a claim of complete native parity.
+See [UI branch review](UI_BRANCH_REVIEW.md) for the fetched upstream revisions and selective-port decisions, [native parity status](NATIVE_PARITY.md) for delivered versus planned capabilities, and [API/MCP documentation](AI_CONTROL.md) for local pairing and the current action catalog. The browser UI (`--web`) was removed; the screenshots above show that older interface. Features it had that are not yet native (cheatcodes panel, snapshot timeline, library manager) are tracked in [REDESIGN_PLAN.md](REDESIGN_PLAN.md).
 
 ## Next development
 We will focusing on dynamic analysis to help auditor for debugging the smart contract, like tenderly simulations. It will been show all the stack traces, the reason why it failed. Also will been adding Fund Flow, and Gas Profiler for more clarity in transaction flow. If can will be re-making the revoke feature. 

@@ -1,4 +1,5 @@
-import { LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
+import { LineEdit } from "std-widgets.slint";
+import { ListView, ScrollView, TextEdit } from "scroll.slint";
 import { DockTab, IconButton, Theme } from "theme.slint";
 import { SelectableText } from "selectable-text.slint";
 
@@ -342,7 +343,7 @@ export component DebugToolbar inherits Rectangle {
             }
         }
         Rectangle { width: 1px; background: Theme.edge; horizontal-stretch: 0; }
-        IconButton { icon: @image-url("icons/stop.svg"); label: "Cancel worker"; short-label: root.full ? "" : "Cancel"; enabled: DebugData.can-cancel; clicked => { DebugLogic.cancel(); } }
+        IconButton { icon: @image-url("icons/stop.svg"); label: "Cancel worker"; short-label: "Cancel"; enabled: DebugData.can-cancel; clicked => { DebugLogic.cancel(); } }
     }
 }
 

@@ -1437,6 +1437,7 @@ fn zone_projection(state: &DesktopState, zone: Zone) -> ZoneProjection {
 fn update_viewport(ui: &MainWindow, zoom: f32) {
     let scale = ui.window().scale_factor().max(0.1);
     let height = ui.window().size().height as f32 / scale / zoom.max(0.1);
+    ui.global::<PanelData>().set_viewport_width(ui.window().size().width as f32 / scale);
     let fraction = if ui.global::<AppData>().get_activity() == 4 { 0.45 } else { 0.26 };
     let limit = (height * fraction).clamp(96.0, 280.0);
     ui.global::<PanelData>().set_bottom_limit(limit);

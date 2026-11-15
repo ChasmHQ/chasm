@@ -1,0 +1,236 @@
+// Chasm scroll widgets. They replace the std-widgets ScrollView, ListView and
+// TextEdit with the same property names, so call sites only change their
+// import. The Fluent scrollbar cannot be restyled per component, so these are
+// built directly on Flickable: a thin overlay bar with a graphite thumb that
+// turns gold while hovered or dragged, and no arrow buttons.
+import { Theme } from "theme.slint";
+
+component ScrollBar inherits Rectangle {
+    in property <bool> horizontal;
+    in property <length> maximum;
+    in property <length> page-size;
+    in-out property <length> value;
+    in property <ScrollBarPolicy> policy: ScrollBarPolicy.as-needed;
+    in property <bool> enabled: true;
+    callback scrolled();
+    // Space between the thumb and the ends of the track.
+    private property <length> inset: 2px;
+    private property <length> track: (root.horizontal ? root.width : root.height) - 2 * root.inset;
+    private property <length> thumb-size: root.maximum <= 0px ? 0px
+        : min(root.track, max(1.5rem, root.track * root.page-size / (root.maximum + root.page-size)));
+    private property <length> thumb-pos: root.maximum <= 0px ? 0px
+        : (root.track - root.thumb-size) * (-root.value / root.maximum);
+    private property <bool> active: touch.has-hover || touch.pressed;
+    visible: root.policy == ScrollBarPolicy.always-on || (root.policy == ScrollBarPolicy.as-needed && root.maximum > 0.5px);
+    thumb := Rectangle {
+        x: root.horizontal ? root.inset + root.thumb-pos : (parent.width - self.width) / 2;
+        y: root.horizontal ? (parent.height - self.height) / 2 : root.inset + root.thumb-pos;
+        width: root.horizontal ? root.thumb-size : (root.active ? 6px : 4px) * Theme.zoom;
+        height: root.horizontal ? (root.active ? 6px : 4px) * Theme.zoom : root.thumb-size;
+        border-radius: 3px;
+        background: root.active ? Theme.accent : Theme.scroll-thumb;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        private property <length> press-value;
+        private property <length> press-pos;
+        private property <bool> dragging;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                let pos = root.horizontal ? self.mouse-x : self.mouse-y;
+                if pos >= root.inset + root.thumb-pos && pos <= root.inset + root.thumb-pos + root.thumb-size {
+                    self.dragging = true;
+                    self.press-value = root.value;
+                    self.press-pos = pos;
+                } else {
+                    // A click on the empty track moves one page toward the pointer.
+                    self.dragging = false;
+                    root.value = pos < root.inset + root.thumb-pos
+                        ? min(0px, root.value + root.page-size)
+                        : max(-root.maximum, root.value - root.page-size);
+                    root.scrolled();
+                }
+            }
+            if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel { self.dragging = false; }
+        }
+        moved => {
+            if self.pressed && self.dragging && root.track > root.thumb-size {
+                let pos = root.horizontal ? self.mouse-x : self.mouse-y;
+                root.value = max(-root.maximum, min(0px, self.press-value - (pos - self.press-pos) * root.maximum / (root.track - root.thumb-size)));
+                root.scrolled();
+            }
+        }
+        scroll-event(event) => {
+            if root.horizontal && event.delta-x != 0 {
+                root.value = max(-root.maximum, min(0px, root.value + event.delta-x));
+                root.scrolled();
+                return accept;
+            }
+            if !root.horizontal && event.delta-y != 0 {
+                root.value = max(-root.maximum, min(0px, root.value + event.delta-y));
+                root.scrolled();
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+export component ScrollView {
+    in property <bool> enabled: true;
+    out property <length> visible-width <=> flick.width;
+    out property <length> visible-height <=> flick.height;
+    in-out property <length> content-width <=> flick.content-width;
+    in-out property <length> content-height <=> flick.content-height;
+    in-out property <length> content-x <=> flick.content-x;
+    in-out property <length> content-y <=> flick.content-y;
+    in property <ScrollBarPolicy> vertical-scrollbar-policy <=> vertical-bar.policy;
+    in property <ScrollBarPolicy> horizontal-scrollbar-policy <=> horizontal-bar.policy;
+    in property <bool> mouse-drag-pan-enabled <=> flick.mouse-drag-pan-enabled;
+    callback scrolled <=> flick.flicked;
+    min-height: 50px;
+    min-width: 50px;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    preferred-height: 100%;
+    preferred-width: 100%;
+
+    flick := Flickable {
+        mouse-drag-pan-enabled: false;
+        interactive: root.enabled;
+        content-y <=> vertical-bar.value;
+        content-x <=> horizontal-bar.value;
+        width: parent.width;
+        height: parent.height;
+        @children
+    }
+    // The bars overlay the content edge, like the Fluent style, so content width
+    // never depends on whether a bar is shown.
+    vertical-bar := ScrollBar {
+        enabled: root.enabled;
+        horizontal: false;
+        width: 10px * Theme.zoom;
+        x: flick.width - self.width;
+        y: 0px;
+        height: horizontal-bar.visible ? parent.height - horizontal-bar.height : parent.height;
+        maximum: flick.content-height - flick.height;
+        page-size: flick.height;
+        scrolled => { root.scrolled(); }
+    }
+    horizontal-bar := ScrollBar {
+        enabled: root.enabled;
+        horizontal: true;
+        height: 10px * Theme.zoom;
+        y: flick.height - self.height;
+        x: 0px;
+        width: vertical-bar.visible ? parent.width - vertical-bar.width : parent.width;
+        maximum: flick.content-width - flick.width;
+        page-size: flick.width;
+        scrolled => { root.scrolled(); }
+    }
+}
+
+export component ListView inherits ScrollView {
+    @children
+    accessible-role: list;
+    accessible-orientation: Orientation.vertical;
+}
+
+export component TextEdit inherits Rectangle {
+    in property <TextWrap> wrap <=> input.wrap;
+    in property <TextHorizontalAlignment> horizontal-alignment <=> input.horizontal-alignment;
+    in property <bool> read-only <=> input.read-only;
+    in property <length> font-size <=> input.font-size;
+    in property <string> font-family <=> input.font-family;
+    in property <bool> enabled <=> input.enabled;
+    in property <string> placeholder-text;
+    out property <bool> has-focus: input.has-focus;
+    out property <length> visible-width <=> scroll.visible-width;
+    out property <length> visible-height <=> scroll.visible-height;
+    in-out property <string> text <=> input.text;
+    in-out property <length> content-x <=> scroll.content-x;
+    in-out property <length> content-y <=> scroll.content-y;
+    in-out property <length> content-width <=> scroll.content-width;
+    in-out property <length> content-height <=> scroll.content-height;
+    callback edited(string);
+    private property <length> pad: 0.5rem;
+
+    accessible-role: text-input;
+    accessible-enabled: root.enabled;
+    accessible-value <=> text;
+    accessible-placeholder-text: root.placeholder-text;
+    accessible-read-only: root.read-only;
+    accessible-action-set-value(value) => { root.text = value; root.edited(value); }
+
+    public function select-all() { input.select-all(); }
+    public function clear-selection() { input.clear-selection(); }
+    public function copy() { input.copy(); }
+    public function cut() { input.cut(); }
+    public function paste() { input.paste(); }
+
+    forward-focus: input;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    background: Theme.inset;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.edge;
+
+    ContextMenuArea {
+        enabled: root.enabled;
+        Menu {
+            MenuItem { title: "Cut"; enabled: !root.read-only && root.enabled; activated => { input.cut(); } }
+            MenuItem { title: "Copy"; enabled: !root.text.is-empty; activated => { input.copy(); } }
+            MenuItem { title: "Paste"; enabled: !root.read-only && root.enabled; activated => { input.paste(); } }
+            MenuItem { title: "Select All"; enabled: !root.text.is-empty; activated => { input.select-all(); } }
+        }
+        scroll := ScrollView {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: parent.height - 2px;
+            content-width: input.wrap == TextWrap.no-wrap ? max(self.visible-width, input.preferred-width + 2 * root.pad) : self.visible-width;
+            content-height: max(self.visible-height, input.preferred-height + 2 * root.pad);
+            input := TextInput {
+                x: root.pad;
+                y: root.pad;
+                width: scroll.content-width - 2 * root.pad;
+                height: max(self.preferred-height, scroll.visible-height - 2 * root.pad);
+                single-line: false;
+                wrap: word-wrap;
+                color: root.enabled ? Theme.text : Theme.faint;
+                selection-background-color: Theme.selection-background;
+                selection-foreground-color: Theme.selection-foreground;
+                page-height: scroll.visible-height;
+                accessible-role: none;
+                edited => { root.edited(self.text); }
+                // Keep the caret in view while typing or moving with the keyboard.
+                cursor-position-changed(cpos) => {
+                    let x = cpos.x + root.pad;
+                    let y = cpos.y + root.pad;
+                    if x + scroll.content-x < 0px {
+                        scroll.content-x = min(0px, -x + root.pad);
+                    } else if x + scroll.content-x > scroll.visible-width - root.pad {
+                        scroll.content-x = min(0px, max(scroll.visible-width - scroll.content-width, scroll.visible-width - x - root.pad));
+                    }
+                    if y + scroll.content-y < 0px {
+                        scroll.content-y = min(0px, -y + root.pad);
+                    } else if y + scroll.content-y > scroll.visible-height - 1.25rem {
+                        scroll.content-y = min(0px, max(scroll.visible-height - scroll.content-height, scroll.visible-height - y - 1.25rem));
+                    }
+                }
+            }
+        }
+    }
+    if root.text == "" && root.placeholder-text != "": Text {
+        x: root.pad + 1px;
+        y: root.pad + 1px;
+        width: parent.width - 2 * root.pad - 2px;
+        text: root.placeholder-text;
+        font-size: input.font-size;
+        font-family: input.font-family;
+        color: Theme.faint;
+        overflow: elide;
+        accessible-role: none;
+    }
+}

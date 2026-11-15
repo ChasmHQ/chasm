@@ -20,7 +20,10 @@ export global Theme {
     out property <brush> hover: #303030;
     out property <brush> selected: #3a3a3a;
     out property <brush> line: #333333;
-    out property <brush> edge: #505050;
+    // #767676 keeps borders and dividers at 3:1 or better on canvas and panel.
+    out property <brush> edge: #767676;
+    // Idle scrollbar thumb, 3:1 or better on canvas and panel; gold while active.
+    out property <brush> scroll-thumb: #7a7a7a;
     out property <brush> text: #e0e0e0;
     out property <brush> muted: #b8b8b8;
     out property <brush> faint: #aaaaaa;

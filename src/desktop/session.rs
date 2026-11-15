@@ -2490,7 +2490,7 @@ fn quantity_to_u64(value: &Value) -> Option<u64> {
 fn quantity_to_dec(value: &Value) -> String {
     quantity_to_u64(value)
         .map(|number| number.to_string())
-        .unwrap_or_else(|| value.as_str().unwrap_or("—").to_string())
+        .unwrap_or_else(|| value.as_str().unwrap_or("unknown").to_string())
 }
 
 fn wei_to_ether(value: &Value) -> String {
@@ -2601,7 +2601,7 @@ fn format_block(block: &Value) -> String {
     let parent = block
         .get("parentHash")
         .and_then(Value::as_str)
-        .unwrap_or("—");
+        .unwrap_or("unknown");
     let txs = block
         .get("transactions")
         .and_then(Value::as_array)
@@ -2616,7 +2616,7 @@ fn format_block(block: &Value) -> String {
 }
 
 fn format_transaction(tx: &Value, receipt: &Value) -> String {
-    let hash = tx.get("hash").and_then(Value::as_str).unwrap_or("—");
+    let hash = tx.get("hash").and_then(Value::as_str).unwrap_or("unknown");
     let to = tx
         .get("to")
         .and_then(Value::as_str)
@@ -2637,7 +2637,7 @@ fn format_transaction(tx: &Value, receipt: &Value) -> String {
     };
     format!(
         "Transaction\nHash    {hash}\nStatus  {status}\nFrom    {}\nTo      {to}\nValue   {} ETH\nBlock   {}{created}",
-        tx.get("from").and_then(Value::as_str).unwrap_or("—"),
+        tx.get("from").and_then(Value::as_str).unwrap_or("unknown"),
         wei_to_ether(tx.get("value").unwrap_or(&Value::Null)),
         quantity_to_dec(tx.get("blockNumber").unwrap_or(&Value::Null)),
     )

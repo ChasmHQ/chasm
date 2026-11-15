@@ -1,4 +1,5 @@
-import { LineEdit, TextEdit } from "std-widgets.slint";
+import { LineEdit } from "std-widgets.slint";
+import { TextEdit } from "scroll.slint";
 import { ActionControl, DockTab, IconButton, Theme } from "theme.slint";
 import { SelectableText } from "selectable-text.slint";
 import { ContractViewData } from "contract.slint";
@@ -64,6 +65,8 @@ export global PanelData {
     in property <float> right-width: 340;
     in property <float> bottom-height: 140;
     in property <float> bottom-limit: 200;
+    // Window width in logical pixels, set by the host so side caps never read the window's own layout.
+    in property <length> viewport-width: 1360px;
     in property <bool> left-visible: false;
     in property <bool> center-visible: false;
     in property <bool> right-visible: false;
@@ -121,10 +124,20 @@ export component PanelDragHandle inherits Rectangle {
     in property <string> pane-id;
     in property <string> label;
     in property <bool> draggable: true;
+    // When set, the handle shows only this icon (the tab grip) instead of the label.
+    in property <image> icon;
+    in property <bool> icon-only: false;
     callback clicked();
     min-width: 0px;
     background: PanelData.dragging && PanelData.drag-pane == root.pane-id ? Theme.selected : transparent;
-    Text { text: root.label; color: Theme.text; font-size: 0.75rem; font-weight: 600; vertical-alignment: center; overflow: elide; accessible-role: none; }
+    if !root.icon-only: Text { text: root.label; color: Theme.text; font-size: 0.75rem; font-weight: 600; vertical-alignment: center; overflow: elide; accessible-role: none; }
+    if root.icon-only: Image {
+        source: root.icon;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        width: 0.875rem; height: 0.875rem;
+        colorize: touch.has-hover ? Theme.icon-active : Theme.faint;
+        accessible-role: none;
+    }
     touch := TouchArea {
         enabled: root.draggable && !PanelData.blocked;
         mouse-cursor: move;
