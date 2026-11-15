@@ -115,6 +115,14 @@ fn run(mut cli: Cli, explicit_path: bool) -> anyhow::Result<()> {
     let investigation = Arc::new(investigation::Investigation::new(investigation_root));
     control_hub.set_investigation(investigation.clone());
     let control_host = control_http::ControlHost::new(control_hub.clone());
+    #[cfg(debug_assertions)]
+    let token_file = cli.control_token_file.clone();
+    #[cfg(debug_assertions)]
+    if let Some(path) = &token_file {
+        let endpoint = control_runtime.block_on(control_host.enable()).map_err(|error| anyhow::anyhow!(error.message))?;
+        let (_, token) = control_hub.pair_local(control::Tier::Full).map_err(|error| anyhow::anyhow!(error.message))?;
+        std::fs::write(path, format!("{endpoint}\n{token}\n"))?;
+    }
     let mut project = explicit_path.then(|| cli.path.clone());
     loop {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -211,6 +219,10 @@ fn run(mut cli: Cli, explicit_path: bool) -> anyhow::Result<()> {
         project = Some(next);
     }
     control_host.disable();
+    #[cfg(debug_assertions)]
+    if let Some(path) = &token_file {
+        let _ = std::fs::remove_file(path);
+    }
     ui.hide()?;
     Ok(())
 }

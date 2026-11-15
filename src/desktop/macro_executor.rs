@@ -162,28 +162,34 @@ impl MacroExecutor for TrustedMacroExecutor {
         let state = self.state.clone();
         let foundry = self.foundry.clone();
         Box::pin(async move {
-            let view = foundry.view().map_err(|_| ExecutionFailure::Unavailable)?;
-            let generation = view.report.as_ref().map(|report| report.generation).ok_or(ExecutionFailure::Unavailable)?;
             let addresses = {
                 let state = state.lock().unwrap();
                 let accounts = [0, 1, 2].map(|index| anvil_dev_account(index).unwrap().0.to_ascii_lowercase());
                 SignerAddresses::new(accounts, (!state.wallet_address.is_empty()).then(|| state.wallet_address.clone()))
                     .map_err(|_| ExecutionFailure::Unavailable)?
             };
-            let (provenance, adapted) = foundry
-                .with_current_report(generation, |report| {
-                    super::macro_adapter::adapt(
-                        &request.definition,
-                        report,
-                        &addresses,
-                        request.token.clone(),
-                        request.dry_run,
-                    )
-                })
-                .await
-                .map_err(|_| ExecutionFailure::Unavailable)?;
-            let adapted = adapted.map_err(|_| ExecutionFailure::InvalidPlan)?;
-            foundry.validate_provenance(&provenance).await.map_err(|_| ExecutionFailure::StaleContext)?;
+            let adapted = if super::macro_adapter::needs_artifacts(&request.definition) {
+                let view = foundry.view().map_err(|_| ExecutionFailure::Unavailable)?;
+                let generation = view.report.as_ref().map(|report| report.generation).ok_or(ExecutionFailure::Unavailable)?;
+                let (provenance, adapted) = foundry
+                    .with_current_report(generation, |report| {
+                        super::macro_adapter::adapt(
+                            &request.definition,
+                            report,
+                            &addresses,
+                            request.token.clone(),
+                            request.dry_run,
+                        )
+                    })
+                    .await
+                    .map_err(|_| ExecutionFailure::Unavailable)?;
+                let adapted = adapted.map_err(|_| ExecutionFailure::InvalidPlan)?;
+                foundry.validate_provenance(&provenance).await.map_err(|_| ExecutionFailure::StaleContext)?;
+                adapted
+            } else {
+                super::macro_adapter::adapt_without_artifacts(&request.definition, &addresses, request.token.clone(), request.dry_run)
+                    .map_err(|_| ExecutionFailure::InvalidPlan)?
+            };
             let (authority, signers, gate, token, active) = {
                 let state_guard = state.lock().unwrap();
                 if state_guard.workspace_epoch != request.token.workspace_epoch

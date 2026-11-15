@@ -1,10 +1,11 @@
-use super::application::{self, Activity, Command};
-use super::control::{Hub, Scopes, UiRequest};
+use super::application::{self, Activity, Command, PanelAction, Query};
+use super::control::{Hub, Tier, UiRequest};
 use super::control_http::ControlHost;
 use super::{
     AppData, AutomationClient, AutomationData, AutomationLogic, DesktopState, Logic, MainWindow,
 };
-use slint::{ComponentHandle, Weak};
+use serde_json::{json, Value};
+use slint::{ComponentHandle, Model, Weak};
 use std::sync::{Arc, Mutex};
 
 pub fn wire(
@@ -50,16 +51,23 @@ pub fn wire(
                     query,
                     reply,
                 } => {
-                    let result = hub.authorize(&principal, "read").and_then(|_| {
+                    let result = hub.authorize(&principal, query.scope()).and_then(|_| {
                         let state = held.lock().unwrap();
                         if !state.active {
-                            Err(application::AppError::new(
+                            return Err(application::AppError::new(
                                 "stale_context",
                                 "The workspace changed before the query ran.",
-                            ))
-                        } else {
-                            Ok(application::query(&state, &query))
+                            ));
                         }
+                        let mut value = application::query(&state, &query);
+                        drop(state);
+                        match query {
+                            Query::Macros => value["macros"] = macro_state(&ui),
+                            Query::Debugger => value["debugger"] = debugger_state(&ui),
+                            Query::Screenshot => value["screenshot"] = screenshot(&ui)?,
+                            _ => {}
+                        }
+                        Ok(value)
                     });
                     let _ = reply.send(result);
                 }
@@ -68,7 +76,14 @@ pub fn wire(
                     request,
                     reply,
                 } => {
-                    let result = hub.execute_ui(&principal, &request, &mut held.lock().unwrap());
+                    let mut result = hub.execute_ui(&principal, &request, &mut held.lock().unwrap());
+                    if let Ok(value) = &result {
+                        if value["effect"] == "native" {
+                            let outcome = perform(&ui, &held, &request.command);
+                            hub.amend_result(&principal, &request.request_id, outcome.clone());
+                            result = Ok(outcome);
+                        }
+                    }
                     let switch = result
                         .as_ref()
                         .ok()
@@ -159,12 +174,12 @@ pub fn wire(
     let hub_pair = hub.clone();
     ui.global::<AutomationLogic>().on_pair(move |mode| {
         if let Some(ui) = weak.upgrade() {
-            let scopes = Scopes {
-                read: true,
-                ui: mode == 1 || mode == 3,
-                analyze: mode == 2 || mode == 3,
+            let tier = match mode {
+                0 => Tier::Limited,
+                1 => Tier::Partial,
+                _ => Tier::Full,
             };
-            match hub_pair.pair_local(scopes) {
+            match hub_pair.pair_local(tier) {
                 Ok((id, token)) => {
                     ui.global::<AutomationData>()
                         .set_pairing_token(token.into());
@@ -197,10 +212,19 @@ pub fn wire(
             let switch = result
                 .as_ref()
                 .ok()
-                .is_some_and(|value| value["effect"] == "workspace_switch");
-            if let Err(error) = result {
-                ui.global::<AutomationData>()
-                    .set_message(error.message.into());
+                .is_some_and(|(value, _)| value["effect"] == "workspace_switch");
+            // The approval left the queue; lift its confirmation gate before the
+            // callbacks run, or they would see a pending confirmation and stop.
+            sync(&ui, &hub);
+            match result {
+                Ok((value, request)) if value["effect"] == "native" => {
+                    let outcome = perform(&ui, &held, &request.command);
+                    if let Some(client) = hub.client_of(&request.request_id) {
+                        hub.amend_result(&client, &request.request_id, outcome);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => ui.global::<AutomationData>().set_message(error.message.into()),
             }
             super::paint(&weak, &held);
             sync(&ui, &hub);
@@ -242,18 +266,14 @@ fn sync(ui: &MainWindow, hub: &Hub) {
         .as_array()
         .unwrap()
         .iter()
-        .map(|client| {
-            let mut scopes = vec!["read"];
-            if client["scopes"]["ui"] == true {
-                scopes.push("UI control");
+        .map(|client| AutomationClient {
+            id: client["id"].as_str().unwrap_or_default().into(),
+            scopes: match client["tier"].as_str() {
+                Some("limited") => "Limited: read and analysis",
+                Some("partial") => "Partial: read, UI control, chain actions after approval",
+                _ => "Full: all actions except secrets",
             }
-            if client["scopes"]["analyze"] == true {
-                scopes.push("analysis");
-            }
-            AutomationClient {
-                id: client["id"].as_str().unwrap_or_default().into(),
-                scopes: scopes.join(", ").into(),
-            }
+            .into(),
         })
         .collect();
     data.set_clients(super::model(clients));
@@ -403,4 +423,162 @@ pub(super) fn wire_shared(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>) {
         };
         local(&weak, &held, command);
     });
+}
+
+/// Run an accepted command through the same callbacks as the native buttons,
+/// so remote control and local clicks share validation, gates and jobs.
+fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) -> Value {
+    use super::{ContractLogic, DebugData, DebugLogic, Logic, MacroData, MacroLogic, PanelLogic};
+    let owner = || held.lock().unwrap().current_document_id().unwrap_or_default();
+    let contract = ui.global::<ContractLogic>();
+    let logic = ui.global::<Logic>();
+    let macros = ui.global::<MacroLogic>();
+    let debug = ui.global::<DebugLogic>();
+    match command {
+        Command::EditRequest { arguments, value } => {
+            if let Some(arguments) = arguments {
+                contract.invoke_arguments_edited(owner().into(), arguments.as_str().into());
+            }
+            if let Some(value) = value {
+                contract.invoke_value_edited(owner().into(), value.as_str().into());
+            }
+        }
+        Command::Attach { address } => contract.invoke_attach(owner().into(), address.as_str().into()),
+        Command::Simulate {} => contract.invoke_read(owner().into()),
+        Command::Send {} => contract.invoke_send(owner().into()),
+        Command::Trace {} => {
+            contract.invoke_result_view(owner().into(), 2);
+            contract.invoke_trace(owner().into());
+        }
+        Command::ReadStorage { slot } => {
+            contract.invoke_slot_edited(owner().into(), slot.as_str().into());
+            contract.invoke_read_slot(owner().into());
+        }
+        Command::OpenDeploy {} => logic.invoke_open_deploy(),
+        Command::Deploy {} => logic.invoke_deploy_contract(),
+        Command::Compile {} => logic.invoke_recompile(),
+        Command::UseDevAccount { index } => logic.invoke_use_anvil_key(*index as i32),
+        Command::Snapshot {} => logic.invoke_snapshot(),
+        Command::Revert {} => logic.invoke_revert(),
+        Command::Mine {} => logic.invoke_roll(),
+        Command::Warp {} => logic.invoke_warp(),
+        Command::NewMacro {} => macros.invoke_new_macro(),
+        Command::SelectMacro { id } => {
+            let rows = ui.global::<MacroData>().get_macros();
+            match (0..rows.row_count()).find(|index| rows.row_data(*index).is_some_and(|row| row.id.as_str() == id)) {
+                Some(index) => macros.invoke_select(index as i32),
+                None => return json!({"status":"failed","error":{"code":"entity_not_found","message":"No macro with that ID."}}),
+            }
+        }
+        Command::EditMacro { json } => {
+            ui.global::<MacroData>().set_definition_json(json.as_str().into());
+            macros.invoke_edited(json.as_str().into());
+        }
+        Command::ValidateMacro {} => macros.invoke_validate(),
+        Command::RunMacro { dry_run } => {
+            if !ui.global::<MacroData>().get_validation_ready() {
+                return json!({"status":"failed","error":{"code":"not_ready","message":"Validate the current draft first (macros.validate)."}});
+            }
+            if *dry_run { macros.invoke_dry_run() } else { macros.invoke_run() }
+        }
+        Command::CancelMacro {} => macros.invoke_cancel(),
+        Command::SelectMacroResult { index } => macros.invoke_select_result(*index as i32),
+        Command::DebugLaunch { mode, foundry_target, foundry_match, trusted, capture_id, build_info_id } => {
+            let data = ui.global::<DebugData>();
+            data.set_launch_mode(*mode as i32);
+            if let Some(value) = foundry_target { data.set_foundry_target(value.as_str().into()); }
+            if let Some(value) = foundry_match { data.set_foundry_match(value.as_str().into()); }
+            if let Some(value) = trusted { data.set_foundry_trusted(*value); }
+            if let Some(value) = capture_id { data.set_capture_id(value.as_str().into()); }
+            if let Some(value) = build_info_id { data.set_build_info_id(value.as_str().into()); }
+            debug.invoke_launch_edited();
+        }
+        Command::DebugStart {} => debug.invoke_start(),
+        Command::DebugNavigate { action } => debug.invoke_navigate(action.as_str().into()),
+        Command::DebugEvaluate { expression } => {
+            ui.global::<DebugData>().set_evaluate_input(expression.as_str().into());
+            debug.invoke_evaluate();
+        }
+        Command::DebugConsole { command } => ui.global::<super::PanelLogic>().invoke_console_submit(command.as_str().into()),
+        Command::DebugCancel {} => debug.invoke_cancel(),
+        Command::Panel { pane, action, zone } => {
+            let panels = ui.global::<PanelLogic>();
+            match action {
+                PanelAction::Dock => panels.invoke_dock(pane.as_str().into(), zone.map(i32::from).unwrap_or(-1)),
+                PanelAction::Float => panels.invoke_float(pane.as_str().into()),
+                PanelAction::Hide => panels.invoke_hide(pane.as_str().into()),
+                PanelAction::Maximize => panels.invoke_maximize(pane.as_str().into()),
+                PanelAction::Reset => panels.invoke_reset(),
+            }
+        }
+        _ => {}
+    }
+    let state = held.lock().unwrap();
+    json!({"status":"completed","effect":"native","context":application::context(&state),"notice":state.notice,"statusLine":state.status_left})
+}
+
+fn rows<T: Clone>(model: slint::ModelRc<T>) -> Vec<T> {
+    (0..model.row_count()).filter_map(|index| model.row_data(index)).collect()
+}
+
+fn macro_state(ui: &MainWindow) -> Value {
+    let data = ui.global::<super::MacroData>();
+    json!({
+        "library": rows(data.get_macros()).into_iter().map(|row| json!({"id":row.id.as_str(),"name":row.name.as_str(),"detail":row.detail.as_str()})).collect::<Vec<_>>(),
+        "selectedId": data.get_selected_id().as_str(),
+        "selectedName": data.get_selected_name().as_str(),
+        "definitionJson": data.get_definition_json().as_str(),
+        "validationCurrent": data.get_validation_ready(),
+        "validation": data.get_validation().as_str(),
+        "validationFailed": data.get_validation_failed(),
+        "preflight": {"status": data.get_preflight_status().as_str(), "broadcast": data.get_preflight_broadcast().as_str(), "read": data.get_preflight_read().as_str(), "sweep": data.get_preflight_sweep().as_str(), "signers": data.get_preflight_signers().as_str(), "snapshot": data.get_preflight_snapshot().as_str()},
+        "status": data.get_status().as_str(),
+        "error": data.get_error().as_str(),
+        "runBusy": data.get_run_busy(),
+        "canRun": data.get_can_run(),
+        "canDryRun": data.get_can_dry_run(),
+        "steps": rows(data.get_steps()).into_iter().map(|step| json!({"name":step.name.as_str(),"kind":step.kind.as_str(),"enabled":step.enabled,"status":step.status.as_str(),"duration":step.duration.as_str(),"result":step.public_result.as_str(),"hint":step.action_hint.as_str()})).collect::<Vec<_>>(),
+        "results": rows(data.get_results()).into_iter().map(|run| json!({"id":run.id.as_str(),"title":run.title.as_str(),"status":run.status.as_str(),"duration":run.duration.as_str()})).collect::<Vec<_>>(),
+        "selectedResult": data.get_selected_result(),
+        "resultSimple": data.get_result_simple().as_str(),
+        "resultRaw": data.get_result_raw().as_str(),
+        "runLog": data.get_run_log().as_str(),
+    })
+}
+
+fn debugger_state(ui: &MainWindow) -> Value {
+    let data = ui.global::<super::DebugData>();
+    json!({
+        "launchMode": data.get_launch_mode(), "launchSummary": data.get_launch_summary().as_str(),
+        "phase": data.get_phase().as_str(), "status": data.get_status().as_str(),
+        "location": data.get_location().as_str(), "notice": data.get_notice().as_str(),
+        "canStart": data.get_can_start(), "canCommand": data.get_can_command(), "canCancel": data.get_can_cancel(),
+        "outcome": data.get_outcome().as_str(), "completion": data.get_completion().as_str(),
+        "code": rows(data.get_code_rows()).into_iter().map(|row| json!({"position":row.position.as_str(),"text":row.text.as_str(),"current":row.current})).collect::<Vec<_>>(),
+        "execution": rows(data.get_execution()).into_iter().map(|stat| json!({"label":stat.label.as_str(),"value":stat.value.as_str()})).collect::<Vec<_>>(),
+        "frames": data.get_frames_text().as_str(), "locals": data.get_locals_text().as_str(),
+        "stack": data.get_stack_text().as_str(), "storage": data.get_storage_text().as_str(),
+        "result": data.get_result_text().as_str(), "logs": data.get_logs_text().as_str(),
+        "console": ui.global::<super::PanelData>().get_console_text().as_str(),
+    })
+}
+
+/// The pairing token and approval details are drawn only in those overlays,
+/// so a capture is refused while either is visible.
+fn screenshot(ui: &MainWindow) -> Result<Value, application::AppError> {
+    let automation = ui.global::<AutomationData>();
+    if automation.get_visible() || !automation.get_approval_id().is_empty() || !automation.get_pairing_token().is_empty() {
+        return Err(application::AppError::new("screenshot_blocked", "Close the AI access panel and resolve approvals before a screenshot."));
+    }
+    let pixels = ui.window().take_snapshot().map_err(|_| application::AppError::new("screenshot_failed", "The window could not be captured."))?;
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, pixels.width(), pixels.height());
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|_| application::AppError::new("screenshot_failed", "PNG encoding failed."))?;
+        writer.write_image_data(pixels.as_bytes()).map_err(|_| application::AppError::new("screenshot_failed", "PNG encoding failed."))?;
+    }
+    use base64::Engine;
+    Ok(json!({"width":pixels.width(),"height":pixels.height(),"pngBase64":base64::engine::general_purpose::STANDARD.encode(png)}))
 }

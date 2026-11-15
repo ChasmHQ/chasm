@@ -4,11 +4,35 @@ Implementation checkpoint: 2026-11-13. This is a staged addition to the native p
 
 ## Local access
 
-Open **Tools > Automation / AI Access**, or the same control on Welcome. Access is off on each process start. Enable it locally, choose client permissions and create a token. The token is shown only in the local panel and cleared when it closes. The server stores a digest, not the bearer value. Treat the displayed token as a credential.
+Open **Tools > Automation / AI Access**, or the same control on Welcome. Access is off on each process start. Enable it locally, choose a client tier and create a token. The token is shown only in the local panel and cleared when it closes. The server stores a digest, not the bearer value. Treat the displayed token as a credential.
 
-The panel announces a random loopback port. The production API is `http://127.0.0.1:<port>/api/v1`; MCP Streamable HTTP is `http://127.0.0.1:<port>/mcp`. The endpoint is not a browser UI. Configure the MCP client with `Authorization: Bearer <local token>` on every request. This is separate from Slint's optional developer-inspection connector. Default builds do not enable that connector.
+The panel announces a random loopback port. The production API is `http://127.0.0.1:<port>/api/v1`; MCP Streamable HTTP is `http://127.0.0.1:<port>/mcp`. Configure the MCP client with `Authorization: Bearer <local token>` on every request.
 
-- Scopes: application read, semantic UI control, analysis.
+### Tiers
+
+| Capability | Limited | Partial | Full |
+|---|---|---|---|
+| Read state, artifacts, jobs, view queries (`contracts.view`, `contracts.deploy_form`, `macros.state`, `debugger.state`) | Yes | Yes | Yes |
+| Analysis (`/analyze`: pinned chain reads, eth_call, cases) | Yes | Yes | Yes |
+| UI control: navigate, select, edit drafts, attach, simulate, trace, storage read, macro edit/validate, panels | No | Yes | Yes |
+| Chain and build: deploy, send, compile, dev signer, snapshot, revert, mine, warp, macro run | No | One local approval per action | Yes |
+| Debugger: launch, start, step, evaluate, console, cancel | No | No | Yes |
+| `ui.screenshot` (PNG of the main window) | No | No | Yes |
+| Removing a deployment record, opening another project | No | Local approval | Local approval |
+
+Never available at any tier, because no command exists for them:
+- reading or entering private keys, mnemonics or keystore passwords; keystore unlock, create, export or delete (use `wallet.dev_account` for the public Anvil test accounts);
+- pairing, tiers, revocation and approval decisions;
+- signing against any node other than the workspace-owned local Anvil.
+
+A screenshot is refused while the AI access panel, a pairing token or an approval is on screen. Full clients get 600 requests per minute, other tiers 120.
+
+Commands that act through the native callbacks return `{"status":"completed","effect":"native"}` once the callback ran. Chain work is asynchronous: read `app.state` (`busy` flags) or the matching view query until it settles.
+
+### Local testing
+
+Debug builds accept `--control-token-file <path>`: Chasm enables access at startup, pairs one Full client and writes the endpoint and token (one per line) to that file, then deletes it on exit. Release builds do not have the flag.
+
 - Disable revokes all tokens and cancels queued approvals. Individual clients can be revoked.
 - Strict exact Host, no browser Origin, no wildcard CORS, 128 KiB request limit, bounded responses, four in-flight requests, per-client request rate limit, request/body timeouts.
 - The host survives workspace switches; workspace Anvil/debugger services do not.

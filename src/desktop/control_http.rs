@@ -355,11 +355,7 @@ mod tests {
             }
         }));
         let (_, token) = hub
-            .pair_local(super::super::control::Scopes {
-                read: true,
-                ui: false,
-                analyze: false,
-            })
+            .pair_local(super::super::control::Tier::Limited)
             .unwrap();
         let transport = StreamableHttpClientTransport::from_config(
             StreamableHttpClientTransportConfig::with_uri(format!("{endpoint}/mcp"))
@@ -418,11 +414,7 @@ mod tests {
             401
         );
         let (_, token) = hub
-            .pair_local(super::super::control::Scopes {
-                read: true,
-                ui: false,
-                analyze: false,
-            })
+            .pair_local(super::super::control::Tier::Limited)
             .unwrap();
         let response = client
             .get(format!("{endpoint}/api/v1/schema"))

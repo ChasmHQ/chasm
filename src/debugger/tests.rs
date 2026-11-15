@@ -41,9 +41,9 @@ impl Harness {
             });
         let manager = Manager::new(config).await;
         assert!(
-            manager.availability.is_none(),
+            manager.availability().is_none(),
             "mock Python unavailable: {:?}; set CHASM_DEBUGGER_TEST_PYTHON",
-            manager.availability
+            manager.availability()
         );
         let app = Router::new().nest("/api/debugger", router(manager.clone()));
         let response = app
@@ -569,9 +569,9 @@ async fn real_native_offline_gateway_roundtrip() {
     let config = Config::new(workspace.path().to_path_buf(), None, None, None);
     let manager = Manager::new(config).await;
     assert!(
-        manager.availability.is_none(),
+        manager.availability().is_none(),
         "Local native debugger unavailable: {:?}",
-        manager.availability
+        manager.availability()
     );
     let app = Router::new().nest("/api/debugger", router(manager.clone()));
     let response = app
@@ -755,7 +755,7 @@ async fn unavailable_engine_does_not_crash_application() {
         None,
     );
     let manager = Manager::new(config).await;
-    assert!(manager.availability.is_some());
+    assert!(manager.availability().is_some());
     let app = Router::new().nest("/api/debugger", router(manager));
     let response = app
         .oneshot(

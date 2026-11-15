@@ -19,6 +19,11 @@ pub struct Cli {
     /// Trusted local offline capture exposed as the synthetic example.
     #[arg(long)]
     debugger_example: Option<PathBuf>,
+    /// Debug builds only: enable local AI access at startup, pair one Full-tier
+    /// client and write the endpoint and token (one per line) to this file. The file is deleted on exit.
+    #[cfg(debug_assertions)]
+    #[arg(long, value_name = "file")]
+    control_token_file: Option<PathBuf>,
 }
 
 fn main() {

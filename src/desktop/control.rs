@@ -17,18 +17,44 @@ pub struct Principal {
     pub id: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Scopes {
-    pub read: bool,
-    pub ui: bool,
-    pub analyze: bool,
+/// What a paired client may do. Secrets (private keys, passwords, keystore
+/// export or deletion) and the access settings themselves are never reachable
+/// at any tier; those paths simply have no command.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// Read application state and run read-only analysis.
+    Limited,
+    /// Also drive the UI; every chain, compile or macro action waits for a
+    /// local approval. No debugger commands.
+    Partial,
+    /// Everything above without per-action approval, plus debugger commands.
+    Full,
+}
+
+impl Tier {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Limited => "Limited",
+            Self::Partial => "Partial",
+            Self::Full => "Full",
+        }
+    }
+
+    fn allows(self, scope: &str) -> bool {
+        match scope {
+            "read" | "analyze" => true,
+            "ui" | "act" => self != Self::Limited,
+            "debug" | "screenshot" => self == Self::Full,
+            _ => false,
+        }
+    }
 }
 
 struct Client {
     id: String,
     digest: [u8; 32],
-    scopes: Scopes,
+    tier: Tier,
     window: Instant,
     calls: u16,
 }
@@ -129,7 +155,7 @@ impl Hub {
         audit(&mut state, "local", "access.disabled", "disabled");
     }
 
-    pub fn pair_local(&self, scopes: Scopes) -> Result<(String, String), AppError> {
+    pub fn pair_local(&self, tier: Tier) -> Result<(String, String), AppError> {
         let mut state = self.state.lock().unwrap();
         if !state.enabled {
             return Err(AppError::new("disabled", "Enable AI access locally first."));
@@ -145,11 +171,11 @@ impl Hub {
         state.clients.push(Client {
             id: id.clone(),
             digest: ethers::utils::keccak256(token.as_bytes()),
-            scopes,
+            tier,
             window: Instant::now(),
             calls: 0,
         });
-        audit(&mut state, "local", "client.paired", &id);
+        audit(&mut state, "local", "client.paired", &format!("{id} ({})", tier.label()));
         Ok((id, token))
     }
 
@@ -188,7 +214,9 @@ impl Hub {
             client.window = Instant::now();
             client.calls = 0;
         }
-        if client.calls >= 120 {
+        // Full clients poll job state while they drive the app, so they get more room.
+        let limit = if client.tier == Tier::Full { 600 } else { 120 };
+        if client.calls >= limit {
             return Err(AppError::new(
                 "rate_limited",
                 "Client request limit reached. Retry later.",
@@ -210,20 +238,19 @@ impl Hub {
             .iter()
             .find(|client| client.id == principal.id)
             .ok_or_else(unauthorized)?;
-        let allowed = match scope {
-            "read" => client.scopes.read,
-            "ui" => client.scopes.ui,
-            "analyze" => client.scopes.analyze,
-            _ => false,
-        };
-        if allowed {
+        if client.tier.allows(scope) {
             Ok(())
         } else {
             Err(AppError::new(
                 "scope_denied",
-                format!("This client does not have the {scope} scope."),
+                format!("The {} tier does not allow {scope} actions.", client.tier.label()),
             ))
         }
+    }
+
+    pub fn tier(&self, principal: &Principal) -> Option<Tier> {
+        let state = self.state.lock().unwrap();
+        state.clients.iter().find(|client| client.id == principal.id).map(|client| client.tier)
     }
 
     pub async fn query(&self, principal: Principal, query: Query) -> Result<Value, AppError> {
@@ -283,6 +310,7 @@ impl Hub {
     ) -> Result<Value, AppError> {
         let _execution = self.execution.lock().unwrap();
         self.authorize(principal, "ui")?;
+        self.authorize(principal, request.command.scope())?;
         if request.request_id.is_empty()
             || request.request_id.len() > 128
             || !request
@@ -322,7 +350,11 @@ impl Hub {
             return Err(AppError::new("local_only", "Open Project uses the local native folder picker. Remote filesystem paths are not accepted until protected directory identity is available."));
         }
         application::validate(state, &request.command)?;
-        let result = if request.command.sensitive() {
+        // Full clients act directly; Partial clients wait for a local approval
+        // for anything that changes chain state, the build or a macro run.
+        let needs_approval = request.command.sensitive()
+            || (request.command.scope() != "ui" && self.tier(principal) != Some(Tier::Full));
+        let result = if needs_approval {
             let mut inner = self.state.lock().unwrap();
             if inner.approvals.len() >= MAX_APPROVALS {
                 return Err(AppError::new(
@@ -390,7 +422,7 @@ impl Hub {
         id: &str,
         accepted: bool,
         state: &mut super::session::DesktopState,
-    ) -> Result<Value, AppError> {
+    ) -> Result<(Value, CommandRequest), AppError> {
         let _execution = self.execution.lock().unwrap();
         let approval = {
             let mut inner = self.state.lock().unwrap();
@@ -411,12 +443,9 @@ impl Hub {
             let confirmation = state.security_confirmation;
             // Only this exact local approval may pass its own cross-window confirmation gate.
             state.security_confirmation = false;
-            let result = self.authorize(
-                &Principal {
-                    id: approval.client_id.clone(),
-                },
-                "ui",
-            )
+            let principal = Principal { id: approval.client_id.clone() };
+            let result = self.authorize(&principal, "ui")
+            .and_then(|_| self.authorize(&principal, approval.request.command.scope()))
             .and_then(|_| application::check_context(state, &approval.request.context))
             .and_then(|_| application::apply(state, &approval.request.command))
             .unwrap_or_else(|error| json!({"status":"rejected","error":error}));
@@ -442,7 +471,20 @@ impl Hub {
                 "cancelled"
             },
         );
-        Ok(result)
+        Ok((result, approval.request))
+    }
+
+    pub fn client_of(&self, request_id: &str) -> Option<Principal> {
+        let state = self.state.lock().unwrap();
+        state.requests.keys().find(|(_, id)| id == request_id).map(|(client, _)| Principal { id: client.clone() })
+    }
+
+    /// Record the outcome of a UI action that ran after the command was accepted.
+    pub fn amend_result(&self, principal: &Principal, request_id: &str, result: Value) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(record) = state.requests.get_mut(&(principal.id.clone(), request_id.to_string())) {
+            record.result = result;
+        }
     }
 
     pub fn request_status(
@@ -468,7 +510,7 @@ impl Hub {
     pub fn local_status(&self) -> Value {
         let mut state = self.state.lock().unwrap();
         sweep(&mut state);
-        json!({"enabled":state.enabled,"endpoint":state.endpoint,"clients":state.clients.iter().map(|client|json!({"id":client.id,"scopes":client.scopes})).collect::<Vec<_>>(),"pendingApprovals":state.approvals.len(),"audit":state.audit})
+        json!({"enabled":state.enabled,"endpoint":state.endpoint,"clients":state.clients.iter().map(|client|json!({"id":client.id,"tier":client.tier})).collect::<Vec<_>>(),"pendingApprovals":state.approvals.len(),"audit":state.audit})
     }
 
     pub async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, AppError> {
@@ -593,21 +635,77 @@ fn expire_all(state: &mut State, reason: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::application::{Activity, Command};
+    use super::super::application::{Activity, Command, Query};
     use super::*;
 
     fn paired() -> (Arc<Hub>, Principal, String) {
         let hub = Hub::new();
         hub.enable_local("http://127.0.0.1:1".into());
         let (_, token) = hub
-            .pair_local(Scopes {
-                read: true,
-                ui: true,
-                analyze: false,
-            })
+            .pair_local(Tier::Partial)
             .unwrap();
         let principal = hub.authenticate(&token).unwrap();
         (hub, principal, token)
+    }
+
+    fn paired_tier(tier: Tier) -> (Arc<Hub>, Principal) {
+        let hub = Hub::new();
+        hub.enable_local("http://127.0.0.1:1".into());
+        let (_, token) = hub.pair_local(tier).unwrap();
+        let principal = hub.authenticate(&token).unwrap();
+        (hub, principal)
+    }
+
+    fn request(id: &str, command: Command, state: &super::super::session::DesktopState) -> CommandRequest {
+        CommandRequest { request_id: id.into(), context: application::context(state), command }
+    }
+
+    #[test]
+    fn tiers_gate_ui_chain_and_debugger_actions() {
+        let root = tempfile::tempdir().unwrap();
+        let mut state = super::super::session::DesktopState::new(root.path().into(), 1.0);
+        let (hub, limited) = paired_tier(Tier::Limited);
+        let navigate = request("nav", Command::Navigate { activity: Activity::Explorer }, &state);
+        assert_eq!(hub.execute_ui(&limited, &navigate, &mut state).unwrap_err().code, "scope_denied");
+        assert!(hub.authorize(&limited, "analyze").is_ok());
+        assert!(hub.authorize(&limited, "screenshot").is_err());
+
+        let (hub, partial) = paired_tier(Tier::Partial);
+        hub.execute_ui(&partial, &navigate, &mut state).unwrap();
+        let mine = request("mine", Command::Mine {}, &state);
+        assert_eq!(hub.execute_ui(&partial, &mine, &mut state).unwrap()["status"], "pending_approval");
+        let start = request("debug", Command::DebugStart {}, &state);
+        assert_eq!(hub.execute_ui(&partial, &start, &mut state).unwrap_err().code, "scope_denied");
+
+        let (hub, full) = paired_tier(Tier::Full);
+        let mine = request("mine-full", Command::Mine {}, &state);
+        assert_eq!(hub.execute_ui(&full, &mine, &mut state).unwrap()["effect"], "native");
+        let start = request("debug-full", Command::DebugStart {}, &state);
+        assert_eq!(hub.execute_ui(&full, &start, &mut state).unwrap()["effect"], "native");
+        assert!(hub.authorize(&full, "screenshot").is_ok());
+        // Removing a deployment record still asks locally, even at Full.
+        state.deployments.push(super::super::session::Deployment {
+            name: "fixture".into(),
+            address: "0x0000000000000000000000000000000000000001".into(),
+        });
+        let remove = request("remove", Command::RemoveDeployment { id: application::deployment_id(&state, 0).unwrap() }, &state);
+        assert_eq!(hub.execute_ui(&full, &remove, &mut state).unwrap()["status"], "pending_approval");
+    }
+
+    #[test]
+    fn no_tier_can_encode_secret_or_access_setting_actions() {
+        for action in ["wallet.secret", "wallet.unlock", "wallet.keystore.create", "wallet.keystore.delete", "wallet.export", "ai.access", "approval.accept", "rpc.send"] {
+            assert!(serde_json::from_value::<Command>(json!({"actionId":action,"params":{}})).is_err(), "{action}");
+        }
+        // Dev accounts are chosen by index; a key can be neither supplied nor returned.
+        assert!(serde_json::from_value::<Command>(json!({"actionId":"wallet.dev_account","params":{"index":0,"key":"0x01"}})).is_err());
+        let root = tempfile::tempdir().unwrap();
+        let mut state = super::super::session::DesktopState::new(root.path().into(), 1.0);
+        state.use_anvil_key(0);
+        let key = super::super::session::anvil_dev_account(0).unwrap().1.trim_start_matches("0x");
+        for query in [Query::State, Query::ContractView, Query::DeployForm, Query::Catalog, Query::Macros, Query::Debugger] {
+            assert!(!application::query(&state, &query).to_string().contains(key));
+        }
     }
 
     #[test]
@@ -616,7 +714,7 @@ mod tests {
         assert!(hub.authenticate("invalid").is_err());
         let (hub, principal, token) = paired();
         assert_eq!(
-            hub.authorize(&principal, "analyze").unwrap_err().code,
+            hub.authorize(&principal, "debug").unwrap_err().code,
             "scope_denied"
         );
         assert!(!hub.local_status().to_string().contains(&token));
@@ -690,11 +788,7 @@ mod tests {
         assert!(hub.state.lock().unwrap().requests.is_empty());
         hub.enable_local("fixture".into());
         let (_, token) = hub
-            .pair_local(Scopes {
-                read: true,
-                ui: true,
-                analyze: false,
-            })
+            .pair_local(Tier::Partial)
             .unwrap();
         let next = hub.authenticate(&token).unwrap();
         request.context = application::context(&state);
@@ -778,7 +872,7 @@ mod tests {
         assert_eq!(state.deployments.len(), 1);
         let id = result["approvalId"].as_str().unwrap();
         state.view_revision += 1;
-        let result = hub.resolve_local(id, true, &mut state).unwrap();
+        let (result, _) = hub.resolve_local(id, true, &mut state).unwrap();
         assert_eq!(result["error"]["code"], "stale_context");
         assert_eq!(state.deployments.len(), 1);
         assert!(hub.resolve_local(id, true, &mut state).is_err());
@@ -805,7 +899,7 @@ mod tests {
         let pending = hub.execute_ui(&principal, &request, &mut state).unwrap();
         state.security_confirmation = true;
         assert!(application::apply(&mut state, &Command::Navigate { activity: application::Activity::Contracts }).is_err());
-        let result = hub.resolve_local(pending["approvalId"].as_str().unwrap(), true, &mut state).unwrap();
+        let (result, _) = hub.resolve_local(pending["approvalId"].as_str().unwrap(), true, &mut state).unwrap();
         assert_eq!(result["status"], "completed");
         assert!(state.security_confirmation);
         assert!(state.deployments.is_empty());

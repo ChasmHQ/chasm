@@ -1316,18 +1316,30 @@ impl DesktopState {
         else {
             return false;
         };
-        let count = self.documents[doc_index]
+        let functions = self.documents[doc_index]
             .contract_name()
             .and_then(|name| unique_contract(&self.contracts, name))
-            .map(|item| item.functions.len())
-            .unwrap_or(0);
-        let selected = if index >= 0 && (index as usize) < count {
+            .map(|item| item.functions.clone())
+            .unwrap_or_default();
+        let selected = if index >= 0 && (index as usize) < functions.len() {
             index
         } else {
             -1
         };
+        let payable = functions
+            .get(selected as usize)
+            .is_some_and(|function| function.mutability == "payable");
         let view = &mut self.documents[doc_index].contract_view;
         if view.selected_function != selected {
+            // Drafts belong to one function: arguments or a value left from the
+            // previous function would make the next call fail. A draft typed
+            // before any function was chosen is kept.
+            if view.selected_function >= 0 {
+                view.arguments.clear();
+            }
+            if !payable {
+                view.value = "0".into();
+            }
             view.selected_function = selected;
             view.revision = view.revision.wrapping_add(1);
             self.view_revision = self.view_revision.wrapping_add(1);

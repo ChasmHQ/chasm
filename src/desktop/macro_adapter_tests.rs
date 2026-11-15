@@ -300,3 +300,16 @@ fn constructor_resolves_account_reference_and_exact_signature() {
         matches!(creation, runner::Input::Literal(Value::String(value)) if value.starts_with("0x6001") && value.ends_with("3333333333333333333333333333333333333333"))
     );
 }
+
+#[test]
+fn raw_only_plans_skip_the_build_but_artifact_steps_still_need_it() {
+    let raw: model::MacroDefinition = model::decode_macro(br#"{"schemaVersion":1,"id":"raw","name":"Raw","description":"","steps":[
+        {"id":"snap","enabled":true,"kind":{"type":"snapshot"}},
+        {"id":"read","enabled":true,"kind":{"type":"raw_call","target":"0x5fbdb2315678afecb367f032d93f642f64180aa3","data":"0x","signer":"anvil_account0","value":"0","gas_limit":"100000"}}]}"#).unwrap();
+    assert!(!needs_artifacts(&raw));
+    assert!(adapt_without_artifacts(&raw, &addresses(), token(), false).is_ok());
+    let abi: model::MacroDefinition = model::decode_macro(br#"{"schemaVersion":1,"id":"abi","name":"Abi","description":"","steps":[
+        {"id":"call","enabled":true,"kind":{"type":"abi_call","artifact_id":"a","signature":"f()","mode":"read","target":"0x5fbdb2315678afecb367f032d93f642f64180aa3","args":[],"signer":"anvil_account0","value":"0","gas_limit":"100000"}}]}"#).unwrap();
+    assert!(needs_artifacts(&abi));
+    assert_eq!(adapt_without_artifacts(&abi, &addresses(), token(), false).err(), Some(AdapterError::ArtifactUnavailable));
+}

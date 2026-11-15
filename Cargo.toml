@@ -27,6 +27,8 @@ rand = "0.8"
 tempfile = "3"
 rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 tokio-util = "0.7"
+png = "0.18"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"

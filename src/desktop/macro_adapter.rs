@@ -538,6 +538,29 @@ pub fn adapt(
     )
 }
 
+/// Plans whose steps never resolve a compiled artifact (raw calls and sends,
+/// storage reads, snapshots, asserts, delays) need no Trusted Foundry Build.
+pub fn adapt_without_artifacts(
+    definition: &model::MacroDefinition,
+    addresses: &SignerAddresses,
+    token: runner::ExecutionToken,
+    dry_run: bool,
+) -> Result<AdapterPlan, AdapterError> {
+    adapt_checked(definition, true, &[], addresses, token, dry_run)
+}
+
+pub fn needs_artifacts(definition: &model::MacroDefinition) -> bool {
+    definition.steps.iter().any(|step| {
+        step.enabled
+            && matches!(
+                step.kind,
+                model::StepKind::DeployArtifact { .. }
+                    | model::StepKind::AbiCall { .. }
+                    | model::StepKind::ProbeGasSweep { .. }
+            )
+    })
+}
+
 fn adapt_checked(
     definition: &model::MacroDefinition,
     eligible: bool,

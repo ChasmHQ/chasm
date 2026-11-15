@@ -173,13 +173,49 @@ pub struct Manager {
     config: Config,
     registry: Mutex<Registry>,
     resources_dir: Option<tempfile::TempDir>,
-    availability: Option<String>,
+    /// `None` when the worker answered its probe. A probe that only timed out
+    /// is retried on the next Start, since startup competes with compile and Anvil.
+    availability: Mutex<Option<String>>,
+    probe_timed_out: std::sync::atomic::AtomicBool,
     events: broadcast::Sender<()>,
     build_admission: Arc<tokio::sync::Semaphore>,
     stopping: std::sync::atomic::AtomicBool,
 }
 
+/// Start a worker, ask for hello, then terminate it. No worker is retained when idle.
+/// Returns the unavailability reason and whether the probe only timed out.
+async fn probe(config: &Config, limit: std::time::Duration) -> (Option<String>, bool) {
+    match Worker::spawn(config, None) {
+        Ok(worker) => {
+            let answer = tokio::time::timeout(config.timeout.min(limit), worker.hello()).await;
+            worker.killer.kill().await;
+            match answer {
+                Ok(Ok(_)) => (None, false),
+                Ok(Err(error)) => (Some(error.message), false),
+                Err(_) => (Some("Debugger hello timed out; check the local debugger installation.".into()), true),
+            }
+        }
+        Err(error) => (Some(error.message), false),
+    }
+}
+
 impl Manager {
+    fn availability(&self) -> Option<String> {
+        self.availability.lock().unwrap().clone()
+    }
+
+    async fn ensure_available(&self) -> Result<(), GatewayError> {
+        if self.availability().is_some() && self.probe_timed_out.load(std::sync::atomic::Ordering::SeqCst) {
+            let (reason, timed_out) = probe(&self.config, std::time::Duration::from_secs(30)).await;
+            *self.availability.lock().unwrap() = reason;
+            self.probe_timed_out.store(timed_out, std::sync::atomic::Ordering::SeqCst);
+        }
+        match self.availability() {
+            Some(_) => Err(GatewayError::unavailable()),
+            None => Ok(()),
+        }
+    }
+
     pub async fn new(config: Config) -> Arc<Self> {
         let resources_dir = tempfile::Builder::new()
             .prefix("chasm-debugger-")
@@ -189,32 +225,15 @@ impl Manager {
         if resources_dir.is_none() {
             availability = Some("Could not create a private debugger resource directory.".into());
         }
+        let mut timed_out = false;
         if availability.is_none() {
-            // Probe before serving, then terminate. No worker is retained when idle.
-            availability = match Worker::spawn(&config, None) {
-                Ok(worker) => {
-                    let probe = tokio::time::timeout(
-                        config.timeout.min(std::time::Duration::from_secs(10)),
-                        worker.hello(),
-                    )
-                    .await;
-                    worker.killer.kill().await;
-                    match probe {
-                        Ok(Ok(_)) => None,
-                        Ok(Err(error)) => Some(error.message),
-                        Err(_) => Some(
-                            "Debugger hello timed out; check the local debugger installation."
-                                .into(),
-                        ),
-                    }
-                }
-                Err(error) => Some(error.message),
-            };
+            (availability, timed_out) = probe(&config, std::time::Duration::from_secs(10)).await;
         }
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
             config,
-            availability,
+            availability: Mutex::new(availability),
+            probe_timed_out: std::sync::atomic::AtomicBool::new(timed_out),
             resources_dir,
             events,
             build_admission: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -569,8 +588,8 @@ async fn capabilities(
         examples.push(json!({"id":"source-demo", "label":"Withdrawal lab (synthetic)", "buildInfoId":"source-demo-build"}));
     }
     Json(
-        json!({"available":manager.availability.is_none(), "protocol":PROTOCOL, "providers":providers,
-        "modes":["offline","replay","fork","foundry"], "reason":manager.availability, "csrfToken":csrf, "examples":examples}),
+        json!({"available":manager.availability().is_none(), "protocol":PROTOCOL, "providers":providers,
+        "modes":["offline","replay","fork","foundry"], "reason":manager.availability(), "csrfToken":csrf, "examples":examples}),
     )
 }
 
@@ -695,9 +714,7 @@ async fn start(
             }
         }
     }
-    if manager.availability.is_some() {
-        return Err(GatewayError::unavailable());
-    }
+    manager.ensure_available().await?;
     if !["offline", "replay", "fork", "foundry"].contains(&body.mode.as_str()) {
         return Err(GatewayError::bad("Unsupported debugger mode."));
     }
