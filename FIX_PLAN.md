@@ -85,3 +85,27 @@ Plan:
 4. Dockable debugger panes and the console (3), the largest change.
 
 Each item ships with tests, a live run through the control API and screenshots, and is committed separately.
+
+## Progress
+
+| Item | Status |
+|---|---|
+| 1. Field focus | Code written (`keep_rows`, request and macro fields), test not run yet |
+| 2. Revert reason on Send | Not started |
+| 4. Step semantics and docs | Not started |
+| 5. Capture and trace saving | Not started |
+| 3. Dockable debugger panes and console | Not started |
+
+## Goals after round 2 (agreed 2026-11-17)
+
+In order of impact. Start after the five items above are done.
+
+1. Address labels everywhere. An automatic address book ("Anvil #0", "Bank", "Bank.owner") used by Explorer, trace, storage and call results instead of raw addresses.
+2. Saved, repeatable History. Per-project record of every call, transaction and result, with Repeat, Debug and "Kirim ke macro". This replaces the session-only History planned in Phase 5.
+3. Decoded variables in the debugger. Locals, function arguments and per-step storage changes shown by name (`balances[0xf39…]: 0 → 1 ether`). Build it together with the dockable panes (item 3 above), since both touch the same code.
+4. Snapshot timeline and cheatcodes (Phase 3). Warp, roll, deal, prank and "Revert ke sini" per transaction. This was lost when the web UI was removed.
+5. Solc and library manager (Phase 4). Needed before real repositories that import OpenZeppelin compile reliably.
+6. Mainnet fork. Fork at a block and debug a real transaction. The largest item; it also covers the mainnet address history TODO.
+7. Consistent UI patterns: a command palette (Ctrl+K) to jump to a contract, function or transaction; one error pattern that always offers the next action; empty states that name the next step.
+
+Suggested order: 1 and 2 first (they improve every view), then 3 with the dockable panes, then 4, 5, 6. Item 7 is applied along the way.
