@@ -536,6 +536,8 @@ struct Registry {
 
 thread_local! {
     static REGISTRIES: RefCell<Vec<Registry>> = const { RefCell::new(Vec::new()) };
+    /// Macro id and step index whose form fields are on screen.
+    static FORM_STEP: RefCell<(String, i32)> = const { RefCell::new((String::new(), -1)) };
 }
 
 fn host_key(ui: &MainWindow) -> usize {
@@ -1990,14 +1992,23 @@ fn project(
         data.set_selected_step(selected_step);
     }
     let index = usize::try_from(selected_step).ok();
-    data.set_form_fields(super::model(
+    let form_fields = super::model(
         index
             .map(|index| super::macro_form::fields(draft, index))
             .unwrap_or_default()
             .into_iter()
             .map(|field| super::MacroFormField { key: field.key.into(), label: field.label.into(), value: field.value.into(), hint: field.hint.into(), kind: field.kind.into() })
             .collect(),
-    ));
+    );
+    // Typing in a step field must not rebuild its LineEdit. The model is kept
+    // only for the same step of the same macro.
+    let shown_step = (data.get_selected_id().to_string(), selected_step);
+    let same_step = FORM_STEP.with(|last| last.replace(shown_step.clone()) == shown_step);
+    data.set_form_fields(if same_step {
+        super::keep_rows(data.get_form_fields(), form_fields, |old, new| old.key == new.key && old.kind == new.kind)
+    } else {
+        form_fields
+    });
     data.set_references(super::model(index.map(|index| super::macro_form::references(draft, index)).unwrap_or_default().into_iter().map(Into::into).collect()));
     data.set_step_kind(
         index

@@ -263,3 +263,39 @@ fn side_response_follows_the_bound_contract_tab_only() {
     state.active_document = 0;
     assert!(!displayed(&state, &generic));
 }
+
+#[test]
+fn request_fields_keep_their_model_while_typing() {
+    i_slint_backend_testing::init_no_event_loop();
+    let raw = r#"{"type":"compile_success","contracts":[{"name":"Bank","source_type":"src","artifact":{"bytecode":{"object":"6000"},"abi":[{"type":"function","name":"withdraw","stateMutability":"nonpayable","inputs":[{"name":"_amount","type":"uint256"}],"outputs":[]},{"type":"function","name":"send","stateMutability":"nonpayable","inputs":[{"name":"_amount","type":"uint256"}],"outputs":[]}]}}]}"#;
+    let mut state = DesktopState::welcome();
+    state.workspace_ready = true;
+    state.contracts = super::super::session::contracts_from_compile(raw).unwrap();
+    state.select_contract(0);
+    state.select_function(0);
+    let owner = state.current_document_id().unwrap();
+    let ui = MainWindow::new().unwrap();
+    let data = ui.global::<PanelData>();
+    let shown = || {
+        [data.get_left_contract(), data.get_center_contract(), data.get_right_contract(), data.get_bottom_contract()]
+            .into_iter()
+            .map(|view| view.fields)
+            .find(|fields| fields.row_count() > 0)
+    };
+    render_host(&ui, &state, None);
+    let fields = shown().expect("no zone shows the request fields");
+    assert_eq!(fields.row_count(), 1);
+    for text in ["5", "50", "500"] {
+        let doc = state.documents.iter_mut().find(|doc| doc.id == owner).unwrap();
+        doc.contract_view.arguments = format!("[\"{text}\"]");
+        render_host(&ui, &state, None);
+        assert!(shown().unwrap() == fields, "typing {text} rebuilt the field model");
+        assert_eq!(fields.row_data(0).unwrap().value, text);
+    }
+    // Another function with the same field schema is a new form.
+    state.select_function(1);
+    render_host(&ui, &state, None);
+    let next = shown().unwrap();
+    assert!(next != fields);
+    assert_eq!(next.row_data(0).unwrap().value, "");
+}

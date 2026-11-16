@@ -1548,7 +1548,7 @@ fn render_host(ui: &MainWindow, state: &DesktopState, pane: Option<&PaneId>) {
         data.set_document_kind(document_kind);
         data.set_document_title(document_title.into());
         data.set_document_body(document_body.into());
-        data.set_contract_view(contract);
+        data.set_contract_view(keep_request_rows(data.get_contract_view(), contract));
         data.set_deployment_view(keep_field_rows(data.get_deployment_view(), deployment));
         if let Some(doc) = document_for(state, id).filter(|doc| doc.kind == 0) {
             super::native_contract::render_document(ui, state, doc);
@@ -1565,7 +1565,7 @@ fn render_host(ui: &MainWindow, state: &DesktopState, pane: Option<&PaneId>) {
     data.set_left_document_kind(left.document_kind);
     data.set_left_document_title(left.document_title.into());
     data.set_left_document_body(left.document_body.into());
-    data.set_left_contract(left.contract);
+    data.set_left_contract(keep_request_rows(data.get_left_contract(), left.contract));
     data.set_left_deployment(keep_field_rows(data.get_left_deployment(), left.deployment));
     let center = zone_projection(state, Zone::Center);
     data.set_center_visible(!center.rows.is_empty());
@@ -1578,7 +1578,7 @@ fn render_host(ui: &MainWindow, state: &DesktopState, pane: Option<&PaneId>) {
     data.set_center_document_kind(center.document_kind);
     data.set_center_document_title(center.document_title.into());
     data.set_center_document_body(center.document_body.into());
-    data.set_center_contract(center.contract);
+    data.set_center_contract(keep_request_rows(data.get_center_contract(), center.contract));
     data.set_center_deployment(keep_field_rows(data.get_center_deployment(), center.deployment));
     let right = zone_projection(state, Zone::Right);
     data.set_right_visible(!right.rows.is_empty());
@@ -1591,7 +1591,7 @@ fn render_host(ui: &MainWindow, state: &DesktopState, pane: Option<&PaneId>) {
     data.set_right_document_kind(right.document_kind);
     data.set_right_document_title(right.document_title.into());
     data.set_right_document_body(right.document_body.into());
-    data.set_right_contract(right.contract);
+    data.set_right_contract(keep_request_rows(data.get_right_contract(), right.contract));
     data.set_right_deployment(keep_field_rows(data.get_right_deployment(), right.deployment));
     let bottom = zone_projection(state, Zone::Bottom);
     data.set_bottom_visible(!bottom.rows.is_empty());
@@ -1604,8 +1604,17 @@ fn render_host(ui: &MainWindow, state: &DesktopState, pane: Option<&PaneId>) {
     data.set_bottom_document_kind(bottom.document_kind);
     data.set_bottom_document_title(bottom.document_title.into());
     data.set_bottom_document_body(bottom.document_body.into());
-    data.set_bottom_contract(bottom.contract);
+    data.set_bottom_contract(keep_request_rows(data.get_bottom_contract(), bottom.contract));
     data.set_bottom_deployment(keep_field_rows(data.get_bottom_deployment(), bottom.deployment));
+}
+
+/// Request argument fields keep their model while the same function of the
+/// same tab is shown, so typing does not lose focus. `details` names the tab.
+fn keep_request_rows(shown: super::ContractViewData, mut next: super::ContractViewData) -> super::ContractViewData {
+    if shown.details == next.details && shown.selected_name == next.selected_name {
+        next.fields = super::keep_rows(shown.fields, next.fields, |old, new| old.name == new.name && old.kind == new.kind);
+    }
+    next
 }
 
 /// A fresh `fields` model makes Slint rebuild every constructor LineEdit, which

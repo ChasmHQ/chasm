@@ -1604,6 +1604,26 @@ fn model<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
     ModelRc::new(VecModel::from(items))
 }
 
+/// A fresh model makes Slint rebuild every row element, which drops keyboard
+/// focus from a LineEdit after each keystroke. Keep the shown model when every
+/// row has the same identity (`same`) and update only the rows that differ.
+fn keep_rows<T: Clone + PartialEq + 'static>(shown: ModelRc<T>, next: ModelRc<T>, same: impl Fn(&T, &T) -> bool) -> ModelRc<T> {
+    let count = next.row_count();
+    let stable = count > 0
+        && shown.row_count() == count
+        && (0..count).all(|index| matches!((shown.row_data(index), next.row_data(index)), (Some(old), Some(new)) if same(&old, &new)));
+    if !stable {
+        return next;
+    }
+    for index in 0..count {
+        let row = next.row_data(index).unwrap();
+        if shown.row_data(index).as_ref() != Some(&row) {
+            shown.set_row_data(index, row);
+        }
+    }
+    shown
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
