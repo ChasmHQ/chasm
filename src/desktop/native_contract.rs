@@ -75,6 +75,10 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                 }
                 1 => {
                     view.value = value.to_string();
+                    let (amount, unit) = super::request_form::from_wei(&view.value);
+                    view.value_amount = amount;
+                    view.value_unit = unit as i32;
+                    view.value_error.clear();
                     view.revision = view.revision.wrapping_add(1);
                 }
                 2 => {
@@ -96,6 +100,48 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                 .on_attach_address_edited(callback),
         }
     }
+    let held = state.clone();
+    let weak = ui.as_weak();
+    ui.global::<ContractLogic>().on_field_edited(move |owner, index, text| {
+        if text.len() > 64 * 1024 {
+            return;
+        }
+        let mut state = held.lock().unwrap();
+        let Some(doc_index) = document_index(&state, owner.as_str()) else { return };
+        let Some(function) = abi_function(&state, &state.documents[doc_index]) else { return };
+        let mut values = super::request_form::split(&function, &state.documents[doc_index].contract_view.arguments);
+        let Some(slot) = values.get_mut(index as usize) else { return };
+        *slot = text.to_string();
+        let joined = super::request_form::join(&function, &values);
+        edit_view(&mut state, owner.as_str(), |view| {
+            view.arguments = joined;
+            view.revision = view.revision.wrapping_add(1);
+        });
+        drop(state);
+        super::paint(&weak, &held);
+    });
+    let held = state.clone();
+    let weak = ui.as_weak();
+    ui.global::<ContractLogic>().on_amount_edited(move |owner, amount, unit| {
+        if amount.len() > 100 {
+            return;
+        }
+        let mut state = held.lock().unwrap();
+        edit_view(&mut state, owner.as_str(), |view| {
+            view.value_amount = amount.to_string();
+            view.value_unit = unit.clamp(0, 2);
+            match super::request_form::to_wei(&view.value_amount, view.value_unit as usize) {
+                Ok(wei) => {
+                    view.value = wei;
+                    view.value_error.clear();
+                }
+                Err(error) => view.value_error = error,
+            }
+            view.revision = view.revision.wrapping_add(1);
+        });
+        drop(state);
+        super::paint(&weak, &held);
+    });
     let held = state.clone();
     ui.global::<ContractLogic>()
         .on_scroll_changed(move |owner, part, position| {
@@ -326,6 +372,17 @@ fn functions_for<'a>(
         (Some(contract), None) => &contract.functions,
         _ => &[],
     }
+}
+
+/// Full ABI entry of the tab's selected function, for typed request fields.
+fn abi_function(state: &DesktopState, doc: &Document) -> Option<ethers::abi::Function> {
+    let selected = functions_for(state, doc).get(doc.contract_view.selected_function as usize)?;
+    let signature = format!("{}({})", selected.name, selected.params.iter().map(|(_, kind)| kind.as_str()).collect::<Vec<_>>().join(","));
+    let name = doc.contract_name()?;
+    let mut contracts = state.contracts.iter().filter(|contract| contract.name == name);
+    let contract = contracts.next().filter(|_| contracts.next().is_none())?;
+    use ethers::abi::FunctionExt;
+    contract.abi.functions().find(|function| function.abi_signature() == signature).cloned()
 }
 
 fn execute(
@@ -693,6 +750,24 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
         .into(),
         arguments: view.arguments.clone().into(),
         value: view.value.clone().into(),
+        value_amount: view.value_amount.clone().into(),
+        value_unit: view.value_unit,
+        value_error: view.value_error.clone().into(),
+        fields: super::model(
+            abi_function(state, doc)
+                .map(|function| super::request_form::fields(&function, &view.arguments))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|field| super::RequestField {
+                    name: field.name.into(),
+                    kind: field.kind.into(),
+                    value: field.value.into(),
+                    hint: field.hint.into(),
+                    placeholder: field.placeholder.into(),
+                    error: field.error.into(),
+                })
+                .collect(),
+        ),
         slot: view.slot.clone().into(),
         attach_address: view.attach_address.clone().into(),
         storage_output: view.storage.clone().into(),

@@ -4,6 +4,7 @@ import { ActionControl, DockTab, SideHeader, Theme } from "theme.slint";
 import { SelectableText } from "selectable-text.slint";
 
 export struct ContractFunction { name: string, inputs: string, mutability: string }
+export struct RequestField { name: string, kind: string, value: string, hint: string, placeholder: string, error: string }
 
 export struct ContractViewData {
     contract-name: string,
@@ -36,6 +37,10 @@ export struct ContractViewData {
     storage-detached: bool,
     arguments: string,
     value: string,
+    value-amount: string,
+    value-unit: int,
+    value-error: string,
+    fields: [RequestField],
     slot: string,
     attach-address: string,
     functions: [ContractFunction],
@@ -84,6 +89,8 @@ export global ContractLogic {
     callback select-function(string, int);
     callback arguments-edited(string, string);
     callback value-edited(string, string);
+    callback field-edited(string, int, string);
+    callback amount-edited(string, string, int);
     callback slot-edited(string, string);
     callback attach-address-edited(string, string);
     callback read(string);
@@ -316,21 +323,49 @@ component ContractRequest inherits Rectangle {
                     alignment: start;
                     if root.compact: CompactFunctionPicker { view: root.view; owner: root.owner; }
                     if !root.compact: SelectableText { text: root.view.selected-name == "" ? "Select a function to prepare a call." : root.view.mutability == "" ? root.view.selected-name : "\{root.view.selected-name} · \{root.view.mutability}"; font-size: 0.875rem; font-weight: 600; wrap: word-wrap; }
-                    SelectableText { text: "Arguments"; color: Theme.muted; font-size: 0.75rem; }
-                    LineEdit {
-                        min-width: 0px;
-                        enabled: root.view.selected-function >= 0 && !root.view.call-busy;
-                        accessible-label: "Function arguments";
-                        text: root.view.arguments;
-                        edited => { ContractLogic.arguments-edited(root.owner, self.text); }
+                    if root.view.selected-function >= 0 && root.view.fields.length == 0: SelectableText { text: "No arguments."; color: Theme.faint; font-size: 0.75rem; }
+                    for field[index] in root.view.fields: VerticalLayout {
+                        spacing: 0.25rem;
+                        HorizontalLayout {
+                            spacing: 0.375rem;
+                            Text { text: field.name; color: Theme.text; font-size: 0.8125rem; min-width: 0px; overflow: elide; horizontal-stretch: 0; vertical-alignment: center; }
+                            Text { text: field.kind; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                        }
+                        LineEdit {
+                            min-width: 0px;
+                            font-size: 0.8125rem;
+                            enabled: !root.view.call-busy;
+                            accessible-label: "\{field.name} (\{field.kind})";
+                            placeholder-text: field.placeholder;
+                            text: field.value;
+                            edited => { ContractLogic.field-edited(root.owner, index, self.text); }
+                        }
+                        if field.error != "": Text { text: field.error; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
                     }
-                    if root.view.mutability != "view" && root.view.mutability != "pure": SelectableText { text: "Value (wei)"; color: Theme.muted; font-size: 0.75rem; }
-                    if root.view.mutability != "view" && root.view.mutability != "pure": LineEdit {
-                        min-width: 0px;
-                        enabled: root.view.selected-function >= 0 && !root.view.call-busy;
-                        accessible-label: "Call value in wei";
-                        text: root.view.value;
-                        edited => { ContractLogic.value-edited(root.owner, self.text); }
+                    if root.view.mutability == "payable": VerticalLayout {
+                        spacing: 0.25rem;
+                        Text { text: "Value"; color: Theme.text; font-size: 0.8125rem; }
+                        HorizontalLayout {
+                            spacing: 0.375rem;
+                            LineEdit {
+                                min-width: 0px;
+                                horizontal-stretch: 1;
+                                font-size: 0.8125rem;
+                                enabled: !root.view.call-busy;
+                                accessible-label: "Call value";
+                                placeholder-text: "0";
+                                text: root.view.value-amount;
+                                edited => { ContractLogic.amount-edited(root.owner, self.text, root.view.value-unit); }
+                            }
+                            for unit[unit-index] in ["wei", "gwei", "ether"]: DockTab {
+                                label: unit;
+                                selected: root.view.value-unit == unit-index;
+                                horizontal-stretch: 0;
+                                clicked => { ContractLogic.amount-edited(root.owner, root.view.value-amount, unit-index); }
+                            }
+                        }
+                        if root.view.value-error != "": Text { text: root.view.value-error; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+                        if root.view.value-error == "" && root.view.value != "0" && root.view.value-unit != 0: Text { text: "\{root.view.value} wei"; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.75rem; min-width: 0px; overflow: elide; }
                     }
                     if root.view.call-busy || root.view.call-status != "": SelectableText {
                         text: root.view.call-busy ? "Calling contract..." : root.view.call-status;

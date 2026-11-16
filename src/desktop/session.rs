@@ -1336,9 +1336,13 @@ impl DesktopState {
             // before any function was chosen is kept.
             if view.selected_function >= 0 {
                 view.arguments.clear();
+                // The status line described the previous function's call.
+                view.call_status.clear();
             }
             if !payable {
                 view.value = "0".into();
+                view.value_amount.clear();
+                view.value_error.clear();
             }
             view.selected_function = selected;
             view.revision = view.revision.wrapping_add(1);

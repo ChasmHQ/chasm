@@ -15,6 +15,10 @@ pub struct ContractView {
     pub selected_function: i32,
     pub arguments: String,
     pub value: String,
+    /// What the user typed and its unit (0 wei, 1 gwei, 2 ether); `value` holds the wei.
+    pub value_amount: String,
+    pub value_unit: i32,
+    pub value_error: String,
     pub slot: String,
     pub attach_address: String,
     pub section: i32,

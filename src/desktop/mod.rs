@@ -21,6 +21,7 @@ mod converter;
 #[cfg(test)]
 mod copy_tests;
 mod deployment;
+mod request_form;
 pub(crate) mod debug_session;
 mod debug_transport;
 #[cfg(test)]
@@ -1102,7 +1103,7 @@ fn deployment_presentation(state: &DesktopState, doc: &session::Document) -> Dep
         value: draft.values.get(index).cloned().unwrap_or_default().into(),
         hint: deployment::field_hint(&param.kind).into(),
         placeholder: deployment::field_placeholder(&param.kind).into(),
-        error: validation.field_errors.get(index).cloned().unwrap_or_default().into(),
+        error: draft.values.get(index).filter(|value| !value.is_empty()).and(validation.field_errors.get(index)).cloned().unwrap_or_default().into(),
     }).collect()).unwrap_or_default();
     let mut problem = state.deployment_problem_for_document(&doc.id);
     if problem.is_empty() && !state.owned_node.as_ref().is_some_and(|node| node.valid()) {
@@ -1137,7 +1138,7 @@ fn render_deployment_form(ui: &MainWindow, state: &DesktopState) {
             value: draft.values.get(index).cloned().unwrap_or_default().into(),
             hint: deployment::field_hint(&param.kind).into(),
             placeholder: deployment::field_placeholder(&param.kind).into(),
-            error: validation.field_errors.get(index).cloned().unwrap_or_default().into(),
+            error: draft.values.get(index).filter(|value| !value.is_empty()).and(validation.field_errors.get(index)).cloned().unwrap_or_default().into(),
         }).collect()
     }).unwrap_or_default();
     let current = data.get_constructor_fields();

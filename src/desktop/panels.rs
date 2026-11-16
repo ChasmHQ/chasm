@@ -1348,6 +1348,13 @@ fn side_response(state: &DesktopState, doc: &Document) -> bool {
 }
 
 fn displayed(state: &DesktopState, id: &PaneId) -> bool {
+    // Debugger panes belong to the Debugger activity; elsewhere they would only
+    // add a second tab strip above the document.
+    if matches!(id.kind, PaneKind::DebugCode | PaneKind::DebugInspector | PaneKind::DebugInspection | PaneKind::DebugSession)
+        && state.activity != 4
+    {
+        return false;
+    }
     if id.kind == PaneKind::CallResult && id.owner.is_none() {
         return usize::try_from(state.active_document)
             .ok()

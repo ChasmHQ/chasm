@@ -818,6 +818,7 @@ fn contract_view(state: &DesktopState) -> Value {
         "functions":functions, "selectedFunction":view.selected_function,
         "selectedName":view.selected_name.as_str(), "mutability":view.mutability.as_str(),
         "arguments":view.arguments.as_str(), "value":view.value.as_str(),
+        "fields":(0..slint::Model::row_count(&view.fields)).filter_map(|index| slint::Model::row_data(&view.fields, index)).map(|field| json!({"name":field.name.as_str(),"type":field.kind.as_str(),"value":field.value.as_str(),"error":field.error.as_str()})).collect::<Vec<_>>(),
         "busy":view.call_busy, "canRead":view.can_read, "canSend":view.send_enabled,
         "callStatus":view.call_status.as_str(), "simple":view.simple_output.as_str(),
         "raw":view.raw_output.as_str(), "trace":view.trace_output.as_str(),
