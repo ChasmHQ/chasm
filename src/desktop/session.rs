@@ -462,7 +462,7 @@ impl DesktopState {
     pub fn open_activity(&mut self, activity: i32) {
         let activity = activity.clamp(0, 4);
         match activity {
-            1 => self.open_tool_document(4, "Chain Explorer"),
+            1 => self.open_tool_document(4, "Explorer"),
             2 => self.open_tool_document(5, "Converter"),
             3 => self.open_tool_document(6, "Macros"),
             0 if self
@@ -2106,11 +2106,17 @@ pub fn compile_workspace_report(
 ) -> Result<CompileReport, String> {
     // Only workspace sources are compiled, so the storage layout stays small
     // and the Storage tab can name every variable without a second compile.
-    let compiler = Compiler::new_for_storage_layout(root.to_path_buf(), remappings)
-        .map_err(|error| error.to_string())?;
-    let raw = compiler
-        .compile_to_json()
-        .map_err(|error| error.to_string())?;
+    let compile = || -> Result<String, String> {
+        Compiler::new_for_storage_layout(root.to_path_buf(), remappings.clone())
+            .and_then(|compiler| compiler.compile_to_json())
+            .map_err(|error| error.to_string())
+    };
+    // solc can be interrupted (0xc000013a) while the desktop detaches from its
+    // launching console at startup; that is not a source error, so retry once.
+    let raw = match compile() {
+        Err(error) if error.contains("0xc000013a") => compile()?,
+        other => other?,
+    };
     contracts_from_compile_report(&raw)
 }
 
@@ -2673,14 +2679,24 @@ fn format_transaction(tx: &Value, receipt: &Value) -> String {
     } else {
         format!("\nCreated     {created}")
     };
+    let input = tx.get("input").and_then(Value::as_str).unwrap_or("0x");
+    let logs = receipt.get("logs").and_then(Value::as_array).map(|logs| logs.len()).unwrap_or(0);
     format!(
-        "Transaction\nHash    {hash}\nStatus  {status}\nFrom    {}\nTo      {to}\nValue   {} ETH\nBlock   {}{created}",
+        "Transaction\nHash      {hash}\nStatus    {status}\nBlock     {}\nFrom      {}\nTo        {to}{created}\nValue     {} ETH\nNonce     {}\nGas used  {} of {}\nLogs      {logs}\nSelector  {}\nInput     {} bytes\n\n{input}",
+        quantity_to_dec(tx.get("blockNumber").unwrap_or(&Value::Null)),
         tx.get("from").and_then(Value::as_str).unwrap_or("unknown"),
         wei_to_ether(tx.get("value").unwrap_or(&Value::Null)),
-        quantity_to_dec(tx.get("blockNumber").unwrap_or(&Value::Null)),
+        quantity_to_dec(tx.get("nonce").unwrap_or(&Value::Null)),
+        quantity_to_dec(receipt.get("gasUsed").unwrap_or(&Value::Null)),
+        quantity_to_dec(tx.get("gas").unwrap_or(&Value::Null)),
+        if input.len() >= 10 { &input[..10] } else { "none" },
+        input.len().saturating_sub(2) / 2,
     )
 }
 
+/// Newest blocks and transactions, at most `limit` of each. Blocks are read
+/// newest first; the scan stops once both lists are full or after `limit`
+/// blocks without transactions beyond the first page (an idle local chain).
 pub async fn latest_chain(
     rpc: &str,
     limit: u64,
@@ -2688,10 +2704,11 @@ pub async fn latest_chain(
     let client = reqwest::Client::new();
     let head = rpc_call(&client, rpc, "eth_blockNumber", json!([])).await?;
     let head = quantity_to_u64(&head).ok_or("The node returned an invalid block number.")?;
-    let start = head.saturating_sub(limit.saturating_sub(1));
+    let limit = limit.clamp(1, 100);
     let mut blocks = Vec::new();
     let mut transactions = Vec::new();
-    for number in (start..=head).rev() {
+    let mut number = head;
+    loop {
         let block = rpc_call(
             &client,
             rpc,
@@ -2699,39 +2716,37 @@ pub async fn latest_chain(
             json!([hex_quantity(&number.to_string()), true]),
         )
         .await?;
-        if block.is_null() {
-            continue;
+        if !block.is_null() {
+            let hash = block.get("hash").and_then(Value::as_str).unwrap_or("");
+            let txs = block.get("transactions").and_then(Value::as_array).cloned().unwrap_or_default();
+            if (blocks.len() as u64) < limit {
+                blocks.push(ChainRow {
+                    title: format!("#{number}"),
+                    detail: format!("{} tx  {}", txs.len(), short_hex(hash)),
+                    query: number.to_string(),
+                });
+            }
+            for tx in txs.iter().rev() {
+                if transactions.len() as u64 >= limit {
+                    break;
+                }
+                let tx_hash = tx.get("hash").and_then(Value::as_str).unwrap_or("");
+                let to = tx.get("to").and_then(Value::as_str).map(short_hex).unwrap_or_else(|| "create".into());
+                let selector = tx.get("input").and_then(Value::as_str).filter(|data| data.len() >= 10).map(|data| data[..10].to_string()).unwrap_or_default();
+                transactions.push(ChainRow {
+                    title: short_hex(tx_hash),
+                    detail: format!("#{number}  {} ETH  to {to}{}", wei_to_ether(tx.get("value").unwrap_or(&Value::Null)), if selector.is_empty() { String::new() } else { format!("  {selector}") }),
+                    query: tx_hash.to_string(),
+                });
+            }
         }
-        let hash = block.get("hash").and_then(Value::as_str).unwrap_or("");
-        let txs = block
-            .get("transactions")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        blocks.push(ChainRow {
-            title: format!("#{number}"),
-            detail: format!("{} tx · {}", txs.len(), short_hex(hash)),
-            query: number.to_string(),
-        });
-        for tx in txs.iter().rev().take(8) {
-            let tx_hash = tx.get("hash").and_then(Value::as_str).unwrap_or("");
-            let to = tx
-                .get("to")
-                .and_then(Value::as_str)
-                .map(short_hex)
-                .unwrap_or_else(|| "create".into());
-            transactions.push(ChainRow {
-                title: short_hex(tx_hash),
-                detail: format!(
-                    "#{} · {} ETH · {to}",
-                    number,
-                    wei_to_ether(tx.get("value").unwrap_or(&Value::Null))
-                ),
-                query: tx_hash.to_string(),
-            });
+        let scanned = head - number + 1;
+        let full = blocks.len() as u64 >= limit && transactions.len() as u64 >= limit;
+        if number == 0 || full || scanned >= limit * 4 {
+            break;
         }
+        number -= 1;
     }
-    transactions.truncate(24);
     Ok((head, blocks, transactions))
 }
 
@@ -2771,7 +2786,9 @@ fn request_id() -> String {
 fn format_ether(wei: u128) -> String {
     let whole = wei / 1_000_000_000_000_000_000;
     let frac = wei % 1_000_000_000_000_000_000;
-    format!("{whole}.{frac:018}")
+    let frac = format!("{frac:018}");
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() { whole.to_string() } else { format!("{whole}.{frac}") }
 }
 
 #[cfg(test)]

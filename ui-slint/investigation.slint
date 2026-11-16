@@ -39,6 +39,8 @@ export global InvestigationData {
 
 export global InvestigationLogic {
     callback open();
+    // Open inside the Explorer tab instead of as a separate pane.
+    callback open-embedded();
     callback close();
     callback draft-edited(string, string);
     callback run-account();

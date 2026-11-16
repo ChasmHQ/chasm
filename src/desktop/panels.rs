@@ -1355,6 +1355,10 @@ fn displayed(state: &DesktopState, id: &PaneId) -> bool {
     {
         return false;
     }
+    // Investigation lives in the Explorer tab once a project is open.
+    if id.kind == PaneKind::Investigation && state.workspace_ready {
+        return false;
+    }
     if id.kind == PaneKind::CallResult && id.owner.is_none() {
         return usize::try_from(state.active_document)
             .ok()

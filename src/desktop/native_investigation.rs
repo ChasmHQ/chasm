@@ -444,7 +444,35 @@ fn wire_callbacks(ui: &MainWindow, view: ViewRef, controller: Arc<Controller>) {
             !model.cases_loaded && model.pending.is_none()
         };
         refresh_all();
-        super::panels::open("investigation");
+        let in_project = held.state.lock().unwrap().workspace_ready;
+        if in_project {
+            if let Some(ui) = host.upgrade() {
+                ui.global::<super::AppData>().set_explorer_tab(1);
+                ui.global::<super::Logic>().invoke_open_activity(1);
+            }
+        } else {
+            super::panels::open("investigation");
+        }
+        if list {
+            list_cases(&held);
+        }
+    });
+
+    let host = view.clone();
+    let held = controller.clone();
+    // Shown inside the Explorer tab: same model, no separate pane.
+    ui.global::<InvestigationLogic>().on_open_embedded(move || {
+        if !accepts_host(&host, &held) || !require_available(&held, false) {
+            return;
+        }
+        let label = workspace_label(&held.state.lock().unwrap());
+        let list = {
+            let mut model = held.model.lock().unwrap();
+            model.visible = true;
+            model.workspace_label = label;
+            !model.cases_loaded && model.pending.is_none()
+        };
+        refresh_all();
         if list {
             list_cases(&held);
         }

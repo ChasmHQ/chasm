@@ -949,7 +949,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
         let state = held.clone();
         let weak = weak.clone();
         runtime_block.spawn(async move {
-            let result = latest_chain(&rpc, 12).await;
+            let result = latest_chain(&rpc, 100).await;
             let _ = slint::invoke_from_event_loop(move || {
                 let mut borrowed = state.lock().unwrap();
                 let summary = result.as_ref().map(|(number, _, _)| format!("Block {number}")).map_err(Clone::clone);
@@ -1401,16 +1401,9 @@ fn search_chain(weak: Weak<MainWindow>, state: Arc<Mutex<DesktopState>>, runtime
     paint(&weak, &state);
     let held = state.clone();
     runtime.spawn(async move {
-        let request = match session::classify_chain_query(&query) {
-            session::ChainQuery::Address(address) => Ok(chain_read::ReadRequest::Account {address, block:chain_read::BlockRef::Latest}),
-            session::ChainQuery::Hash(hash) => Ok(chain_read::ReadRequest::Transaction {hash}),
-            session::ChainQuery::BlockNumber(number) => chain_read::BlockRef::parse(&number).map(|selector|chain_read::ReadRequest::Block {selector,full_tx:true}).map_err(|error|error.message),
-            session::ChainQuery::Invalid => Err("Enter an exact address, transaction hash or block number.".into()),
-        };
-        let result = match request {
-            Ok(request) => chain_read::query(&rpc,request).await.map(|value|serde_json::to_string_pretty(&value).unwrap_or_default()).map_err(|error|error.to_string()),
-            Err(error) => Err(error),
-        };
+        // Looks the item up on the node directly, so anything the node still has
+        // is found even when it is older than the listed 100.
+        let result = session::lookup_chain(&rpc, query.trim()).await;
         let _ = slint::invoke_from_event_loop(move || {
             let mut state = held.lock().unwrap();
             state.finish_request(&token, &result, None);

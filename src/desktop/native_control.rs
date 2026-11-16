@@ -90,6 +90,9 @@ pub fn wire(
                         .is_some_and(|value| value["effect"] == "workspace_switch");
                     if result.is_ok() { super::panels::focus_current(); }
                     super::paint(&weak, &held);
+                    if result.is_ok() && matches!(request.command, Command::Navigate { activity: Activity::Explorer }) {
+                        ui.global::<super::Logic>().invoke_fetch_block();
+                    }
                     if let Command::Convert { input, .. } = &request.command {
                         if result
                             .as_ref()
@@ -322,7 +325,13 @@ pub(super) fn wire_shared(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>) {
             3 => Activity::Macros,
             _ => Activity::Debugger,
         };
+        let explorer = matches!(activity, Activity::Explorer);
         local(&weak, &held, Command::Navigate { activity });
+        if explorer {
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<Logic>().invoke_fetch_block();
+            }
+        }
     });
     let weak = ui.as_weak();
     let held = state.clone();
@@ -454,6 +463,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             contract.invoke_slot_edited(owner().into(), slot.as_str().into());
             contract.invoke_read_slot(owner().into());
         }
+        Command::Lookup { query } => logic.invoke_explorer_open(query.as_str().into()),
         Command::ReadVariables {} => {
             contract.invoke_section(owner().into(), 1);
             contract.invoke_refresh_variables(owner().into());

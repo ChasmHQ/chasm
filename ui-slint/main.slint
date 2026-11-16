@@ -112,6 +112,7 @@ export global AppData {
     in property <string> explorer-result;
     in property <[ChainItem]> recent-blocks;
     in property <[ChainItem]> recent-transactions;
+    in-out property <int> explorer-tab: 0;
     in property <string> document-body;
     in property <bool> debugger-live: false;
 }
@@ -497,9 +498,7 @@ component NavigationView inherits Rectangle {
                 SideHeader { title: "Chain"; }
                 SideNote { text: AppData.block-label; color: Theme.text; wrap: word-wrap; }
                 SideRow { icon: @image-url("icons/refresh.svg"); label: "Refresh chain"; clicked => { Logic.fetch-block(); } }
-                SideHeader { title: "Latest blocks"; }
-                if AppData.recent-blocks.length == 0: SideNote { text: "No blocks yet."; color: Theme.faint; font-size: 0.75rem; }
-                for block in AppData.recent-blocks: SideRow { icon: @image-url("icons/search.svg"); label: block.title; trailing: block.detail; clicked => { Logic.explorer-open(block.query); } }
+                SideRow { icon: @image-url("icons/search.svg"); label: "Investigation"; clicked => { AppData.explorer-tab = 1; InvestigationLogic.open-embedded(); } }
             }
             if AppData.activity == 2: VerticalLayout {
                 SideHeader { title: "Tools"; }
@@ -553,27 +552,64 @@ component DeployWorkspace inherits ScrollView {
     }
 }
 
-export component ExplorerWorkspace inherits ScrollView {
-    min-width: 0px; min-height: 0px;
-    content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+component ChainList inherits Rectangle {
+    in property <string> title;
+    in property <[ChainItem]> items;
+    in property <string> empty;
+    in property <string> selected;
+    min-width: 0px;
+    background: Theme.panel;
     VerticalLayout {
-        padding: Theme.pad; spacing: 0.625rem; alignment: start;
-        HorizontalLayout {
-            SelectableText { text: "Chain explorer"; color: Theme.text; font-size: 1rem; font-weight: 600; horizontal-stretch: 1; }
-            IconButton { icon: @image-url("icons/search.svg"); label: "Investigation / Repeater"; clicked => { InvestigationLogic.open(); } }
+        SideHeader { title: root.title; trailing: root.items.length > 0 ? "\{root.items.length}" : ""; }
+        if root.items.length == 0: SideNote { text: root.empty; color: Theme.faint; font-size: 0.75rem; }
+        ListView {
+            vertical-stretch: 1;
+            for item in root.items: ActionControl {
+                label: "\{item.title} \{item.detail}";
+                checkable: true;
+                selected: root.selected == item.query;
+                height: 2.5rem;
+                clicked => { Logic.explorer-open(item.query); }
+                VerticalLayout {
+                    padding-left: Theme.pad; padding-right: Theme.pad;
+                    alignment: center;
+                    Text { text: item.title; color: Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; overflow: elide; min-width: 0px; }
+                    Text { text: item.detail; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
+                }
+            }
         }
-        SelectableText { text: "Structured block, transaction, receipt and state reads from the selected local node. Open Investigation for pinned historical queries, Repeater and offline cases."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
-        SelectableText { text: "Address, transaction hash, or block number"; color: Theme.muted; font-size: 0.75rem; }
+    }
+}
+
+export component ExplorerWorkspace inherits Rectangle {
+    min-width: 0px; min-height: 0px;
+    background: Theme.canvas;
+    VerticalLayout {
         HorizontalLayout {
-            spacing: 0.375rem;
-            Field { label: "Address, transaction hash, or block number"; text <=> AppData.explorer-input; edited => { Logic.explorer-edited(self.text); } accepted => { Logic.explorer-search(self.text); } }
-            IconButton { icon: @image-url("icons/search.svg"); label: "Look up"; clicked => { Logic.explorer-search(AppData.explorer-input); } }
+            height: Theme.tab-height;
+            DockTab { label: "Chain"; selected: AppData.explorer-tab == 0; clicked => { AppData.explorer-tab = 0; } }
+            DockTab { label: "Investigation"; selected: AppData.explorer-tab == 1; clicked => { AppData.explorer-tab = 1; InvestigationLogic.open-embedded(); } }
+            Rectangle { horizontal-stretch: 1; }
         }
-        if AppData.explorer-status != "": SelectableText { text: AppData.explorer-status; color: Theme.muted; font-size: 0.75rem; }
-        OutputPane { text: AppData.explorer-result; height: 12rem; }
-        SelectableText { text: "Latest transactions"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
-        if AppData.recent-transactions.length == 0: SelectableText { text: "No transactions yet. Deploy or send a call, then refresh."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
-        for tx in AppData.recent-transactions: SideRow { icon: @image-url("icons/search.svg"); label: tx.title; trailing: tx.detail; clicked => { Logic.explorer-open(tx.query); } }
+        if AppData.explorer-tab == 0: VerticalLayout {
+            padding: Theme.pad; spacing: 0.5rem;
+            HorizontalLayout {
+                spacing: 0.375rem;
+                Field { label: "Search address, transaction hash, block hash or block number"; placeholder-text: "Address, tx hash, block hash or block number"; text <=> AppData.explorer-input; edited => { Logic.explorer-edited(self.text); } accepted => { Logic.explorer-search(self.text); } }
+                IconButton { icon: @image-url("icons/search.svg"); label: "Look up"; primary: true; clicked => { Logic.explorer-search(AppData.explorer-input); } }
+                IconButton { icon: @image-url("icons/refresh.svg"); label: "Refresh"; clicked => { Logic.fetch-block(); } }
+            }
+            SelectableText { text: "Lists show the newest 100 blocks and transactions on the workspace node. Search reaches anything older on the same node. Address history on public networks is not indexed yet."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+            if AppData.explorer-status != "": SelectableText { text: AppData.explorer-status; color: Theme.muted; font-size: 0.75rem; }
+            HorizontalLayout {
+                spacing: 1px;
+                vertical-stretch: 1;
+                ChainList { title: "Blocks"; items: AppData.recent-blocks; empty: "No blocks loaded. Refresh."; selected: AppData.explorer-input; width: 30%; }
+                ChainList { title: "Transactions"; items: AppData.recent-transactions; empty: "No transactions yet."; selected: AppData.explorer-input; width: 35%; }
+                OutputPane { text: AppData.explorer-result; horizontal-stretch: 1; }
+            }
+        }
+        if AppData.explorer-tab == 1: InvestigationPanel { vertical-stretch: 1; }
     }
 }
 
@@ -1229,7 +1265,7 @@ export component MainWindow inherits Window {
                             MenuRow { label: "Macros"; clicked => { Logic.open-activity(3); Logic.close-menu(); } }
                             MenuRow { label: "Trusted Foundry Build"; clicked => { Logic.open-foundry-build(); Logic.close-menu(); } }
                             MenuRow { label: "Debugger"; clicked => { Logic.open-activity(4); Logic.close-menu(); } }
-                            MenuRow { label: "Investigation / Repeater"; clicked => { InvestigationLogic.open(); Logic.close-menu(); } }
+                            MenuRow { label: "Investigation / Repeater"; clicked => { AppData.explorer-tab = 1; Logic.open-activity(1); InvestigationLogic.open-embedded(); Logic.close-menu(); } }
                             MenuRow { label: "Automation / AI Access"; clicked => { AutomationLogic.open(); Logic.close-menu(); } }
                         }
                         if AppData.menu-open == 5: VerticalLayout {
