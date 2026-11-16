@@ -200,7 +200,7 @@ fn tool_activity_documents_keep_stable_owners_and_contract_context() {
     state.select_document(0);
 
     for (activity, kind, title) in [
-        (1, 4, "Chain Explorer"),
+        (1, 4, "Explorer"),
         (2, 5, "Converter"),
         (3, 6, "Macros"),
     ] {
