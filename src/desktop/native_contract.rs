@@ -37,12 +37,20 @@ fn edit_view(state: &mut DesktopState, owner: &str, edit: impl FnOnce(&mut Contr
 pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     let weak = ui.as_weak();
     let held = state.clone();
+    let rt = runtime.clone();
     ui.global::<ContractLogic>()
         .on_section(move |owner, section| {
-            edit_view(&mut held.lock().unwrap(), owner.as_str(), |view| {
-                view.section = section.clamp(0, 2)
-            });
+            let first_open = {
+                let mut state = held.lock().unwrap();
+                edit_view(&mut state, owner.as_str(), |view| view.section = section.clamp(0, 2));
+                section == 1
+                    && document_index(&state, owner.as_str())
+                        .is_some_and(|index| state.documents[index].contract_view.variables.is_empty())
+            };
             super::paint(&weak, &held);
+            if first_open {
+                read_variables(weak.clone(), held.clone(), rt.clone(), owner.to_string());
+            }
         });
     let weak = ui.as_weak();
     let held = state.clone();
@@ -307,6 +315,54 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     let rt = runtime.clone();
     ui.global::<ContractLogic>()
         .on_trace(move |owner| trace(weak.clone(), held.clone(), rt.clone(), owner.to_string()));
+    let weak = ui.as_weak();
+    let held = state.clone();
+    let rt = runtime.clone();
+    ui.global::<ContractLogic>().on_refresh_variables(move |owner| {
+        read_variables(weak.clone(), held.clone(), rt.clone(), owner.to_string())
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
+    ui.global::<ContractLogic>().on_mapping_edited(move |owner, variable, key| {
+        if key.len() > 512 || variable.len() > 256 {
+            return;
+        }
+        edit_view(&mut held.lock().unwrap(), owner.as_str(), |view| {
+            view.mapping_variable = variable.to_string();
+            view.mapping_key = key.to_string();
+        });
+        super::paint(&weak, &held);
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
+    let rt = runtime.clone();
+    ui.global::<ContractLogic>().on_read_mapping(move |owner| {
+        let slot = {
+            let mut state = held.lock().unwrap();
+            let Some(index) = document_index(&state, owner.as_str()) else { return };
+            let doc = &state.documents[index];
+            let view = &doc.contract_view;
+            let layout = doc.contract_name().and_then(|name| state.storage_layouts.get(name)).map(super::storage_layout::Layout::from_json);
+            match layout.map(|layout| layout.and_then(|layout| layout.mapping_slot(&view.mapping_variable, &view.mapping_key))) {
+                Some(Ok((slot, value_type))) => Some((format!("{slot:#x}"), value_type)),
+                Some(Err(error)) => {
+                    state.documents[index].contract_view.storage_status = error;
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some((slot, _)) = slot {
+            edit_view(&mut held.lock().unwrap(), owner.as_str(), |view| {
+                view.slot = slot;
+                view.storage_generation = view.storage_generation.wrapping_add(1);
+                view.storage_busy = false;
+            });
+            read_storage(weak.clone(), held.clone(), rt.clone(), owner.to_string());
+        } else {
+            super::paint(&weak, &held);
+        }
+    });
     let weak = ui.as_weak();
     ui.global::<ContractLogic>().on_save_output(move |_, text| {
         if let Some(ui) = weak.upgrade() {
@@ -622,6 +678,72 @@ fn read_storage(
     });
 }
 
+/// Read every base slot named in the storage layout, then dynamic array
+/// elements, at one block; decode by type into the variable list.
+pub(super) fn read_variables(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, owner: String) {
+    let prepared = {
+        let mut state = held.lock().unwrap();
+        if state.transition_pending() || !state.workspace_ready {
+            return;
+        }
+        let Some(index) = document_index(&state, &owner) else { return };
+        let network = state.network_epoch;
+        let rpc = state.rpc.clone();
+        let layout = state.documents[index]
+            .contract_name()
+            .and_then(|name| state.storage_layouts.get(name))
+            .map(super::storage_layout::Layout::from_json);
+        let doc = &mut state.documents[index];
+        let Some(target) = doc.contract_view.target.clone().filter(|target| target.network_epoch == network) else { return };
+        let view = &mut doc.contract_view;
+        if view.variables_busy {
+            return;
+        }
+        let layout = match layout {
+            Some(Ok(layout)) if !layout.is_empty() => layout,
+            Some(Ok(_)) => {
+                view.variables_status = "This contract declares no state variables.".into();
+                view.variables.clear();
+                return;
+            }
+            _ => {
+                view.variables_status = "No storage layout in this build. Recompile, then refresh.".into();
+                return;
+            }
+        };
+        view.variables_generation = view.variables_generation.wrapping_add(1);
+        view.variables_busy = true;
+        view.variables_status = "Reading state variables…".into();
+        (doc.id.clone(), rpc, target, layout, view.variables_generation, network)
+    };
+    let (id, rpc, target, layout, generation, network) = prepared;
+    super::paint(&weak, &held);
+    runtime.spawn(async move {
+        let result = super::contract_service::storage_words(&rpc, &target.address, &layout).await;
+        let _ = slint::invoke_from_event_loop(move || {
+            let mut state = held.lock().unwrap();
+            if !state.active || state.network_epoch != network {
+                return;
+            }
+            if let Some(view) = state.documents.iter_mut().find(|doc| doc.id == id).map(|doc| &mut doc.contract_view) {
+                if view.variables_generation == generation && view.target.as_ref() == Some(&target) {
+                    view.variables_busy = false;
+                    match result {
+                        Ok((words, block)) => {
+                            let read = |slot: ethers::types::U256| words.get(&slot).copied();
+                            view.variables = layout.decode(&read);
+                            view.variables_status = format!("{} variable(s) at block {block}.", view.variables.len());
+                        }
+                        Err(error) => view.variables_status = format!("Storage read failed: {error}"),
+                    }
+                }
+            }
+            drop(state);
+            super::paint(&weak, &held);
+        });
+    });
+}
+
 fn trace(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, owner: String) {
     let prepared = {
         let mut state = held.lock().unwrap();
@@ -771,6 +893,28 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
         slot: view.slot.clone().into(),
         attach_address: view.attach_address.clone().into(),
         storage_output: view.storage.clone().into(),
+        variables: super::model(
+            view.variables
+                .iter()
+                .map(|variable| super::StorageVariable {
+                    label: variable.label.clone().into(),
+                    kind: variable.type_label.clone().into(),
+                    slot: if variable.offset > 0 { format!("{}+{}", variable.slot, variable.offset) } else { variable.slot.clone() }.into(),
+                    value: variable.value.clone().into(),
+                    note: variable.note.clone().into(),
+                    mapping: variable.type_label.starts_with("mapping("),
+                })
+                .collect(),
+        ),
+        variables_busy: view.variables_busy,
+        variables_status: if view.variables.is_empty() && view.variables_status.is_empty() {
+            if view.target.is_some() { "Open this tab to read every state variable.".into() } else { "Attach or deploy the contract to read its storage.".into() }
+        } else {
+            view.variables_status.clone()
+        }
+        .into(),
+        mapping_variable: view.mapping_variable.clone().into(),
+        mapping_key: view.mapping_key.clone().into(),
         functions_scroll_y: view.scroll.get("functions").copied().unwrap_or(0.0),
         request_scroll_y: view.scroll.get("request").copied().unwrap_or(0.0),
         details_scroll_y: view.scroll.get("details").copied().unwrap_or(0.0),

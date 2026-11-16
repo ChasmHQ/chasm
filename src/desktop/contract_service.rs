@@ -603,6 +603,47 @@ fn receipt_matches_source(receipt: &Value, hash: &str, source: &Value) -> bool {
         .is_some_and(|hash| hash.eq_ignore_ascii_case(expected_hash))
 }
 
+/// Read every slot the layout needs at one block number, base slots first and
+/// then dynamic array elements. Returns the words and the block read.
+pub async fn storage_words(
+    rpc_url: &str,
+    address: &str,
+    layout: &super::storage_layout::Layout,
+) -> Result<(std::collections::HashMap<U256, ethers::types::H256>, u64), String> {
+    validate_rpc_url(rpc_url)?;
+    use super::chain_read::{query, BlockRef, ReadRequest};
+    // The first read pins the block; every later read uses that same number.
+    let mut number = None;
+    let mut words = std::collections::HashMap::new();
+    for pass in 0..2 {
+        let slots = if pass == 0 {
+            layout.base_slots()
+        } else {
+            let read = |slot: U256| words.get(&slot).copied();
+            layout.array_slots(&read)
+        };
+        for slot in slots {
+            if words.contains_key(&slot) {
+                continue;
+            }
+            let block = number.map(BlockRef::Number).unwrap_or(BlockRef::Latest);
+            let result = query(rpc_url, ReadRequest::Storage { address: address.into(), slot: format!("{slot:#x}"), block })
+                .await
+                .map_err(|error| error.to_string())?;
+            if number.is_none() {
+                number = result["block"]["number"].as_str().and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok());
+            }
+            let text = result["data"]["value"].as_str().ok_or("The node returned no storage value.")?;
+            let bytes = ethers::utils::hex::decode(text.trim_start_matches("0x")).map_err(|_| "Invalid storage word.")?;
+            let mut word = [0u8; 32];
+            let take = bytes.len().min(32);
+            word[32 - take..].copy_from_slice(&bytes[bytes.len() - take..]);
+            words.insert(slot, ethers::types::H256::from(word));
+        }
+    }
+    Ok((words, number.unwrap_or(0)))
+}
+
 pub async fn storage(rpc_url: &str, address: &str, slot: &str) -> Result<(String, Value), String> {
     let result = super::chain_read::query(
         rpc_url,
@@ -618,13 +659,16 @@ pub async fn storage(rpc_url: &str, address: &str, slot: &str) -> Result<(String
     )
     .await
     .map_err(|error| error.to_string())?;
+    let text = |value: &Value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+    let word = text(&result["data"]["value"]);
+    let decimal = U256::from_str_radix(word.trim_start_matches("0x"), 16).map(|value| value.to_string()).unwrap_or_default();
+    let block = text(&result["block"]["number"]);
+    let block = u64::from_str_radix(block.trim_start_matches("0x"), 16).map(|number| number.to_string()).unwrap_or(block);
     Ok((
         format!(
-            "Slot {}\n{}\n\nBlock {}\n{}",
-            result["data"]["slot"],
-            result["data"]["value"],
-            result["block"]["number"],
-            result["block"]["hash"]
+            "Slot     {}\nWord     {word}\nAs uint  {decimal}\nBlock    {block} ({})",
+            text(&result["data"]["slot"]),
+            text(&result["block"]["hash"]),
         ),
         result,
     ))

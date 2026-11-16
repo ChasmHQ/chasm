@@ -454,6 +454,14 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             contract.invoke_slot_edited(owner().into(), slot.as_str().into());
             contract.invoke_read_slot(owner().into());
         }
+        Command::ReadVariables {} => {
+            contract.invoke_section(owner().into(), 1);
+            contract.invoke_refresh_variables(owner().into());
+        }
+        Command::ReadMapping { variable, key } => {
+            contract.invoke_mapping_edited(owner().into(), variable.as_str().into(), key.as_str().into());
+            contract.invoke_read_mapping(owner().into());
+        }
         Command::OpenDeploy {} => logic.invoke_open_deploy(),
         Command::Deploy {} => logic.invoke_deploy_contract(),
         Command::Compile {} => logic.invoke_recompile(),

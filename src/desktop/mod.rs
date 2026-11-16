@@ -22,6 +22,7 @@ mod converter;
 mod copy_tests;
 mod deployment;
 mod request_form;
+mod storage_layout;
 pub(crate) mod debug_session;
 mod debug_transport;
 #[cfg(test)]
@@ -339,6 +340,7 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
         Ok(report) => {
             let warning = report.warning();
             state.compile_label = format!("{} contracts", report.contracts.len());
+            state.storage_layouts = report.layouts;
             state.replace_compiled_contracts(report.contracts);
             if let Some(warning) = warning { state.notice = warning; }
             state.push_log("Workspace compile finished.".into());
@@ -695,6 +697,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                             let warning = report.warning();
                             state.compile_label = format!("{} contracts", report.contracts.len());
                             state.notice.clear();
+                            state.storage_layouts = report.layouts;
                             state.replace_compiled_contracts(report.contracts);
                             for warning in [config_warning, warning].into_iter().flatten() {
                                 if !state.notice.is_empty() { state.notice.push('\n'); }

@@ -30,6 +30,13 @@ pub struct ContractView {
     pub storage_generation: u64,
     pub storage_busy: bool,
     pub storage_status: String,
+    /// Named variables decoded at `storage_block`, and the mapping key reader.
+    pub variables: Vec<super::storage_layout::Variable>,
+    pub variables_busy: bool,
+    pub variables_status: String,
+    pub variables_generation: u64,
+    pub mapping_variable: String,
+    pub mapping_key: String,
     pub call_generation: u64,
     pub result_generation: u64,
     pub call_status: String,

@@ -4,6 +4,7 @@ import { ActionControl, DockTab, SideHeader, Theme } from "theme.slint";
 import { SelectableText } from "selectable-text.slint";
 
 export struct ContractFunction { name: string, inputs: string, mutability: string }
+export struct StorageVariable { label: string, kind: string, slot: string, value: string, note: string, mapping: bool }
 export struct RequestField { name: string, kind: string, value: string, hint: string, placeholder: string, error: string }
 
 export struct ContractViewData {
@@ -18,6 +19,11 @@ export struct ContractViewData {
     raw-output: string,
     trace-output: string,
     storage-output: string,
+    variables: [StorageVariable],
+    variables-busy: bool,
+    variables-status: string,
+    mapping-variable: string,
+    mapping-key: string,
     details: string,
     section: int,
     interact-view: int,
@@ -96,6 +102,9 @@ export global ContractLogic {
     callback read(string);
     callback send(string);
     callback read-slot(string);
+    callback refresh-variables(string);
+    callback mapping-edited(string, string, string);
+    callback read-mapping(string);
     callback result-view(string, int);
     callback trace(string);
     callback attach(string, string);
@@ -456,47 +465,88 @@ export component ContractStorage inherits Rectangle {
             min-width: 0px;
             HorizontalLayout {
                 spacing: 0.375rem;
-                SelectableText { text: "Read slot"; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                SelectableText { text: "State variables"; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                ContractButton { label: root.view.variables-busy ? "Reading…" : "Refresh"; enabled: root.view.can-read-storage && !root.view.variables-busy; clicked => { ContractLogic.refresh-variables(root.owner); } }
                 if !root.view.storage-detached: ContractButton { label: "Float storage"; clicked => { ContractLogic.detach-storage(root.owner); } }
                 if root.view.storage-detached: ContractButton { label: "Return to contract"; clicked => { ContractLogic.dock-storage(root.owner); } }
             }
+            if root.view.variables-status != "": SelectableText { text: root.view.variables-status; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+            // Header row
+            if root.view.variables.length > 0: HorizontalLayout {
+                spacing: 0.75rem;
+                Text { text: "Slot"; width: 3rem; color: Theme.faint; font-size: 0.75rem; }
+                Text { text: "Name"; width: 9rem; color: Theme.faint; font-size: 0.75rem; }
+                Text { text: "Type"; width: 10rem; color: Theme.faint; font-size: 0.75rem; }
+                Text { text: "Value"; horizontal-stretch: 1; color: Theme.faint; font-size: 0.75rem; }
+            }
+            for variable in root.view.variables: Rectangle {
+                height: max(Theme.row-height, variable-row.preferred-height);
+                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+                variable-row := HorizontalLayout {
+                    spacing: 0.75rem;
+                    padding-top: 0.25rem; padding-bottom: 0.25rem;
+                    Text { text: variable.slot; width: 3rem; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; overflow: elide; vertical-alignment: center; }
+                    Text { text: variable.label; width: 9rem; color: Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; overflow: elide; vertical-alignment: center; }
+                    Text { text: variable.kind; width: 10rem; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; overflow: elide; vertical-alignment: center; }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        if variable.value != "": SelectableText { text: variable.value; font-family: "Cascadia Mono"; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+                        if variable.note != "": Text { text: variable.note; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+                    }
+                    if variable.mapping: ContractButton {
+                        label: "Read key";
+                        clicked => { ContractLogic.mapping-edited(root.owner, variable.label, root.view.mapping-variable == variable.label ? root.view.mapping-key : ""); }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.edge; }
+            SelectableText { text: "Mapping entry"; font-weight: 600; }
+            SelectableText { text: root.view.mapping-variable == "" ? "Choose Read key on a mapping above, then enter the key." : "Key for \{root.view.mapping-variable}"; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
             HorizontalLayout {
                 spacing: 0.375rem;
-                SelectableText { text: "Storage slot"; color: Theme.muted; font-size: 0.75rem; horizontal-stretch: 0; vertical-alignment: center; }
+                LineEdit {
+                    min-width: 0px;
+                    horizontal-stretch: 1;
+                    enabled: root.view.mapping-variable != "";
+                    accessible-label: "Mapping key";
+                    placeholder-text: "0x… address or number";
+                    text: root.view.mapping-key;
+                    edited => { ContractLogic.mapping-edited(root.owner, root.view.mapping-variable, self.text); }
+                    accepted => { ContractLogic.read-mapping(root.owner); }
+                }
+                ContractButton { label: "Read entry"; enabled: root.view.mapping-variable != "" && root.view.mapping-key != "" && root.view.can-read-storage && !root.view.storage-busy; clicked => { ContractLogic.read-mapping(root.owner); } }
+            }
+
+            SelectableText { text: "Raw slot"; font-weight: 600; }
+            HorizontalLayout {
+                spacing: 0.375rem;
                 LineEdit {
                     min-width: 0px;
                     horizontal-stretch: 1;
                     accessible-label: "Storage slot";
+                    placeholder-text: "Slot number or 0x hex";
                     text: root.view.slot;
                     edited => { ContractLogic.slot-edited(root.owner, self.text); }
+                    accepted => { ContractLogic.read-slot(root.owner); }
                 }
-            }
-            ScrollView {
-                height: Theme.control-height;
-                min-width: 0px;
-                content-width: max(self.visible-width, storage-actions.preferred-width);
-                content-height: self.visible-height;
-                vertical-scrollbar-policy: always-off;
-                storage-actions := HorizontalLayout {
-                    spacing: 0.375rem;
-                    alignment: start;
-                    ContractButton { label: root.view.storage-busy ? "Reading slot..." : "Read slot"; enabled: root.view.can-read-storage && !root.view.storage-busy; clicked => { ContractLogic.read-slot(root.owner); } }
-                    ContractButton { label: "Copy"; enabled: root.view.storage-output != ""; clicked => { storage-output.select-all(); storage-output.copy(); } }
-                    ContractButton { label: "Save..."; enabled: root.view.storage-output != ""; clicked => { ContractLogic.save-output(root.owner, root.view.storage-output); } }
-                }
+                ContractButton { label: root.view.storage-busy ? "Reading…" : "Read slot"; enabled: root.view.can-read-storage && !root.view.storage-busy; clicked => { ContractLogic.read-slot(root.owner); } }
             }
             if root.view.storage-status != "": SelectableText { text: root.view.storage-status; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
-            storage-output := ContractOutput {
-                height: 100 * Theme.unit;
-                text: root.view.storage-output;
-                placeholder-text: "Enter a slot and select Read slot.";
-                content-y: min(0, root.view.storage-scroll-y) * Theme.unit;
-                changed content-y => {
-                    if self.content-y != min(0, root.view.storage-scroll-y) * Theme.unit {
-                        ContractLogic.scroll-changed(root.owner, "storage", min(0, self.content-y / Theme.unit));
-                    }
+            if root.view.storage-output != "": VerticalLayout {
+                spacing: 0.375rem;
+                HorizontalLayout {
+                    spacing: 0.375rem;
+                    alignment: end;
+                    ContractButton { label: "Copy"; clicked => { storage-output.select-all(); storage-output.copy(); } }
+                    ContractButton { label: "Save…"; clicked => { ContractLogic.save-output(root.owner, root.view.storage-output); } }
                 }
-                accessible-label: "Storage slot result";
+                storage-output := ContractOutput {
+                    height: 7rem;
+                    text: root.view.storage-output;
+                    accessible-label: "Storage read result";
+                }
             }
         }
     }

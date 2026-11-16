@@ -169,6 +169,8 @@ pub struct DesktopState {
     pub deployment_drafts: HashMap<String, DeploymentDraft>,
     pub selected_function: i32,
     pub deployments: Vec<Deployment>,
+    /// Compiler storage layouts by contract name, for the named Storage view.
+    pub storage_layouts: HashMap<String, Value>,
     /// Lowercased addresses whose function list is folded in the sidebar.
     pub collapsed_instances: HashSet<String>,
     /// Lowercased addresses the user opened explicitly; others start folded
@@ -314,6 +316,7 @@ impl DesktopState {
             deployment_drafts: HashMap::new(),
             selected_function: -1,
             deployments: Vec::new(),
+            storage_layouts: HashMap::new(),
             collapsed_instances: HashSet::new(),
             expanded_instances: HashSet::new(),
             deployment_epochs: HashMap::new(),
@@ -1931,6 +1934,8 @@ fn checked_abi_type_label(entry: &Value) -> Result<String, String> {
 pub struct CompileReport {
     pub contracts: Vec<ContractItem>,
     pub skipped: usize,
+    /// Storage layout per contract name, when the compiler emitted one.
+    pub layouts: HashMap<String, Value>,
 }
 
 impl CompileReport {
@@ -1957,11 +1962,19 @@ pub fn contracts_from_compile_report(raw: &str) -> Result<CompileReport, String>
         return Ok(CompileReport {
             contracts: Vec::new(),
             skipped: 0,
+            layouts: HashMap::new(),
         });
     };
     let mut contracts = Vec::new();
     let mut skipped = 0;
+    let mut layouts = HashMap::new();
     for item in items {
+        if let (Some(name), Some(layout)) = (
+            item.get("name").and_then(Value::as_str),
+            item.pointer("/artifact/storageLayout").filter(|layout| layout["storage"].is_array()),
+        ) {
+            layouts.insert(name.to_string(), layout.clone());
+        }
         let Some(name) = item
             .get("name")
             .and_then(Value::as_str)
@@ -2076,7 +2089,7 @@ pub fn contracts_from_compile_report(raw: &str) -> Result<CompileReport, String>
             constructor_error: None,
         });
     }
-    Ok(CompileReport { contracts, skipped })
+    Ok(CompileReport { contracts, skipped, layouts })
 }
 
 pub fn contracts_from_compile(raw: &str) -> Result<Vec<ContractItem>, String> {
@@ -2091,8 +2104,10 @@ pub fn compile_workspace_report(
     root: &Path,
     remappings: Vec<String>,
 ) -> Result<CompileReport, String> {
-    let compiler =
-        Compiler::new(root.to_path_buf(), remappings).map_err(|error| error.to_string())?;
+    // Only workspace sources are compiled, so the storage layout stays small
+    // and the Storage tab can name every variable without a second compile.
+    let compiler = Compiler::new_for_storage_layout(root.to_path_buf(), remappings)
+        .map_err(|error| error.to_string())?;
     let raw = compiler
         .compile_to_json()
         .map_err(|error| error.to_string())?;
