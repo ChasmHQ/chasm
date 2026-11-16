@@ -23,6 +23,8 @@ mod copy_tests;
 mod deployment;
 mod request_form;
 mod storage_layout;
+mod trace_debug;
+mod native_trace;
 pub(crate) mod debug_session;
 mod debug_transport;
 #[cfg(test)]
@@ -341,6 +343,7 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
             let warning = report.warning();
             state.compile_label = format!("{} contracts", report.contracts.len());
             state.storage_layouts = report.layouts;
+            state.runtimes = report.runtimes;
             state.replace_compiled_contracts(report.contracts);
             if let Some(warning) = warning { state.notice = warning; }
             state.push_log("Workspace compile finished.".into());
@@ -698,6 +701,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                             state.compile_label = format!("{} contracts", report.contracts.len());
                             state.notice.clear();
                             state.storage_layouts = report.layouts;
+                            state.runtimes = report.runtimes;
                             state.replace_compiled_contracts(report.contracts);
                             for warning in [config_warning, warning].into_iter().flatten() {
                                 if !state.notice.is_empty() { state.notice.push('\n'); }
@@ -995,6 +999,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
         Arc::new(macro_executor::TrustedMacroExecutor::new(state.clone(), foundry))
     });
     native_debugger::wire(ui, state, runtime.clone());
+    native_trace::wire(ui, state, runtime.clone());
     native_contract::wire(ui, state, runtime);
 }
 
@@ -1509,6 +1514,7 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_debugger_live(state.debugger_live);
     native_macro::render(ui, state);
     native_debugger::render(ui, state);
+    native_trace::render(ui, state);
     native_contract::render(ui, state);
     data.set_active_document(state.active_document);
     render_deployment_form(ui, state);

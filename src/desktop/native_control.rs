@@ -464,6 +464,13 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             contract.invoke_read_slot(owner().into());
         }
         Command::Lookup { query } => logic.invoke_explorer_open(query.as_str().into()),
+        Command::TraceLoad { hash } => {
+            ui.global::<AppData>().set_debugger_mode(0);
+            ui.global::<super::TraceLogic>().invoke_load(hash.clone().unwrap_or_default().into());
+        }
+        Command::TraceStep { action } => ui.global::<super::TraceLogic>().invoke_navigate(action.as_str().into()),
+        Command::TraceSeek { step } => ui.global::<super::TraceLogic>().invoke_seek(*step as i32),
+        Command::TraceBreakpoint { line } => ui.global::<super::TraceLogic>().invoke_toggle_breakpoint(*line as i32),
         Command::ReadVariables {} => {
             contract.invoke_section(owner().into(), 1);
             contract.invoke_refresh_variables(owner().into());
@@ -578,6 +585,21 @@ fn debugger_state(ui: &MainWindow) -> Value {
         "stack": data.get_stack_text().as_str(), "storage": data.get_storage_text().as_str(),
         "result": data.get_result_text().as_str(), "logs": data.get_logs_text().as_str(),
         "console": ui.global::<super::PanelData>().get_console_text().as_str(),
+        "trace": trace_state(ui),
+    })
+}
+
+fn trace_state(ui: &MainWindow) -> Value {
+    let trace = ui.global::<super::TraceData>();
+    json!({
+                "loaded": trace.get_loaded(), "busy": trace.get_busy(), "status": trace.get_status().as_str(),
+                "title": trace.get_title().as_str(), "summary": trace.get_summary().as_str(),
+                "location": trace.get_location().as_str(), "step": trace.get_cursor(), "total": trace.get_total(),
+                "file": trace.get_file().as_str(),
+                "sourceLine": rows(trace.get_source()).into_iter().find(|line| line.current).map(|line| json!({"number":line.number,"text":line.text.as_str()})),
+                "stack": rows(trace.get_stack()).into_iter().take(8).map(|item| item.value.to_string()).collect::<Vec<_>>(),
+                "storage": rows(trace.get_storage()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
+                "frames": rows(trace.get_frames()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
     })
 }
 

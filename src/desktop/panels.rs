@@ -1360,6 +1360,9 @@ fn displayed(state: &DesktopState, id: &PaneId) -> bool {
         return false;
     }
     if id.kind == PaneKind::CallResult && id.owner.is_none() {
+        if state.activity == 4 {
+            return false;
+        }
         return usize::try_from(state.active_document)
             .ok()
             .and_then(|index| state.documents.get(index))

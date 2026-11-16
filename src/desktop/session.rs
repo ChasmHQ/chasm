@@ -171,6 +171,12 @@ pub struct DesktopState {
     pub deployments: Vec<Deployment>,
     /// Compiler storage layouts by contract name, for the named Storage view.
     pub storage_layouts: HashMap<String, Value>,
+    pub runtimes: HashMap<String, RuntimeInfo>,
+    /// The transaction/call step debugger session, if one is loaded.
+    pub trace: Option<super::trace_debug::Session>,
+    pub trace_busy: bool,
+    pub trace_status: String,
+    pub trace_input: String,
     /// Lowercased addresses whose function list is folded in the sidebar.
     pub collapsed_instances: HashSet<String>,
     /// Lowercased addresses the user opened explicitly; others start folded
@@ -317,6 +323,11 @@ impl DesktopState {
             selected_function: -1,
             deployments: Vec::new(),
             storage_layouts: HashMap::new(),
+            runtimes: HashMap::new(),
+            trace: None,
+            trace_busy: false,
+            trace_status: String::new(),
+            trace_input: String::new(),
             collapsed_instances: HashSet::new(),
             expanded_instances: HashSet::new(),
             deployment_epochs: HashMap::new(),
@@ -1936,6 +1947,15 @@ pub struct CompileReport {
     pub skipped: usize,
     /// Storage layout per contract name, when the compiler emitted one.
     pub layouts: HashMap<String, Value>,
+    /// Runtime code, deployed source map and source path per contract name.
+    pub runtimes: HashMap<String, RuntimeInfo>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeInfo {
+    pub code: Vec<u8>,
+    pub source_map: String,
+    pub source_path: String,
 }
 
 impl CompileReport {
@@ -1963,12 +1983,26 @@ pub fn contracts_from_compile_report(raw: &str) -> Result<CompileReport, String>
             contracts: Vec::new(),
             skipped: 0,
             layouts: HashMap::new(),
+            runtimes: HashMap::new(),
         });
     };
     let mut contracts = Vec::new();
     let mut skipped = 0;
     let mut layouts = HashMap::new();
+    let mut runtimes = HashMap::new();
     for item in items {
+        if let (Some(name), Some(code)) = (
+            item.get("name").and_then(Value::as_str),
+            item.pointer("/artifact/deployedBytecode/object").and_then(Value::as_str),
+        ) {
+            if let Ok(code) = ethers::utils::hex::decode(code.trim_start_matches("0x")) {
+                runtimes.insert(name.to_string(), RuntimeInfo {
+                    code,
+                    source_map: item.pointer("/artifact/deployedBytecode/sourceMap").and_then(Value::as_str).unwrap_or("").to_string(),
+                    source_path: item.get("source_path").and_then(Value::as_str).unwrap_or("").to_string(),
+                });
+            }
+        }
         if let (Some(name), Some(layout)) = (
             item.get("name").and_then(Value::as_str),
             item.pointer("/artifact/storageLayout").filter(|layout| layout["storage"].is_array()),
@@ -2089,7 +2123,7 @@ pub fn contracts_from_compile_report(raw: &str) -> Result<CompileReport, String>
             constructor_error: None,
         });
     }
-    Ok(CompileReport { contracts, skipped, layouts })
+    Ok(CompileReport { contracts, skipped, layouts, runtimes })
 }
 
 pub fn contracts_from_compile(raw: &str) -> Result<Vec<ContractItem>, String> {

@@ -2,6 +2,7 @@ import { LineEdit } from "std-widgets.slint";
 import { ListView, ScrollView, TextEdit } from "scroll.slint";
 import { ActionControl, DockTab, SideHeader, Theme } from "theme.slint";
 import { SelectableText } from "selectable-text.slint";
+import { TraceLogic } from "trace.slint";
 
 export struct ContractFunction { name: string, inputs: string, mutability: string }
 export struct StorageVariable { label: string, kind: string, slot: string, value: string, note: string, mapping: bool }
@@ -428,6 +429,7 @@ export component ContractResult inherits Rectangle {
                 ContractButton { label: "Copy"; enabled: root.active-output != ""; clicked => { result-output.select-all(); result-output.copy(); } }
                 ContractButton { label: "Save..."; enabled: root.active-output != ""; clicked => { ContractLogic.save-output(root.owner, root.active-output); } }
                 if root.view.result-view == 2: ContractButton { label: root.view.trace-busy ? "Loading trace..." : "Load trace"; enabled: root.view.has-result && !root.view.trace-busy && !root.view.call-busy; clicked => { ContractLogic.trace(root.owner); } }
+                ContractButton { label: "Debug steps"; enabled: root.view.has-result && !root.view.call-busy; clicked => { TraceLogic.load(""); } }
                 if !root.view.result-detached: ContractButton { label: "Float result"; clicked => { ContractLogic.detach-result(root.owner); } }
                 if root.view.result-detached && !root.view.result-side: ContractButton { label: "Return to contract"; clicked => { ContractLogic.dock-result(root.owner); } }
             }

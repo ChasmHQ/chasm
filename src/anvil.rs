@@ -91,6 +91,9 @@ impl AnvilNode {
         let mut cmd = Command::new("anvil");
         cmd.arg("--port").arg(self.port.to_string());
         if self.silent {
+            // The owned workspace node records opcode steps so mined
+            // transactions can be stepped through in the debugger.
+            cmd.arg("--steps-tracing");
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -264,7 +267,7 @@ mod tests {
         let console = AnvilNode::new(8545).base_command();
         let silent = AnvilNode::new_silent(8545).base_command();
         assert_eq!(args(&console), ["--port", "8545"]);
-        assert_eq!(args(&silent), args(&console));
+        assert_eq!(args(&silent), ["--port", "8545", "--steps-tracing"]);
     }
 
     #[test]

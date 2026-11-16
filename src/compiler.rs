@@ -180,6 +180,25 @@ impl Compiler {
         Ok(value)
     }
 
+    /// Contracts with their source type ("src"/"lib") and source file path.
+    pub fn compile_with_paths(&self) -> Result<Vec<(String, String, String, ConfigurableContractArtifact)>> {
+        let output = self.project.compile_files(self.src_files.clone())?;
+        if output.has_compiler_errors() {
+            return Err(anyhow::anyhow!("{}", strip_ansi(&output.to_string())));
+        }
+        let src_set: std::collections::HashSet<String> = self.src_files
+            .iter()
+            .map(|p| normalize_path(&p.to_string_lossy()))
+            .collect();
+        Ok(output.into_artifacts()
+            .map(|(id, artifact)| {
+                let path = normalize_path(&id.source.to_string_lossy());
+                let source_type = if src_set.contains(&path) { "src" } else { "lib" }.to_string();
+                (id.name, source_type, path, artifact)
+            })
+            .collect())
+    }
+
     pub fn compile(&self) -> Result<Vec<(String, String, ConfigurableContractArtifact)>> {
         let output = self.project.compile_files(self.src_files.clone())?;
         if output.has_compiler_errors() {
@@ -209,7 +228,7 @@ impl Compiler {
     }
 
     pub fn compile_to_json(&self) -> Result<String> {
-        let artifacts = self.compile()?;
+        let artifacts = self.compile_with_paths()?;
 
         #[derive(serde::Serialize)]
         struct CompileSuccess {
@@ -221,11 +240,12 @@ impl Compiler {
         struct ContractData {
              name: String,
              source_type: String,
+             source_path: String,
              artifact: ConfigurableContractArtifact,
         }
 
-        let contracts_data: Vec<ContractData> = artifacts.into_iter().map(|(name, source_type, artifact)| {
-             ContractData { name, source_type, artifact }
+        let contracts_data: Vec<ContractData> = artifacts.into_iter().map(|(name, source_type, source_path, artifact)| {
+             ContractData { name, source_type, source_path, artifact }
         }).collect();
 
         let msg = CompileSuccess {

@@ -1,0 +1,304 @@
+// Transaction and call step debugger for the workspace node. Layout follows
+// disassembler tools: source and opcode listings side by side, machine state
+// on the right, the step timeline along the bottom.
+import { LineEdit } from "std-widgets.slint";
+import { ListView, ScrollView, TextEdit } from "scroll.slint";
+import { ActionControl, DockTab, IconButton, SideHeader, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct TraceLine { number: int, text: string, current: bool, breakpoint: bool, hits: int }
+export struct TraceOp { index: int, pc: string, op: string, gas: string, depth: int, current: bool }
+export struct TraceValue { label: string, value: string, changed: bool }
+export struct TraceTarget { label: string, detail: string, query: string }
+
+export global TraceData {
+    in property <bool> loaded;
+    in property <bool> busy;
+    in property <string> status;
+    in property <string> title;
+    in property <string> summary;
+    in property <string> location;
+    in property <int> cursor;
+    in property <int> total;
+    in property <string> file;
+    in property <[TraceLine]> source;
+    in property <int> source-current: -1;
+    in property <[TraceOp]> ops;
+    in property <int> ops-current: -1;
+    in property <[TraceValue]> stack;
+    in property <[TraceValue]> memory;
+    in property <[TraceValue]> storage;
+    in property <[TraceValue]> frames;
+    in property <[TraceValue]> step-info;
+    in property <[TraceTarget]> targets;
+    in-out property <string> input;
+    in-out property <string> opcode-filter: "SSTORE";
+    in-out property <int> state-tab: 0;
+}
+
+export global TraceLogic {
+    callback load(string);
+    callback load-recent(int);
+    callback navigate(string);
+    callback seek(int);
+    callback toggle-breakpoint(int);
+    callback next-opcode(string, bool);
+    callback clear();
+}
+
+component ToolButton inherits ActionControl {
+    in property <string> text;
+    in property <string> key;
+    label: root.text;
+    height: Theme.control-height;
+    min-width: content.min-width;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius;
+    content := HorizontalLayout {
+        padding-left: 0.5rem; padding-right: 0.5rem; spacing: 0.25rem;
+        Text { text: root.text; color: root.enabled ? Theme.text : Theme.faint; font-size: 0.8125rem; vertical-alignment: center; }
+        if root.key != "": Text { text: root.key; color: Theme.faint; font-size: 0.6875rem; vertical-alignment: center; }
+    }
+}
+
+component StateList inherits Rectangle {
+    in property <[TraceValue]> items;
+    in property <string> empty;
+    background: Theme.inset;
+    if root.items.length == 0: Text { x: Theme.pad; y: Theme.pad; text: root.empty; color: Theme.faint; font-size: 0.75rem; }
+    ListView {
+        for item in root.items: Rectangle {
+            height: max(1.5rem, value-text.preferred-height + 0.25rem);
+            background: item.changed ? #d7ba7d22 : transparent;
+            HorizontalLayout {
+                padding-left: 0.5rem; padding-right: 0.75rem; padding-top: 0.125rem; spacing: 0.5rem;
+                Text { text: item.label; width: 4.5rem; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: top; overflow: elide; }
+                value-text := SelectableText { text: item.value; color: item.changed ? Theme.accent : Theme.text; font-family: "Cascadia Mono"; font-size: 0.6875rem; wrap: word-wrap; min-width: 0px; horizontal-stretch: 1; }
+            }
+        }
+    }
+}
+
+export component TraceDebugger inherits Rectangle {
+    background: Theme.canvas;
+    min-width: 0px; min-height: 0px;
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if !TraceData.loaded { return reject; }
+            if event.text == Key.F5 && !event.modifiers.shift { TraceLogic.navigate("continue"); return accept; }
+            if event.text == Key.F5 && event.modifiers.shift { TraceLogic.navigate("back"); return accept; }
+            if event.text == Key.F10 && !event.modifiers.shift { TraceLogic.navigate("next"); return accept; }
+            if event.text == Key.F10 && event.modifiers.shift { TraceLogic.navigate("prev-next"); return accept; }
+            if event.text == Key.F11 && event.modifiers.shift { TraceLogic.navigate("finish"); return accept; }
+            if event.text == Key.F11 { TraceLogic.navigate("step"); return accept; }
+            if event.text == Key.F7 { TraceLogic.navigate("op"); return accept; }
+            if event.text == Key.F8 { TraceLogic.navigate("op-back"); return accept; }
+            if event.text == Key.Home { TraceLogic.seek(0); return accept; }
+            if event.text == Key.End { TraceLogic.seek(TraceData.total - 1); return accept; }
+            return reject;
+        }
+        VerticalLayout {
+            // Target bar: what to debug.
+            Rectangle {
+                height: target-row.preferred-height;
+                background: Theme.panel;
+                target-row := HorizontalLayout {
+                    padding: 0.375rem; padding-left: Theme.pad; spacing: 0.375rem;
+                    Text { text: "Debug"; color: Theme.muted; font-size: 0.8125rem; vertical-alignment: center; horizontal-stretch: 0; }
+                    LineEdit {
+                        horizontal-stretch: 1; min-width: 0px;
+                        font-size: 0.8125rem;
+                        placeholder-text: "Transaction hash, or leave empty to debug the last transaction or call";
+                        text <=> TraceData.input;
+                        accepted => { TraceLogic.load(self.text); }
+                    }
+                    IconButton { icon: @image-url("icons/debugger.svg"); label: TraceData.busy ? "Tracing…" : "Debug"; primary: true; enabled: !TraceData.busy; clicked => { TraceLogic.load(TraceData.input); } }
+                    if TraceData.loaded: IconButton { icon: @image-url("icons/stop.svg"); label: "Close session"; clicked => { TraceLogic.clear(); } }
+                }
+            }
+            if !TraceData.loaded: Rectangle {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding: Theme.pad * 2; spacing: 0.5rem; alignment: start;
+                    SelectableText { text: TraceData.busy ? "Recording the execution…" : TraceData.status != "" ? TraceData.status : "Nothing loaded"; font-size: 1rem; font-weight: 600; wrap: word-wrap; }
+                    SelectableText { text: "Pick a recent transaction below, paste a hash above, or use Debug in a contract's Response pane after a Send or Simulate. Every opcode is recorded once, so you can step forwards and backwards freely."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
+                    SideHeader { title: "Recent transactions on this node"; }
+                    if TraceData.targets.length == 0: SelectableText { text: "No transactions yet. Deploy or send something first."; color: Theme.faint; font-size: 0.75rem; }
+                    for target[index] in TraceData.targets: ActionControl {
+                        label: target.label;
+                        height: 2.5rem;
+                        clicked => { TraceLogic.load-recent(index); }
+                        VerticalLayout {
+                            padding-left: Theme.pad; alignment: center;
+                            Text { text: target.label; color: Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; overflow: elide; }
+                            Text { text: target.detail; color: Theme.muted; font-size: 0.6875rem; overflow: elide; }
+                        }
+                    }
+                }
+            }
+            if TraceData.loaded: VerticalLayout {
+                vertical-stretch: 1;
+                // Session toolbar.
+                Rectangle {
+                    height: Theme.control-height + 0.5rem;
+                    background: Theme.bar;
+                    ScrollView {
+                    vertical-scrollbar-policy: always-off;
+                    content-width: max(self.visible-width, tools.preferred-width);
+                    content-height: self.visible-height;
+                    tools := HorizontalLayout {
+                        padding-left: 0.375rem; padding-right: Theme.pad; spacing: 0.125rem;
+                        ToolButton { text: "Back"; key: "Shift+F5"; clicked => { TraceLogic.navigate("back"); } }
+                        ToolButton { text: "Continue"; key: "F5"; clicked => { TraceLogic.navigate("continue"); } }
+                        Rectangle { width: 1px; background: Theme.line; }
+                        ToolButton { text: "Step into"; key: "F11"; clicked => { TraceLogic.navigate("step"); } }
+                        ToolButton { text: "Step over"; key: "F10"; clicked => { TraceLogic.navigate("next"); } }
+                        ToolButton { text: "Step out"; key: "Shift+F11"; clicked => { TraceLogic.navigate("finish"); } }
+                        Rectangle { width: 1px; background: Theme.line; }
+                        ToolButton { text: "Opcode"; key: "F7"; clicked => { TraceLogic.navigate("op"); } }
+                        ToolButton { text: "Opcode back"; key: "F8"; clicked => { TraceLogic.navigate("op-back"); } }
+                        Rectangle { width: 1px; background: Theme.line; }
+                        Text { text: "Find"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; }
+                        LineEdit { width: 6.5rem; font-size: 0.75rem; text <=> TraceData.opcode-filter; accepted => { TraceLogic.next-opcode(self.text, true); } }
+                        ToolButton { text: "Prev"; clicked => { TraceLogic.next-opcode(TraceData.opcode-filter, false); } }
+                        ToolButton { text: "Next"; clicked => { TraceLogic.next-opcode(TraceData.opcode-filter, true); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: "Step \{TraceData.cursor + 1} of \{TraceData.total}"; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
+                    }
+                    }
+                }
+                Rectangle {
+                    height: summary-row.preferred-height;
+                    background: Theme.panel;
+                    summary-row := HorizontalLayout {
+                        padding-left: Theme.pad; padding-right: Theme.pad; padding-top: 0.25rem; padding-bottom: 0.25rem; spacing: 1rem;
+                        SelectableText { text: TraceData.title; font-weight: 600; font-size: 0.8125rem; horizontal-stretch: 0; wrap: no-wrap; }
+                        SelectableText { text: TraceData.location; color: Theme.accent; font-family: "Cascadia Mono"; font-size: 0.75rem; horizontal-stretch: 0; wrap: no-wrap; }
+                        SelectableText { text: TraceData.summary; color: Theme.muted; font-size: 0.75rem; horizontal-stretch: 1; wrap: no-wrap; overflow: elide; }
+                    }
+                }
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: 1px;
+                    // Source listing.
+                    Rectangle {
+                        horizontal-stretch: 5; min-width: 0px;
+                        background: Theme.inset;
+                        VerticalLayout {
+                            SideHeader { title: TraceData.file == "" ? "Source (no matching workspace contract)" : TraceData.file; trailing: "click a line number for a breakpoint"; }
+                            source-list := ListView {
+                                property <int> current: TraceData.source-current;
+                                changed current => {
+                                    if self.current >= 0 {
+                                        let top = self.current * 1.375rem;
+                                        if top + self.content-y < 2rem || top + self.content-y > self.visible-height - 3rem {
+                                            self.content-y = min(0px, max(self.visible-height - self.content-height, 6rem - top));
+                                        }
+                                    }
+                                }
+                                for line in TraceData.source: Rectangle {
+                                    height: 1.375rem;
+                                    background: line.current ? #d7ba7d2e : transparent;
+                                    HorizontalLayout {
+                                        TouchArea {
+                                            width: 3.75rem;
+                                            mouse-cursor: pointer;
+                                            clicked => { TraceLogic.toggle-breakpoint(line.number); }
+                                            HorizontalLayout {
+                                                padding-right: 0.5rem; spacing: 0.25rem; alignment: end;
+                                                Rectangle {
+                                                    width: 0.5rem; height: 0.5rem; y: (parent.height - self.height) / 2;
+                                                    border-radius: 0.25rem;
+                                                    background: line.breakpoint ? Theme.danger : transparent;
+                                                    border-width: line.breakpoint ? 0px : 0px;
+                                                }
+                                                Text { text: line.number; color: line.current ? Theme.accent : Theme.faint; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
+                                            }
+                                        }
+                                        Text { text: line.current ? "›" : " "; width: 0.75rem; color: Theme.accent; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
+                                        Text { text: line.text; color: line.hits > 0 ? Theme.text : Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                        if line.hits > 0: Text { text: "\{line.hits}×"; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.625rem; vertical-alignment: center; width: 2.5rem; horizontal-alignment: right; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Opcode listing around the cursor.
+                    Rectangle {
+                        horizontal-stretch: 0; width: 16rem;
+                        background: Theme.inset;
+                        VerticalLayout {
+                            SideHeader { title: "Executed opcodes"; trailing: "pc  op  gas"; }
+                            ListView {
+                                property <int> current: TraceData.ops-current;
+                                changed current => {
+                                    if self.current >= 0 {
+                                        let top = self.current * 1.375rem;
+                                        if top + self.content-y < 2rem || top + self.content-y > self.visible-height - 3rem {
+                                            self.content-y = min(0px, max(self.visible-height - self.content-height, self.visible-height / 2 - top));
+                                        }
+                                    }
+                                }
+                                init => {
+                                    self.content-y = min(0px, max(self.visible-height - self.content-height, self.visible-height / 2 - self.current * 1.375rem));
+                                }
+                                for op in TraceData.ops: ActionControl {
+                                    label: "\{op.pc} \{op.op}";
+                                    height: 1.375rem;
+                                    selected: op.current;
+                                    transparent-background: !op.current && !self.hovered;
+                                    clicked => { TraceLogic.seek(op.index); }
+                                    HorizontalLayout {
+                                        padding-left: 0.5rem; spacing: 0.5rem;
+                                        Text { text: op.depth > 1 ? "\{op.depth}" : " "; width: 1rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: center; }
+                                        Text { text: op.pc; width: 3.5rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
+                                        Text { text: op.op; color: op.current ? Theme.accent : op.op == "SSTORE" || op.op == "SLOAD" ? Theme.warn : op.op == "CALL" || op.op == "DELEGATECALL" || op.op == "STATICCALL" || op.op == "REVERT" ? Theme.danger : Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; }
+                                        Text { text: op.gas; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Machine state.
+                    Rectangle {
+                        horizontal-stretch: 3; min-width: 0px;
+                        background: Theme.panel;
+                        VerticalLayout {
+                            HorizontalLayout {
+                                height: Theme.tab-height;
+                                DockTab { label: "Stack"; selected: TraceData.state-tab == 0; clicked => { TraceData.state-tab = 0; } }
+                                DockTab { label: "Memory"; selected: TraceData.state-tab == 1; clicked => { TraceData.state-tab = 1; } }
+                                DockTab { label: "Storage"; selected: TraceData.state-tab == 2; clicked => { TraceData.state-tab = 2; } }
+                                DockTab { label: "Calls"; selected: TraceData.state-tab == 3; clicked => { TraceData.state-tab = 3; } }
+                            }
+                            if TraceData.state-tab == 0: StateList { items: TraceData.stack; empty: "Stack is empty."; vertical-stretch: 1; }
+                            if TraceData.state-tab == 1: StateList { items: TraceData.memory; empty: "No memory used yet."; vertical-stretch: 1; }
+                            if TraceData.state-tab == 2: StateList { items: TraceData.storage; empty: "No storage touched yet in this frame."; vertical-stretch: 1; }
+                            if TraceData.state-tab == 3: StateList { items: TraceData.frames; empty: "No call frames."; vertical-stretch: 1; }
+                            SideHeader { title: "This step"; }
+                            StateList { items: TraceData.step-info; empty: ""; height: 8.5rem; }
+                        }
+                    }
+                }
+                // Timeline: click anywhere to jump to that step.
+                Rectangle {
+                    height: 1.5rem;
+                    background: Theme.bar;
+                    timeline := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { TraceLogic.seek(Math.round(self.mouse-x / max(1px, self.width) * (TraceData.total - 1))); }
+                        moved => { if self.pressed { TraceLogic.seek(Math.round(max(0, min(1, self.mouse-x / max(1px, self.width))) * (TraceData.total - 1))); } }
+                    }
+                    Rectangle { x: 0px; y: (parent.height - self.height) / 2; width: parent.width; height: 2px; background: Theme.line; }
+                    Rectangle {
+                        x: TraceData.total > 1 ? (parent.width - self.width) * TraceData.cursor / (TraceData.total - 1) : 0px;
+                        y: (parent.height - self.height) / 2;
+                        width: 0.5rem; height: 1rem; border-radius: 2px;
+                        background: Theme.accent;
+                    }
+                }
+            }
+        }
+    }
+}

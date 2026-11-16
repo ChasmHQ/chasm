@@ -11,6 +11,8 @@ export { MacroData, MacroLogic, MacroRow, MacroStep, MacroResult, MacroWorkspace
 import { FoundryWorkspace } from "foundry.slint";
 export { FoundryData, FoundryLogic, FoundryArtifactRow, FoundryWorkspace } from "foundry.slint";
 import { DebugData, DebugLogic, DebugToolbar, DebugCodePane, DebugInspectorPane, DebugInspectionPane, DebugSessionPane } from "debugger.slint";
+import { TraceData, TraceLogic, TraceDebugger } from "trace.slint";
+export { TraceData, TraceLogic, TraceLine, TraceOp, TraceValue, TraceTarget } from "trace.slint";
 export { DebugData, DebugLogic, CodeRow, ExecStat } from "debugger.slint";
 import { ContractData, ContractLogic, ContractViewData, ContractWorkspace, ContractResult, ContractStorage } from "contract.slint";
 export { ContractData, ContractLogic, ContractFunction, ContractViewData } from "contract.slint";
@@ -113,6 +115,8 @@ export global AppData {
     in property <[ChainItem]> recent-blocks;
     in property <[ChainItem]> recent-transactions;
     in-out property <int> explorer-tab: 0;
+    // Debugger view: 0 step debugger for workspace transactions, 1 offline engine.
+    in-out property <int> debugger-mode: 0;
     in property <string> document-body;
     in property <bool> debugger-live: false;
 }
@@ -512,11 +516,13 @@ component NavigationView inherits Rectangle {
                 SideRow { icon: @image-url("icons/macros.svg"); label: "New macro"; clicked => { Logic.new-macro(); } }
             }
             if AppData.activity == 4: VerticalLayout {
-                SideHeader { title: "Session"; }
-                SideNote { text: AppData.debugger-label; color: AppData.debugger-tint; font-size: 0.8125rem; wrap: word-wrap; }
-                SideHeader { title: "Launch"; }
-                SideRow { icon: @image-url("icons/play.svg"); label: "Offline capture"; enabled: DebugData.can-start; clicked => { DebugLogic.start(); } }
-                SideNote { text: "Historical, fork call, and Foundry test launchers are not connected in this desktop UI."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+                SideHeader { title: "Debug"; }
+                SideRow { icon: @image-url("icons/debugger.svg"); label: "Last transaction or call"; selected: AppData.debugger-mode == 0 && TraceData.loaded; clicked => { AppData.debugger-mode = 0; TraceLogic.load(""); } }
+                SideRow { icon: @image-url("icons/search.svg"); label: "Choose a transaction"; selected: AppData.debugger-mode == 0 && !TraceData.loaded; clicked => { AppData.debugger-mode = 0; TraceLogic.clear(); } }
+                SideNote { text: "Steps through what really ran on this workspace's node, mapped to your Solidity source."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+                SideHeader { title: "Offline engine"; }
+                SideRow { icon: @image-url("icons/play.svg"); label: "Captures and Foundry tests"; selected: AppData.debugger-mode == 1; clicked => { AppData.debugger-mode = 1; } }
+                if AppData.debugger-mode == 1: SideNote { text: AppData.debugger-label; color: AppData.debugger-tint; font-size: 0.75rem; wrap: word-wrap; }
             }
         }
     }
@@ -965,7 +971,7 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
-                if (PanelData.left-kind >= 4 && PanelData.left-kind <= 7) || (PanelData.center-kind >= 4 && PanelData.center-kind <= 7) || (PanelData.right-kind >= 4 && PanelData.right-kind <= 7) || (PanelData.bottom-kind >= 4 && PanelData.bottom-kind <= 7): DebugToolbar { }
+                if AppData.debugger-mode == 1 && ((PanelData.left-kind >= 4 && PanelData.left-kind <= 7) || (PanelData.center-kind >= 4 && PanelData.center-kind <= 7) || (PanelData.right-kind >= 4 && PanelData.right-kind <= 7) || (PanelData.bottom-kind >= 4 && PanelData.bottom-kind <= 7)): DebugToolbar { }
                 Rectangle { height: 1px; background: Theme.edge; }
 
                 Rectangle {
@@ -1086,7 +1092,8 @@ export component MainWindow inherits Window {
                                 }
                                 if PanelData.maximized == "": Rectangle { height: 1px; background: Theme.edge; }
 
-                                if PanelData.center-visible && (PanelData.maximized == "" || PanelData.maximized == PanelData.center-active): PanelZone {
+                                if AppData.activity == 4 && AppData.debugger-mode == 0: TraceDebugger { vertical-stretch: 1; }
+                                if !(AppData.activity == 4 && AppData.debugger-mode == 0) && PanelData.center-visible && (PanelData.maximized == "" || PanelData.maximized == PanelData.center-active): PanelZone {
                                     geometry-changed(zone, x, y, width, height) => { root.update-drop-zone(zone, x, y, width, height); }
                                     drag-target-index <=> root.center-drop-index;
                                     zone: 1; tabs: PanelData.center-tabs; active: PanelData.center-active; active-index: PanelData.center-active-index;

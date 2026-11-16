@@ -69,6 +69,14 @@ pub enum Command {
     Trace {},
     #[serde(rename = "contracts.storage.read")]
     ReadStorage { slot: String },
+    #[serde(rename = "debugger.trace")]
+    TraceLoad { hash: Option<String> },
+    #[serde(rename = "debugger.trace.step")]
+    TraceStep { action: String },
+    #[serde(rename = "debugger.trace.seek")]
+    TraceSeek { step: u32 },
+    #[serde(rename = "debugger.trace.breakpoint")]
+    TraceBreakpoint { line: u32 },
     #[serde(rename = "explorer.lookup")]
     Lookup { query: String },
     #[serde(rename = "contracts.storage.variables")]
@@ -215,7 +223,8 @@ impl Command {
             | Self::Snapshot {} | Self::Revert {} | Self::Mine {} | Self::Warp {}
             | Self::RunMacro { .. } => "act",
             Self::DebugLaunch { .. } | Self::DebugStart {} | Self::DebugNavigate { .. }
-            | Self::DebugEvaluate { .. } | Self::DebugConsole { .. } | Self::DebugCancel {} => "debug",
+            | Self::DebugEvaluate { .. } | Self::DebugConsole { .. } | Self::DebugCancel {}
+            | Self::TraceLoad { .. } | Self::TraceStep { .. } | Self::TraceSeek { .. } | Self::TraceBreakpoint { .. } => "debug",
             _ => "ui",
         }
     }
@@ -254,6 +263,10 @@ impl Command {
             Self::Trace {} => "contracts.trace",
             Self::ReadStorage { .. } => "contracts.storage.read",
             Self::Lookup { .. } => "explorer.lookup",
+            Self::TraceLoad { .. } => "debugger.trace",
+            Self::TraceStep { .. } => "debugger.trace.step",
+            Self::TraceSeek { .. } => "debugger.trace.seek",
+            Self::TraceBreakpoint { .. } => "debugger.trace.breakpoint",
             Self::ReadVariables {} => "contracts.storage.variables",
             Self::ReadMapping { .. } => "contracts.storage.mapping",
             Self::OpenDeploy {} => "contracts.deploy.open",
@@ -945,6 +958,10 @@ pub fn command_schema() -> Value {
         ("contracts.send", object(json!({}), vec![])),
         ("contracts.trace", object(json!({}), vec![])),
         ("contracts.storage.read", object(json!({"slot":{"type":"string","maxLength":80}}), vec!["slot"])),
+        ("debugger.trace", object(json!({"hash":{"type":["string","null"],"maxLength":66,"description":"Transaction hash; empty traces the active tab's last transaction or call"}}), vec![])),
+        ("debugger.trace.step", object(json!({"action":{"enum":["continue","back","step","next","prev-next","finish","op","op-back"]}}), vec!["action"])),
+        ("debugger.trace.seek", object(json!({"step":{"type":"integer","minimum":0}}), vec!["step"])),
+        ("debugger.trace.breakpoint", object(json!({"line":{"type":"integer","minimum":1}}), vec!["line"])),
         ("explorer.lookup", object(json!({"query":{"type":"string","maxLength":200,"description":"Address, transaction hash, block hash or block number"}}), vec!["query"])),
         ("contracts.storage.variables", object(json!({}), vec![])),
         ("contracts.storage.mapping", object(json!({"variable":{"type":"string","maxLength":256},"key":{"type":"string","maxLength":512}}), vec!["variable","key"])),
