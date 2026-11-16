@@ -15,6 +15,8 @@ export component SelectableText inherits TextInput {
     vertical-stretch: 0;
     selection-background-color: Theme.selection-background;
     selection-foreground-color: Theme.selection-foreground;
+    // Read-only text can be selected and copied, but never shows a typing caret.
+    text-cursor-width: 0px;
 
     ContextMenuArea {
         Menu {

@@ -430,6 +430,25 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     {
         let weak = ui.as_weak();
         let held = state.clone();
+        let weak_toggle = ui.as_weak();
+        let held_toggle = state.clone();
+        ui.global::<Logic>().on_toggle_instance(move |deployment| {
+            {
+                let mut state = held_toggle.lock().unwrap();
+                let Some(address) = state.deployments.get(deployment as usize).map(|item| item.address.to_lowercase()) else { return };
+                let crowded = state.deployments.len() > 3;
+                let active = state.current_contract_view().and_then(|view| view.target.as_ref()).is_some_and(|target| target.address.to_lowercase() == address);
+                let open = !state.collapsed_instances.contains(&address) && (!crowded || active || state.expanded_instances.contains(&address));
+                if open {
+                    state.collapsed_instances.insert(address.clone());
+                    state.expanded_instances.remove(&address);
+                } else {
+                    state.collapsed_instances.remove(&address);
+                    state.expanded_instances.insert(address);
+                }
+            }
+            paint(&weak_toggle, &held_toggle);
+        });
         ui.global::<Logic>().on_open_instance_function(move |deployment, function| {
             {
                 let mut state = held.lock().unwrap();
@@ -1528,9 +1547,15 @@ fn render(ui: &MainWindow, state: &DesktopState) {
 fn instance_rows(state: &DesktopState) -> Vec<InstanceRow> {
     let current = state.current_contract_view().and_then(|view| view.target.as_ref().map(|target| (target.address.to_lowercase(), view.selected_function)));
     let mut rows = Vec::new();
+    // With many deployments only the instance in use stays open by default.
+    let crowded = state.deployments.len() > 3;
     for (index, deployment) in state.deployments.iter().enumerate() {
         let address = deployment.address.to_lowercase();
         let active = current.as_ref().filter(|(target, _)| *target == address).map(|(_, function)| *function);
+        let mut contracts = state.contracts.iter().filter(|item| item.name == deployment.name);
+        let contract = contracts.next().filter(|_| contracts.next().is_none());
+        let expanded = !state.collapsed_instances.contains(&address)
+            && (!crowded || active.is_some() || state.expanded_instances.contains(&address));
         rows.push(InstanceRow {
             deployment: index as i32,
             function: -1,
@@ -1538,9 +1563,10 @@ fn instance_rows(state: &DesktopState) -> Vec<InstanceRow> {
             tag: "".into(),
             address: short_address(&deployment.address).into(),
             selected: active == Some(-1),
+            expanded,
+            count: contract.map(|contract| contract.functions.len() as i32).unwrap_or(0),
         });
-        let mut contracts = state.contracts.iter().filter(|item| item.name == deployment.name);
-        let Some(contract) = contracts.next().filter(|_| contracts.next().is_none()) else { continue };
+        let Some(contract) = contract.filter(|_| expanded) else { continue };
         for (position, function) in contract.functions.iter().enumerate() {
             rows.push(InstanceRow {
                 deployment: index as i32,
@@ -1554,6 +1580,8 @@ fn instance_rows(state: &DesktopState) -> Vec<InstanceRow> {
                 .into(),
                 address: "".into(),
                 selected: active == Some(position as i32),
+                expanded: true,
+                count: 0,
             });
         }
     }

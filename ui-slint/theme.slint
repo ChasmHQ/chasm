@@ -47,6 +47,8 @@ export component ActionControl inherits Rectangle {
     in property <bool> selected;
     in property <bool> checkable;
     in property <bool> primary;
+    // Set when an enclosing row or tab draws the highlight for the whole area.
+    in property <bool> transparent-background;
     out property <bool> has-focus: focus.has-focus;
     out property <bool> hovered: touch.has-hover;
     out property <bool> pressed: touch.pressed;
@@ -67,7 +69,7 @@ export component ActionControl inherits Rectangle {
     }
     border-width: 1px;
     border-color: focus.has-focus && root.enabled ? (root.primary ? Theme.accent-ink : Theme.accent) : transparent;
-    background: !root.enabled ? transparent
+    background: !root.enabled || root.transparent-background ? transparent
         : root.primary ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : touch.pressed ? Theme.selected
         : root.selected ? Theme.selected
@@ -370,6 +372,9 @@ export component DocTabChip inherits ActionControl {
 }
 
 export component DockTab inherits ActionControl {
+    // A flat tab leaves its background and underline to the enclosing tab.
+    in property <bool> flat;
+    transparent-background: root.flat;
     checkable: true;
     height: Theme.tab-height;
     min-width: content.min-width;
@@ -380,7 +385,7 @@ export component DockTab inherits ActionControl {
         width: parent.width;
         height: 2 * Theme.unit;
         background: Theme.accent;
-        visible: root.selected;
+        visible: root.selected && !root.flat;
     }
     content := HorizontalLayout {
         padding-left: Theme.pad;

@@ -169,6 +169,11 @@ pub struct DesktopState {
     pub deployment_drafts: HashMap<String, DeploymentDraft>,
     pub selected_function: i32,
     pub deployments: Vec<Deployment>,
+    /// Lowercased addresses whose function list is folded in the sidebar.
+    pub collapsed_instances: HashSet<String>,
+    /// Lowercased addresses the user opened explicitly; others start folded
+    /// once the workspace has more than a few deployments.
+    pub expanded_instances: HashSet<String>,
     deployment_epochs: HashMap<(String, String), u64>,
     deployment_default_epoch: u64,
     pub macros: Vec<MacroNote>,
@@ -309,6 +314,8 @@ impl DesktopState {
             deployment_drafts: HashMap::new(),
             selected_function: -1,
             deployments: Vec::new(),
+            collapsed_instances: HashSet::new(),
+            expanded_instances: HashSet::new(),
             deployment_epochs: HashMap::new(),
             deployment_default_epoch: 1,
             macros: Vec::new(),

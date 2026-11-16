@@ -202,6 +202,7 @@ export component TextEdit inherits Rectangle {
                 selection-background-color: Theme.selection-background;
                 selection-foreground-color: Theme.selection-foreground;
                 page-height: scroll.visible-height;
+                text-cursor-width: root.read-only ? 0px : 2px;
                 accessible-role: none;
                 edited => { root.edited(self.text); }
                 // Keep the caret in view while typing or moving with the keyboard.

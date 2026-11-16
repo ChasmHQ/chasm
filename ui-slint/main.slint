@@ -26,7 +26,7 @@ export struct LogLine { text: string }
 export struct JobRow { id: string, name: string, status: string }
 export struct DeploymentRow { name: string, address: string }
 // One row of the workspace tree: a deployment header (function = -1) or one of its functions.
-export struct InstanceRow { deployment: int, function: int, label: string, tag: string, address: string, selected: bool }
+export struct InstanceRow { deployment: int, function: int, label: string, tag: string, address: string, selected: bool, expanded: bool, count: int }
 export struct TextRow { text: string }
 export struct ChainItem { title: string, detail: string, query: string }
 
@@ -144,6 +144,7 @@ export global Logic {
     callback select-contract(int);
     callback select-deployment(int);
     callback open-instance-function(int, int);
+    callback toggle-instance(int);
     callback address-edited(string);
     callback request-input-edited();
     callback select-function(int);
@@ -408,7 +409,7 @@ component JobsView inherits ScrollView {
 // under them with a VIEW/PAY/TX tag so one click opens the request.
 component InstanceRowView inherits ActionControl {
     in property <InstanceRow> item;
-    label: root.item.function < 0 ? "\{root.item.label} at \{root.item.address}" : "\{root.item.tag} \{root.item.label}";
+    label: root.item.function < 0 ? "\{root.item.label} at \{root.item.address}, \{root.item.expanded ? "expanded" : "collapsed"}" : "\{root.item.tag} \{root.item.label}";
     checkable: root.item.function >= 0;
     selected: root.item.selected;
     height: Theme.row-height;
@@ -419,11 +420,16 @@ component InstanceRowView inherits ActionControl {
         padding-left: root.item.function < 0 ? Theme.pad : Theme.pad + 0.875rem;
         padding-right: root.item.function < 0 ? 0.25rem : Theme.pad;
         spacing: 0.375rem;
-        if root.item.function < 0: Image {
-            source: @image-url("icons/block.svg");
-            width: 0.875rem; height: 0.875rem; y: (parent.height - self.height) / 2;
-            colorize: Theme.icon;
-            accessible-role: none;
+        if root.item.function < 0: TouchArea {
+            width: 1rem;
+            mouse-cursor: pointer;
+            clicked => { Logic.toggle-instance(root.item.deployment); }
+            Image {
+                source: root.item.expanded ? @image-url("icons/chevron-down.svg") : @image-url("icons/chevron-right.svg");
+                width: 0.875rem; height: 0.875rem; y: (parent.height - self.height) / 2;
+                colorize: Theme.icon;
+                accessible-role: none;
+            }
         }
         if root.item.function >= 0: Rectangle {
             width: 2.5rem; height: 1rem; y: (parent.height - self.height) / 2;
@@ -440,6 +446,11 @@ component InstanceRowView inherits ActionControl {
             vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide;
             accessible-role: none;
         }
+        if root.item.function < 0 && !root.item.expanded: Text {
+            text: "\{root.item.count} fn";
+            font-size: 0.6875rem; color: Theme.faint;
+            vertical-alignment: center; horizontal-stretch: 0; accessible-role: none;
+        }
         if root.item.function < 0: Text {
             text: root.item.address;
             font-family: "Cascadia Mono"; font-size: 0.6875rem; color: Theme.faint;
@@ -448,7 +459,7 @@ component InstanceRowView inherits ActionControl {
         if root.item.function < 0: IconButton {
             icon: @image-url("icons/stop.svg"); icon-only: true;
             label: "Remove deployment record \{root.item.label}";
-            y: (parent.height - self.height) / 2; height: Theme.row-height - 4px;
+            height: Theme.row-height; border-radius: 0px; transparent-background: !self.hovered;
             clicked => { Logic.remove-deployment(root.item.deployment); }
         }
     }
@@ -465,12 +476,16 @@ component NavigationView inherits Rectangle {
                 if AppData.contracts.length == 0: SideNote { text: "Recompile to load workspace contracts."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
                 ListView {
                     height: min(AppData.contracts.length * Theme.row-height, 10.5rem); min-width: 0px;
-                    for row[index] in AppData.contracts: HorizontalLayout {
-                        SideRow { icon: @image-url("icons/contracts.svg"); label: row.name; selected: AppData.selected-contract == row.name; clicked => { Logic.select-contract(index); } }
-                        IconButton {
-                            icon: @image-url("icons/deploy.svg"); label: "Deploy"; accessible-label: "Deploy \{row.name}";
-                            height: Theme.row-height - 4px; y: 2px;
-                            clicked => { Logic.select-contract(index); Logic.open-deploy(); }
+                    for row[index] in AppData.contracts: Rectangle {
+                        height: Theme.row-height;
+                        background: AppData.selected-contract == row.name ? Theme.selected : name-row.hovered || deploy-button.hovered ? Theme.hover : transparent;
+                        HorizontalLayout {
+                            name-row := SideRow { icon: @image-url("icons/contracts.svg"); label: row.name; transparent-background: true; selected: AppData.selected-contract == row.name; clicked => { Logic.select-contract(index); } }
+                            deploy-button := IconButton {
+                                icon: @image-url("icons/deploy.svg"); label: "Deploy"; accessible-label: "Deploy \{row.name}";
+                                height: Theme.row-height; y: 0px; border-radius: 0px;
+                                clicked => { Logic.select-contract(index); Logic.open-deploy(); }
+                            }
                         }
                     }
                 }
@@ -667,13 +682,21 @@ component PanelZone inherits Rectangle {
                             if self.drag-hit { root.drag-target-index = index; }
                             else if root.drag-target-index == index { root.drag-target-index = -1; }
                         }
-                        DockTab {
+                        // The highlight spans label and grip, so the whole tab reads as one control.
+                        Rectangle {
+                            background: tab.active ? Theme.selected : tab-hit.hovered || grip.hovered ? Theme.hover : transparent;
+                        }
+                        Rectangle {
+                            y: parent.height - self.height; height: 2 * Theme.unit;
+                            background: Theme.accent; visible: tab.active;
+                        }
+                        tab-hit := DockTab {
                             width: parent.width - 1.25rem; height: parent.height;
-                            label: tab.title; selected: tab.active;
+                            label: tab.title; selected: tab.active; flat: true;
                             clicked => { PanelLogic.select(tab.id, root.zone); }
                         }
                         tab-label := Text { text: tab.title; visible: false; font-size: 0.8125rem; }
-                        PanelDragHandle {
+                        grip := PanelDragHandle {
                             x: parent.width - self.width; width: 1.25rem; height: parent.height;
                             label: "Drag \{tab.title}"; icon: @image-url("icons/grip.svg"); icon-only: true; pane-id: tab.id;
                             clicked => { PanelLogic.select(tab.id, root.zone); }
@@ -799,6 +822,32 @@ export component MainWindow inherits Window {
                 Logic.recompile();
                 return accept;
             }
+            // Tab and activity shortcuts. Ctrl+Enter sends from the request form.
+            if event.modifiers.control && !event.modifiers.alt {
+                if (event.text == "w" || event.text == "W") && AppData.active-document >= 0 {
+                    Logic.close-document(AppData.active-document);
+                    return accept;
+                }
+                if event.text == Key.Tab && AppData.documents.length > 1 {
+                    Logic.select-document(event.modifiers.shift
+                        ? Math.mod(AppData.active-document - 1 + AppData.documents.length, AppData.documents.length)
+                        : Math.mod(AppData.active-document + 1, AppData.documents.length));
+                    return accept;
+                }
+                if event.text == Key.Backtab && AppData.documents.length > 1 {
+                    Logic.select-document(Math.mod(AppData.active-document - 1 + AppData.documents.length, AppData.documents.length));
+                    return accept;
+                }
+                if event.text == Key.Return { Logic.send-call(); return accept; }
+                if event.modifiers.shift && (event.text == "e" || event.text == "E") { Logic.simulate-call(); return accept; }
+                if event.text == "1" { Logic.open-activity(0); return accept; }
+                if event.text == "2" { Logic.open-activity(1); return accept; }
+                if event.text == "3" { Logic.open-activity(2); return accept; }
+                if event.text == "4" { Logic.open-activity(3); return accept; }
+                if event.text == "5" { Logic.open-activity(4); return accept; }
+                if event.text == "\\" { Logic.toggle-sidebar(); return accept; }
+                if event.text == "/" || event.text == "?" { Logic.toggle-menu(5); return accept; }
+            }
             // Debugger keys follow the usual IDE layout. They only act while a
             // paused session accepts commands, so they never type into fields.
             if AppData.activity == 4 && DebugData.can-command && !event.modifiers.control && !event.modifiers.alt {
@@ -848,7 +897,7 @@ export component MainWindow inherits Window {
                         view-menu := MenuTitle { label: "View"; open: AppData.menu-open == 3; clicked => { Logic.toggle-menu(3); } pointer-entered(x, y) => { root.hover-label = "View"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
                         panels-menu := MenuTitle { label: "Panels"; open: AppData.menu-open == 6; clicked => { Logic.toggle-menu(6); } }
                         tools-menu := MenuTitle { label: "Tools"; open: AppData.menu-open == 4; clicked => { Logic.toggle-menu(4); } pointer-entered(x, y) => { root.hover-label = "Tools"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
-                        help-menu := MenuTitle { label: "Help"; open: AppData.menu-open == 5; clicked => { Logic.toggle-menu(5); } pointer-entered(x, y) => { root.hover-label = "Help"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
+                        help-menu := MenuTitle { label: "Help"; accessible-description: "Ctrl+/"; open: AppData.menu-open == 5; clicked => { Logic.toggle-menu(5); } pointer-entered(x, y) => { root.hover-label = "Help"; root.hover-x = x; root.hover-y = y; } pointer-exited => { root.hover-label = ""; } }
                         SelectableText { text: AppData.status-left; color: Theme.faint; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; min-width: 0px; }
                         Rectangle { width: 0.5rem; horizontal-stretch: 0; }
                     }
@@ -1184,6 +1233,17 @@ export component MainWindow inherits Window {
                             MenuRow { label: "Automation / AI Access"; clicked => { AutomationLogic.open(); Logic.close-menu(); } }
                         }
                         if AppData.menu-open == 5: VerticalLayout {
+                            MenuRow { label: "Keyboard shortcuts"; enabled: false; }
+                            MenuRow { label: "Close tab"; shortcut: "Ctrl+W"; enabled: false; }
+                            MenuRow { label: "Next / previous tab"; shortcut: "Ctrl+Tab"; enabled: false; }
+                            MenuRow { label: "Send transaction"; shortcut: "Ctrl+Enter"; enabled: false; }
+                            MenuRow { label: "Read / simulate"; shortcut: "Ctrl+Shift+E"; enabled: false; }
+                            MenuRow { label: "Contracts .. Debugger"; shortcut: "Ctrl+1..5"; enabled: false; }
+                            MenuRow { label: "Toggle sidebar"; shortcut: "Ctrl+\\"; enabled: false; }
+                            MenuRow { label: "Open project"; shortcut: "Ctrl+O"; enabled: false; }
+                            MenuRow { label: "Recompile"; shortcut: "Ctrl+B"; enabled: false; }
+                            MenuRow { label: "Debugger: continue, step, next, finish"; shortcut: "F5 F11 F10 Shift+F11"; enabled: false; }
+                            MenuRow { label: "Shortcut list"; shortcut: "Ctrl+/"; enabled: false; }
                             MenuRow { label: "About Chasm desktop"; clicked => { Logic.about(); Logic.close-menu(); } }
                         }
                         if AppData.menu-open == 6: VerticalLayout {

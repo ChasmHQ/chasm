@@ -127,6 +127,7 @@ export component PanelDragHandle inherits Rectangle {
     // When set, the handle shows only this icon (the tab grip) instead of the label.
     in property <image> icon;
     in property <bool> icon-only: false;
+    out property <bool> hovered: touch.has-hover;
     callback clicked();
     min-width: 0px;
     background: PanelData.dragging && PanelData.drag-pane == root.pane-id ? Theme.selected : transparent;
