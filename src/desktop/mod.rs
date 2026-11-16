@@ -25,6 +25,7 @@ mod request_form;
 mod storage_layout;
 mod trace_debug;
 mod native_trace;
+mod macro_form;
 pub(crate) mod debug_session;
 mod debug_transport;
 #[cfg(test)]
@@ -1513,6 +1514,7 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_document_body(state.document_body().into());
     data.set_debugger_live(state.debugger_live);
     native_macro::render(ui, state);
+    native_macro::project_call(ui, state);
     native_debugger::render(ui, state);
     native_trace::render(ui, state);
     native_contract::render(ui, state);

@@ -1,5 +1,6 @@
 import { ListView, ScrollView, TextEdit } from "scroll.slint";
-import { ActionControl, SideRow, Theme } from "theme.slint";
+import { ActionControl, DockTab, IconButton, SideHeader, SideRow, Theme } from "theme.slint";
+import { LineEdit } from "std-widgets.slint";
 import { SelectableText } from "selectable-text.slint";
 
 export struct MacroRow { id: string, name: string, detail: string }
@@ -13,6 +14,8 @@ export struct MacroStep {
     action-hint: string,
 }
 export struct MacroResult { id: string, title: string, status: string, duration: string }
+export struct MacroFormField { key: string, label: string, value: string, hint: string, kind: string }
+export struct MacroChoice { label: string, detail: string }
 
 export global MacroData {
     in property <[MacroRow]> macros;
@@ -47,6 +50,23 @@ export global MacroData {
     in property <string> run-log;
     in property <string> evidence-status;
     in property <bool> can-save-evidence;
+    // Form builder
+    in-out property <int> selected-step: -1;
+    in-out property <bool> json-mode: false;
+    in property <[string]> step-summaries;
+    in property <[MacroFormField]> form-fields;
+    in property <[string]> references;
+    in property <string> form-error;
+    in property <string> step-result;
+    in property <string> step-kind;
+    in property <[MacroChoice]> contracts;
+    in property <[MacroChoice]> functions;
+    in-out property <int> call-contract: -1;
+    in-out property <int> call-function: -1;
+    in property <[MacroChoice]> call-params;
+    in-out property <string> call-arguments;
+    in property <bool> call-payable;
+    in property <string> call-error;
 }
 
 export global MacroLogic {
@@ -63,6 +83,14 @@ export global MacroLogic {
     callback export-macro();
     callback select-result(int);
     callback save-evidence();
+    callback add-step(string);
+    callback select-step(int);
+    callback remove-step(int);
+    callback move-step(int, int);
+    callback toggle-step(int);
+    callback set-field(int, string, string);
+    callback choose-call(int, int);
+    callback encode-call(int, string, bool);
 }
 
 component MacroButton inherits ActionControl {
@@ -137,285 +165,266 @@ component MacroStepRow inherits Rectangle {
     }
 }
 
-export component MacroWorkspace inherits ScrollView {
-    private property <bool> editor-open: false;
-    private property <bool> show-raw: false;
-    private property <bool> confirming-delete: false;
-    private property <int> delete-index: -1;
-    private property <string> delete-id;
+component Pill inherits ActionControl {
+    in property <string> text;
+    height: 1.75rem;
+    min-width: pill-text.preferred-width + 1rem;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.edge;
+    label: root.text;
+    pill-text := Text { x: 0.5rem; text: root.text; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: center; height: parent.height; }
+}
+
+component BuilderField inherits VerticalLayout {
+    in property <MacroFormField> field;
+    in property <int> step;
+    in property <[string]> references;
+    spacing: 0.25rem;
+    Text { text: root.field.label; color: Theme.text; font-size: 0.8125rem; }
+    if root.field.kind == "signer": HorizontalLayout {
+        spacing: 0.25rem; alignment: start;
+        for name[i] in ["anvil_account0", "anvil_account1", "anvil_account2", "unlocked_wallet_ref"]: DockTab {
+            label: i < 3 ? "Anvil #\{i}" : "Unlocked wallet";
+            selected: root.field.value == name;
+            clicked => { MacroLogic.set-field(root.step, root.field.key, name); }
+        }
+    }
+    if root.field.kind == "comparator": HorizontalLayout {
+        spacing: 0.25rem; alignment: start;
+        for name in ["eq", "not_eq", "zero", "nonzero", "true", "false"]: DockTab {
+            label: name;
+            selected: root.field.value == name;
+            clicked => { MacroLogic.set-field(root.step, root.field.key, name); }
+        }
+    }
+    if root.field.kind == "text" || root.field.kind == "reference": LineEdit {
+        min-width: 0px;
+        font-size: 0.8125rem;
+        accessible-label: root.field.label;
+        text: root.field.value;
+        edited => { MacroLogic.set-field(root.step, root.field.key, self.text); }
+    }
+    if root.field.kind == "reference" && root.references.length > 0: FlexboxLayout {
+        spacing: 0.25rem;
+        for reference in root.references: Pill { text: reference; clicked => { MacroLogic.set-field(root.step, root.field.key, reference); } }
+    }
+    if root.field.hint != "": Text { text: root.field.hint; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+}
+
+export component MacroWorkspace inherits Rectangle {
     private property <bool> has-selection: MacroData.selected >= 0 && MacroData.selected < MacroData.macros.length;
     private property <bool> validation-current: MacroData.validation-ready
         && MacroData.selected-id != ""
         && MacroData.validated-id == MacroData.selected-id
         && MacroData.validated-json == MacroData.definition-json;
-    function invalidate-validation() { MacroData.validation-ready = false; }
-    private property <int> selected-index: MacroData.selected;
-    private property <string> selected-id: MacroData.selected-id;
-    private property <bool> data-loading: MacroData.loading;
-    private property <bool> data-run-busy: MacroData.run-busy;
-    changed selected-index => { root.confirming-delete = false; }
-    changed selected-id => { root.confirming-delete = false; }
-    changed has-selection => { root.confirming-delete = false; }
-    changed data-loading => { root.confirming-delete = false; }
-    changed data-run-busy => { root.confirming-delete = false; }
-    min-width: 0px;
-    min-height: 0px;
-    content-width: self.visible-width;
-    horizontal-scrollbar-policy: always-off;
-
+    private property <bool> adding: false;
+    min-width: 0px; min-height: 0px;
+    background: Theme.canvas;
     VerticalLayout {
-        padding: Theme.pad;
-        spacing: 0.75rem;
-        alignment: start;
-
-        SelectableText {
-            text: "Macros";
-            color: Theme.text;
-            font-size: 1rem;
-            font-weight: 600;
-        }
-        SelectableText {
-            text: "Local only: macro execution is intended for an Anvil node owned by this workspace. Review preflight before running.";
-            color: Theme.muted;
-            font-size: 0.8125rem;
-            wrap: word-wrap;
-        }
-        if MacroData.loading: SelectableText {
-            text: "Loading macros...";
-            color: Theme.muted;
-            font-size: 0.8125rem;
-        }
-        if MacroData.failed: SelectableText {
-            text: MacroData.error == "" ? "Macro operation failed. Review the status and try again." : "Macro error: \{MacroData.error}";
-            color: Theme.danger;
-            font-size: 0.8125rem;
-            wrap: word-wrap;
-        }
-        if MacroData.status != "": SelectableText {
-            text: "Status: \{MacroData.status}";
-            color: Theme.muted;
-            font-size: 0.8125rem;
-            wrap: word-wrap;
-        }
-
-        FlexboxLayout {
-            spacing: 0.375rem;
-            alignment: start;
-            MacroButton { label: "New"; accessible-label: "New macro"; enabled: !MacroData.loading && !MacroData.run-busy; clicked => { root.confirming-delete = false; root.invalidate-validation(); MacroLogic.new-macro(); } }
-            MacroButton { label: "Import"; accessible-label: "Import macro"; enabled: !MacroData.loading && !MacroData.run-busy; clicked => { root.confirming-delete = false; root.invalidate-validation(); MacroLogic.import-macro(); } }
-            MacroButton { label: "Duplicate"; accessible-label: "Duplicate macro"; enabled: root.has-selection && !MacroData.loading && !MacroData.run-busy; clicked => { root.confirming-delete = false; root.invalidate-validation(); MacroLogic.duplicate(); } }
-            MacroButton { label: "Export"; accessible-label: "Export macro"; enabled: root.has-selection && !MacroData.loading && !MacroData.run-busy; clicked => { MacroLogic.export-macro(); } }
-            MacroButton { label: "Delete"; accessible-label: "Delete macro"; enabled: root.has-selection && MacroData.selected-id != "" && !MacroData.loading && !MacroData.run-busy; clicked => { root.delete-index = MacroData.selected; root.delete-id = MacroData.selected-id; root.confirming-delete = true; } }
-        }
-        if root.confirming-delete && root.has-selection && !MacroData.loading && !MacroData.run-busy && root.delete-index == MacroData.selected && root.delete-id == MacroData.selected-id: VerticalLayout {
-            spacing: 0.375rem;
-            SelectableText { text: "Delete " + (MacroData.selected-name == "" ? "the selected macro" : MacroData.selected-name) + "? This cannot be undone."; color: Theme.danger; font-size: 0.8125rem; wrap: word-wrap; }
-            FlexboxLayout {
-                spacing: 0.375rem;
-                MacroButton { label: "Keep macro"; clicked => { root.confirming-delete = false; } }
-                MacroButton { label: "Confirm delete"; clicked => { root.confirming-delete = false; root.invalidate-validation(); MacroLogic.delete-macro(root.delete-id); } }
-            }
-        }
-
-        SelectableText { text: "Macro library"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
-        if !MacroData.loading && !MacroData.failed && MacroData.macros.length == 0: SelectableText {
-            text: "No macros yet. Create one or import a macro definition, including a generated Black Tithe macro.";
-            color: Theme.muted;
-            font-size: 0.8125rem;
-            wrap: word-wrap;
-        }
-        if MacroData.macros.length > 0: Rectangle {
-            height: min(max(2.75rem, MacroData.macros.length * max(2.75rem, Theme.row-height)), 11rem);
-            min-width: 0px;
-            background: Theme.inset;
-            border-width: 1px;
-            border-color: Theme.muted;
-            ListView {
-                for item[index] in MacroData.macros: SideRow {
-                    icon: @image-url("icons/macros.svg");
-                    label: (item.name == "" ? "Unnamed macro" : item.name) + (item.detail == "" ? "" : " | \{item.detail}");
-                    selected: index == MacroData.selected;
-                    border-width: self.has-focus ? 2px : 1px;
-                    height: max(2.75rem, Theme.row-height);
-                    enabled: !MacroData.loading && !MacroData.run-busy;
-                    clicked => { root.confirming-delete = false; root.invalidate-validation(); MacroLogic.select(index); }
+        // Toolbar: everything a macro needs, without the Contracts activity.
+        Rectangle {
+            height: Theme.control-height + 0.5rem;
+            background: Theme.bar;
+            ScrollView {
+                vertical-scrollbar-policy: always-off;
+                content-width: max(self.visible-width, macro-tools.preferred-width);
+                content-height: self.visible-height;
+                macro-tools := HorizontalLayout {
+                    padding-left: 0.375rem; padding-right: Theme.pad; spacing: 0.25rem;
+                    IconButton { icon: @image-url("icons/macros.svg"); label: "New macro"; enabled: !MacroData.loading && !MacroData.run-busy; clicked => { MacroLogic.new-macro(); } }
+                    add-button := IconButton { icon: @image-url("icons/play.svg"); label: "Add step"; enabled: root.has-selection && !MacroData.run-busy; clicked => { root.adding = !root.adding; } }
+                    IconButton { icon: @image-url("icons/folder.svg"); label: "Import JSON"; enabled: !MacroData.loading && !MacroData.run-busy; clicked => { MacroLogic.import-macro(); } }
+                    IconButton { icon: @image-url("icons/deploy.svg"); label: "Export JSON"; enabled: root.has-selection; clicked => { MacroLogic.export-macro(); } }
+                    Rectangle { width: 1px; background: Theme.line; }
+                    IconButton { icon: @image-url("icons/refresh.svg"); label: "Validate"; enabled: root.has-selection && !MacroData.run-busy; clicked => { MacroData.validation-ready = false; MacroLogic.validate(); } }
+                    IconButton { icon: @image-url("icons/search.svg"); label: "Dry run"; enabled: root.validation-current && MacroData.can-dry-run && !MacroData.run-busy; clicked => { MacroLogic.dry-run(); } }
+                    IconButton { icon: @image-url("icons/play.svg"); label: MacroData.run-busy ? "Running…" : "Run"; primary: true; enabled: root.validation-current && MacroData.can-run && !MacroData.run-busy; clicked => { MacroLogic.run(); } }
+                    if MacroData.run-busy: IconButton { icon: @image-url("icons/stop.svg"); label: "Cancel"; clicked => { MacroLogic.cancel(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    DockTab { label: "Form"; selected: !MacroData.json-mode; clicked => { MacroData.json-mode = false; } }
+                    DockTab { label: "JSON"; selected: MacroData.json-mode; clicked => { MacroData.json-mode = true; } }
                 }
             }
         }
-        if !MacroData.loading && MacroData.macros.length > 0 && !root.has-selection: SelectableText {
-            text: "Select a macro to inspect its definition and run history.";
-            color: Theme.muted;
-            font-size: 0.8125rem;
-            wrap: word-wrap;
+        if MacroData.status != "" || MacroData.error != "" || MacroData.validation != "": Rectangle {
+            height: status-text.preferred-height + 0.5rem;
+            background: Theme.panel;
+            status-text := Text {
+                x: Theme.pad; width: parent.width - 2 * Theme.pad;
+                text: MacroData.error != "" ? MacroData.error : root.validation-current ? MacroData.validation : MacroData.status;
+                color: MacroData.error != "" || (root.validation-current && MacroData.validation-failed) ? Theme.danger : Theme.muted;
+                font-size: 0.75rem; wrap: word-wrap; vertical-alignment: center;
+            }
         }
-
-        if root.has-selection: VerticalLayout {
-            spacing: 0.75rem;
-            SelectableText {
-                text: MacroData.selected-name == "" ? "Selected macro" : MacroData.selected-name;
-                color: Theme.text;
-                font-size: 1rem;
-                font-weight: 600;
-                wrap: word-wrap;
-            }
-            SelectableText {
-                text: MacroData.summary == "" ? "No summary available." : MacroData.summary;
-                color: Theme.muted;
-                font-size: 0.8125rem;
-                wrap: word-wrap;
-            }
-            FlexboxLayout {
-                spacing: 0.375rem;
-                alignment: start;
-                MacroButton { label: "Validate"; accessible-label: "Validate macro"; enabled: !MacroData.loading && !MacroData.run-busy; clicked => { root.invalidate-validation(); MacroLogic.validate(); } }
-                MacroButton { label: "Dry run"; accessible-label: "Dry run macro"; enabled: !MacroData.loading && !MacroData.run-busy && root.validation-current && MacroData.can-dry-run; clicked => { MacroLogic.dry-run(); } }
-                MacroButton { label: "Run"; accessible-label: "Run macro"; primary: true; enabled: !MacroData.loading && !MacroData.run-busy && root.validation-current && MacroData.can-run; clicked => { MacroLogic.run(); } }
-                MacroButton { label: "Cancel run"; enabled: MacroData.run-busy; clicked => { MacroLogic.cancel(); } }
-            }
-            if MacroData.run-busy: SelectableText { text: "Macro run in progress. Cancel requests the current run to stop."; color: Theme.accent; font-size: 0.8125rem; wrap: word-wrap; }
-            SelectableText {
-                text: !root.validation-current ? "Validation: awaiting a fresh result for this definition." : "Validation: " + (MacroData.validation == "" ? "Not validated" : MacroData.validation);
-                color: root.validation-current && MacroData.validation-failed ? Theme.danger : Theme.muted;
-                font-size: 0.8125rem;
-                wrap: word-wrap;
-            }
-
-            Rectangle { height: 1px; background: Theme.line; }
-            SelectableText { text: "Preflight"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
-            SelectableText {
-                text: !root.validation-current ? "Preflight pending validation of the current definition." : MacroData.preflight-status == "" ? "Preflight has not been reported. Validate the current definition before running." : MacroData.preflight-status;
-                color: Theme.muted;
-                font-size: 0.8125rem;
-                wrap: word-wrap;
-            }
-            PreflightLine { label: "Broadcast"; value: !root.validation-current ? "" : MacroData.preflight-broadcast; }
-            PreflightLine { label: "Read"; value: !root.validation-current ? "" : MacroData.preflight-read; }
-            PreflightLine { label: "Sweep"; value: !root.validation-current ? "" : MacroData.preflight-sweep; }
-            PreflightLine { label: "Signers"; value: !root.validation-current ? "" : MacroData.preflight-signers; }
-            PreflightLine { label: "Snapshot"; value: !root.validation-current ? "" : MacroData.preflight-snapshot; }
-
-            Rectangle { height: 1px; background: Theme.line; }
-            SelectableText { text: "Ordered steps"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
-            if !root.validation-current || MacroData.steps.length == 0: SelectableText {
-                text: !root.validation-current ? "Steps are awaiting validation of the current definition." : "No steps are available. Validate the definition to update this list.";
-                color: Theme.muted;
-                font-size: 0.8125rem;
-                wrap: word-wrap;
-            }
-            if root.validation-current: VerticalLayout {
-                spacing: 0.375rem;
-                for entry[index] in MacroData.steps: MacroStepRow { number: index + 1; step: entry; }
-            }
-
-            Rectangle { height: 1px; background: Theme.line; }
-            FlexboxLayout {
-                spacing: 0.375rem;
-                alignment: start;
-                MacroButton {
-                    label: root.editor-open ? "Hide JSON editor" : "Edit definition JSON";
-                    checkable: true;
-                    selected: root.editor-open;
-                    clicked => { root.editor-open = !root.editor-open; }
-                }
-            }
-            if root.editor-open: VerticalLayout {
-                spacing: 0.375rem;
-                SelectableText { text: "Macro definition JSON"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
-                SelectableText { text: "Edit the complete typed definition here, then validate it. The ordered step list is read-only."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
-                Rectangle {
-                    height: 15rem;
-                    min-width: 0px;
-                    editor := TextEdit {
-                        width: parent.width;
-                        height: parent.height;
-                        text <=> MacroData.definition-json;
-                        edited => { root.invalidate-validation(); MacroLogic.edited(self.text); }
-                        enabled: !MacroData.loading && !MacroData.run-busy;
-                        accessible-label: "Macro definition JSON";
-                        font-family: "Cascadia Mono";
-                        font-size: 0.8125rem;
-                        wrap: word-wrap;
-                    }
-                    Rectangle { border-width: editor.has-focus ? 2px : 1px; border-color: editor.has-focus ? Theme.accent : Theme.muted; background: transparent; }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.line; }
-            SelectableText { text: "Run log and output"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
-            if MacroData.results.length == 0: SelectableText {
-                text: MacroData.loading ? "Loading run results..." : MacroData.failed ? "Run results are unavailable. Review the error above and retry." : MacroData.run-busy ? "Waiting for run results..." : "No run results yet. Run or dry run this macro to see output.";
-                color: Theme.muted;
-                font-size: 0.8125rem;
-                wrap: word-wrap;
-            }
-            if MacroData.results.length > 0: Rectangle {
-                height: min(max(2.75rem, MacroData.results.length * max(2.75rem, Theme.row-height)), 11rem);
-                min-width: 0px;
-                background: Theme.inset;
-                border-width: 1px;
-                border-color: Theme.muted;
-                ListView {
-                    for item[index] in MacroData.results: SideRow {
-                        icon: @image-url("icons/logs.svg");
-                        label: (item.title == "" ? "Run result" : item.title) + " | " + (item.status == "" ? "Unknown" : item.status) + (item.duration == "" ? "" : " | \{item.duration}");
-                        selected: index == MacroData.selected-result;
-                        border-width: self.has-focus ? 2px : 1px;
-                        height: max(2.75rem, Theme.row-height);
-                        clicked => { MacroLogic.select-result(index); }
-                    }
-                }
-            }
-            if MacroData.results.length > 0 && (MacroData.selected-result < 0 || MacroData.selected-result >= MacroData.results.length): SelectableText {
-                text: "Select a result to inspect its output.";
-                color: Theme.muted;
-                font-size: 0.8125rem;
-                wrap: word-wrap;
-            }
-            if MacroData.selected-result >= 0 && MacroData.selected-result < MacroData.results.length: VerticalLayout {
-                spacing: 0.375rem;
-                FlexboxLayout {
-                    spacing: 0.375rem;
-                    MacroButton { label: "Simple output"; checkable: true; selected: !root.show-raw; clicked => { root.show-raw = false; } }
-                    MacroButton { label: "Raw output"; checkable: true; selected: root.show-raw; clicked => { root.show-raw = true; } }
-                    MacroButton { label: "Save evidence"; enabled: MacroData.can-save-evidence && !MacroData.run-busy; clicked => { MacroLogic.save-evidence(); } }
-                }
-                SelectableText {
-                    text: "Evidence: " + (MacroData.evidence-status == "" ? "Unknown" : MacroData.evidence-status);
-                    color: Theme.muted;
-                    font-size: 0.8125rem;
-                    wrap: word-wrap;
-                }
-                Rectangle {
-                    height: 12rem;
-                    min-width: 0px;
-                    output := TextEdit {
-                        width: parent.width;
-                        height: parent.height;
-                        text: root.show-raw ? (MacroData.result-raw == "" ? "No raw output reported." : MacroData.result-raw) : (MacroData.result-simple == "" ? "No simple output reported." : MacroData.result-simple);
-                        read-only: true;
-                        accessible-label: root.show-raw ? "Raw run output" : "Simple run output";
-                        font-family: "Cascadia Mono";
-                        font-size: 0.75rem;
-                        wrap: word-wrap;
-                    }
-                    Rectangle { border-width: output.has-focus ? 2px : 1px; border-color: output.has-focus ? Theme.accent : Theme.muted; background: transparent; }
-                }
-            }
-            SelectableText { text: "Run log"; color: Theme.text; font-size: 0.8125rem; font-weight: 600; }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 1px;
+            // Left: macro library and the step list.
             Rectangle {
-                height: 8rem;
-                min-width: 0px;
-                log := TextEdit {
-                    width: parent.width;
-                    height: parent.height;
-                    text: MacroData.run-log == "" ? "No log entries reported." : MacroData.run-log;
-                    read-only: true;
-                    accessible-label: "Macro run log";
-                    font-family: "Cascadia Mono";
-                    font-size: 0.75rem;
-                    wrap: word-wrap;
+                width: 17rem; horizontal-stretch: 0;
+                background: Theme.panel;
+                VerticalLayout {
+                    SideHeader { title: "Macros"; trailing: MacroData.macros.length > 0 ? "\{MacroData.macros.length}" : ""; }
+                    if MacroData.macros.length == 0: Text { x: Theme.pad; text: "No macros yet. Use New macro."; color: Theme.faint; font-size: 0.75rem; }
+                    ListView {
+                        height: min(MacroData.macros.length * Theme.row-height, 7rem);
+                        for item[index] in MacroData.macros: SideRow {
+                            icon: @image-url("icons/macros.svg");
+                            label: item.name == "" ? "Unnamed macro" : item.name;
+                            trailing: item.detail;
+                            selected: index == MacroData.selected;
+                            enabled: !MacroData.run-busy;
+                            clicked => { MacroLogic.select(index); }
+                        }
+                    }
+                    SideHeader { title: "Steps"; trailing: MacroData.step-summaries.length > 0 ? "\{MacroData.step-summaries.length}" : ""; }
+                    if root.has-selection && MacroData.step-summaries.length == 0: Text { x: Theme.pad; text: "No steps. Use Add step."; color: Theme.faint; font-size: 0.75rem; }
+                    ListView {
+                        vertical-stretch: 1;
+                        for summary[index] in MacroData.step-summaries: ActionControl {
+                            label: summary;
+                            checkable: true;
+                            selected: MacroData.selected-step == index;
+                            height: 2.5rem;
+                            clicked => { MacroLogic.select-step(index); }
+                            HorizontalLayout {
+                                padding-left: 0.5rem; padding-right: 0.5rem; spacing: 0.5rem;
+                                Text { text: "\{index + 1}"; width: 1.5rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1;
+                                    Text { text: index < MacroData.steps.length ? MacroData.steps[index].name : ""; color: Theme.text; font-size: 0.8125rem; overflow: elide; min-width: 0px; }
+                                    Text { text: summary; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
+                                }
+                                Text {
+                                    width: 4.5rem; horizontal-alignment: right; overflow: elide;
+                                    text: index < MacroData.steps.length ? (!MacroData.steps[index].enabled ? "Off" : MacroData.steps[index].status == "Not run" ? "" : MacroData.steps[index].status == "Revert acknowledged, not verified" ? "Reverted" : MacroData.steps[index].status) : "";
+                                    color: index < MacroData.steps.length && MacroData.steps[index].status == "Succeeded" ? Theme.ok : index < MacroData.steps.length && MacroData.steps[index].status == "Failed" ? Theme.danger : Theme.faint;
+                                    font-size: 0.6875rem; vertical-alignment: center; horizontal-stretch: 0;
+                                }
+                            }
+                        }
+                    }
                 }
-                Rectangle { border-width: log.has-focus ? 2px : 1px; border-color: log.has-focus ? Theme.accent : Theme.muted; background: transparent; }
+            }
+            // Middle: the selected step's form, or the JSON editor.
+            Rectangle {
+                horizontal-stretch: 1; min-width: 0px;
+                background: Theme.canvas;
+                if MacroData.json-mode: VerticalLayout {
+                    padding: Theme.pad; spacing: 0.375rem;
+                    Text { text: "Definition JSON. Changes here show up in the form after Validate or a step edit."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+                    TextEdit {
+                        vertical-stretch: 1;
+                        text <=> MacroData.definition-json;
+                        enabled: root.has-selection && !MacroData.run-busy;
+                        font-family: "Cascadia Mono"; font-size: 0.75rem; wrap: no-wrap;
+                        edited => { MacroData.validation-ready = false; MacroLogic.edited(self.text); }
+                    }
+                }
+                if !MacroData.json-mode: ScrollView {
+                    content-width: self.visible-width;
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        padding: Theme.pad; spacing: 0.625rem; alignment: start;
+                        if !root.has-selection: Text { text: "Create or choose a macro on the left."; color: Theme.muted; font-size: 0.875rem; }
+                        if root.has-selection && MacroData.selected-step < 0: Text { text: "Choose a step, or use Add step to build the macro."; color: Theme.muted; font-size: 0.875rem; wrap: word-wrap; }
+                        if MacroData.selected-step >= 0: HorizontalLayout {
+                            spacing: 0.375rem;
+                            Text { text: MacroData.step-kind; color: Theme.text; font-size: 1rem; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                            IconButton { icon: @image-url("icons/chevron-right.svg"); label: "Move up"; clicked => { MacroLogic.move-step(MacroData.selected-step, -1); } }
+                            IconButton { icon: @image-url("icons/chevron-down.svg"); label: "Move down"; clicked => { MacroLogic.move-step(MacroData.selected-step, 1); } }
+                            IconButton { icon: @image-url("icons/refresh.svg"); label: MacroData.selected-step < MacroData.steps.length && MacroData.steps[MacroData.selected-step].enabled ? "Disable" : "Enable"; clicked => { MacroLogic.toggle-step(MacroData.selected-step); } }
+                            IconButton { icon: @image-url("icons/stop.svg"); label: "Remove"; clicked => { MacroLogic.remove-step(MacroData.selected-step); } }
+                        }
+                        if MacroData.form-error != "": Text { text: MacroData.form-error; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; }
+                        for field in MacroData.form-fields: BuilderField { field: field; step: MacroData.selected-step; references: MacroData.references; }
+                        // Build calldata from a workspace contract function.
+                        if MacroData.selected-step >= 0 && (MacroData.step-kind == "Send calldata" || MacroData.step-kind == "Read with calldata"): VerticalLayout {
+                            spacing: 0.375rem;
+                            Rectangle { height: 1px; background: Theme.line; }
+                            Text { text: "Encode call from a workspace contract"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
+                            if MacroData.contracts.length == 0: Text { text: "No compiled workspace contracts."; color: Theme.faint; font-size: 0.75rem; }
+                            FlexboxLayout {
+                                spacing: 0.25rem;
+                                for contract[i] in MacroData.contracts: DockTab { label: contract.label; selected: MacroData.call-contract == i; clicked => { MacroLogic.choose-call(i, -1); } }
+                            }
+                            if MacroData.call-contract >= 0: ListView {
+                                height: min(MacroData.functions.length * 2rem, 10rem);
+                                for function[i] in MacroData.functions: ActionControl {
+                                    label: function.label;
+                                    checkable: true;
+                                    selected: MacroData.call-function == i;
+                                    height: 2rem;
+                                    clicked => { MacroLogic.choose-call(MacroData.call-contract, i); }
+                                    HorizontalLayout {
+                                        padding-left: 0.5rem; spacing: 0.5rem;
+                                        Text { text: function.label; color: Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: function.detail; color: Theme.muted; font-size: 0.6875rem; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+                            if MacroData.call-function >= 0: VerticalLayout {
+                                spacing: 0.25rem;
+                                for param in MacroData.call-params: Text { text: "\{param.label}  \{param.detail}"; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; }
+                                if MacroData.call-params.length > 0: LineEdit {
+                                    font-size: 0.8125rem;
+                                    placeholder-text: "Arguments as a JSON array, e.g. [\"1000000000000000000\"]";
+                                    text <=> MacroData.call-arguments;
+                                }
+                                if MacroData.call-error != "": Text { text: MacroData.call-error; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; }
+                                HorizontalLayout {
+                                    alignment: start; spacing: 0.375rem;
+                                    IconButton { icon: @image-url("icons/play.svg"); label: "Use as transaction"; primary: true; clicked => { MacroLogic.encode-call(MacroData.selected-step, MacroData.call-arguments, true); } }
+                                    IconButton { icon: @image-url("icons/search.svg"); label: "Use as read"; clicked => { MacroLogic.encode-call(MacroData.selected-step, MacroData.call-arguments, false); } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Right: result of the selected step in the last run.
+            Rectangle {
+                width: 22rem; horizontal-stretch: 0;
+                background: Theme.panel;
+                VerticalLayout {
+                    SideHeader { title: "Step result"; }
+                    if MacroData.step-result == "": Text { x: Theme.pad; text: MacroData.run-busy ? "Running…" : "Not run yet. Validate, then Run."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; width: parent.width - 2 * Theme.pad; }
+                    if MacroData.step-result != "": TextEdit {
+                        vertical-stretch: 1;
+                        read-only: true;
+                        text: MacroData.step-result;
+                        font-family: "Cascadia Mono"; font-size: 0.6875rem; wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+    // Add step menu.
+    if root.adding: TouchArea { clicked => { root.adding = false; } }
+    if root.adding: Rectangle {
+        x: add-button.absolute-position.x - root.absolute-position.x;
+        y: add-button.absolute-position.y - root.absolute-position.y + add-button.height + 2px;
+        width: 15rem;
+        height: add-menu.preferred-height;
+        background: Theme.panel;
+        border-width: 1px; border-color: Theme.edge; border-radius: Theme.radius;
+        drop-shadow-blur: 0.75rem; drop-shadow-color: #00000088;
+        add-menu := VerticalLayout {
+            padding: 0.25rem;
+            for choice in [
+                { id: "call", label: "Call a contract function" },
+                { id: "raw_call", label: "Read with raw calldata" },
+                { id: "storage_read", label: "Read a storage slot" },
+                { id: "snapshot", label: "Take a snapshot" },
+                { id: "revert", label: "Revert to a snapshot" },
+                { id: "assert", label: "Check a value" },
+            ]: ActionControl {
+                label: choice.label;
+                height: Theme.row-height;
+                clicked => { root.adding = false; MacroLogic.add-step(choice.id); }
+                Text { x: 0.75rem; text: choice.label; color: Theme.text; font-size: 0.8125rem; vertical-alignment: center; height: parent.height; }
             }
         }
     }

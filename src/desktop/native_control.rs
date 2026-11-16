@@ -507,6 +507,26 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             if *dry_run { macros.invoke_dry_run() } else { macros.invoke_run() }
         }
         Command::CancelMacro {} => macros.invoke_cancel(),
+        Command::AddStep { kind } => macros.invoke_add_step(kind.as_str().into()),
+        Command::SelectStep { index } => macros.invoke_select_step(*index as i32),
+        Command::StepField { index, field, value } => macros.invoke_set_field(*index as i32, field.as_str().into(), value.as_str().into()),
+        Command::StepEncode { index, contract, function, arguments, send } => {
+            let data = ui.global::<MacroData>();
+            let pick = |rows: slint::ModelRc<super::MacroChoice>, wanted: &str| rows_index(&rows, |row| row.label.as_str() == wanted || row.label.split('(').next() == Some(wanted));
+            let Some(contract_index) = pick(data.get_contracts(), contract) else {
+                return json!({"status":"failed","error":{"code":"entity_not_found","message":"No compiled workspace contract with that name."}});
+            };
+            macros.invoke_choose_call(contract_index as i32, -1);
+            let Some(function_index) = pick(data.get_functions(), function) else {
+                return json!({"status":"failed","error":{"code":"entity_not_found","message":"No function with that name on the contract."}});
+            };
+            macros.invoke_choose_call(contract_index as i32, function_index as i32);
+            macros.invoke_encode_call(*index as i32, arguments.as_str().into(), *send);
+            let error = data.get_call_error();
+            if !error.is_empty() {
+                return json!({"status":"failed","error":{"code":"invalid_params","message":error.as_str()}});
+            }
+        }
         Command::SelectMacroResult { index } => macros.invoke_select_result(*index as i32),
         Command::DebugLaunch { mode, foundry_target, foundry_match, trusted, capture_id, build_info_id } => {
             let data = ui.global::<DebugData>();
@@ -542,6 +562,10 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
     json!({"status":"completed","effect":"native","context":application::context(&state),"notice":state.notice,"statusLine":state.status_left})
 }
 
+fn rows_index<T: Clone>(model: &slint::ModelRc<T>, matches: impl Fn(&T) -> bool) -> Option<usize> {
+    (0..model.row_count()).find(|index| model.row_data(*index).is_some_and(|row| matches(&row)))
+}
+
 fn rows<T: Clone>(model: slint::ModelRc<T>) -> Vec<T> {
     (0..model.row_count()).filter_map(|index| model.row_data(index)).collect()
 }
@@ -568,6 +592,12 @@ fn macro_state(ui: &MainWindow) -> Value {
         "resultSimple": data.get_result_simple().as_str(),
         "resultRaw": data.get_result_raw().as_str(),
         "runLog": data.get_run_log().as_str(),
+        "selectedStep": data.get_selected_step(),
+        "stepKind": data.get_step_kind().as_str(),
+        "stepSummaries": rows(data.get_step_summaries()).into_iter().map(|item| item.to_string()).collect::<Vec<_>>(),
+        "form": rows(data.get_form_fields()).into_iter().map(|field| json!({"key":field.key.as_str(),"label":field.label.as_str(),"value":field.value.as_str()})).collect::<Vec<_>>(),
+        "references": rows(data.get_references()).into_iter().map(|item| item.to_string()).collect::<Vec<_>>(),
+        "stepResult": data.get_step_result().as_str(),
     })
 }
 

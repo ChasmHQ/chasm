@@ -1355,6 +1355,10 @@ fn displayed(state: &DesktopState, id: &PaneId) -> bool {
     {
         return false;
     }
+    // The macro builder has its own library list, so it takes the full width.
+    if id.kind == PaneKind::Navigation && state.activity == 3 && state.current_doc_kind() == 6 {
+        return false;
+    }
     // Investigation lives in the Explorer tab once a project is open.
     if id.kind == PaneKind::Investigation && state.workspace_ready {
         return false;

@@ -109,6 +109,14 @@ pub enum Command {
     ValidateMacro {},
     #[serde(rename = "macros.run")]
     RunMacro { dry_run: bool },
+    #[serde(rename = "macros.step.add")]
+    AddStep { kind: String },
+    #[serde(rename = "macros.step.select")]
+    SelectStep { index: u32 },
+    #[serde(rename = "macros.step.field")]
+    StepField { index: u32, field: String, value: String },
+    #[serde(rename = "macros.step.encode")]
+    StepEncode { index: u32, contract: String, function: String, arguments: String, send: bool },
     #[serde(rename = "macros.cancel")]
     CancelMacro {},
     #[serde(rename = "macros.result.select")]
@@ -283,6 +291,10 @@ impl Command {
             Self::ValidateMacro {} => "macros.validate",
             Self::RunMacro { .. } => "macros.run",
             Self::CancelMacro {} => "macros.cancel",
+            Self::AddStep { .. } => "macros.step.add",
+            Self::SelectStep { .. } => "macros.step.select",
+            Self::StepField { .. } => "macros.step.field",
+            Self::StepEncode { .. } => "macros.step.encode",
             Self::SelectMacroResult { .. } => "macros.result.select",
             Self::DebugLaunch { .. } => "debugger.launch",
             Self::DebugStart {} => "debugger.start",
@@ -979,6 +991,10 @@ pub fn command_schema() -> Value {
         ("macros.validate", object(json!({}), vec![])),
         ("macros.run", object(json!({"dry_run":{"type":"boolean"}}), vec!["dry_run"])),
         ("macros.cancel", object(json!({}), vec![])),
+        ("macros.step.add", object(json!({"kind":{"enum":["call","raw_send","raw_call","storage_read","snapshot","revert","assert"]}}), vec!["kind"])),
+        ("macros.step.select", object(json!({"index":{"type":"integer","minimum":0}}), vec!["index"])),
+        ("macros.step.field", object(json!({"index":{"type":"integer","minimum":0},"field":{"type":"string","maxLength":64},"value":{"type":"string","maxLength":65536}}), vec!["index","field","value"])),
+        ("macros.step.encode", object(json!({"index":{"type":"integer","minimum":0},"contract":{"type":"string","maxLength":200},"function":{"type":"string","maxLength":200,"description":"Function name, or name(types) when overloaded"},"arguments":{"type":"string","maxLength":65536},"send":{"type":"boolean"}}), vec!["index","contract","function","arguments","send"])),
         ("macros.result.select", object(json!({"index":{"type":"integer","minimum":0}}), vec!["index"])),
         (
             "debugger.launch",

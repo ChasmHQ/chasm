@@ -1290,6 +1290,97 @@ fn wire_callbacks(ui: &MainWindow, key: usize, generation: u64, controller: Arc<
     });
     let held = controller.clone();
     let weak = ui.as_weak();
+    ui.global::<MacroLogic>().on_add_step(move |kind| {
+        if !host_current(&held, key, generation) {
+            return;
+        }
+        let after = weak.upgrade().and_then(|ui| usize::try_from(ui.global::<MacroData>().get_selected_step()).ok());
+        let selected = form_edit(&held, |draft| super::macro_form::add_step(draft, kind.as_str(), after));
+        if let (Some(index), Some(ui)) = (selected, weak.upgrade()) {
+            ui.global::<MacroData>().set_selected_step(index as i32);
+            ui.global::<MacroData>().set_json_mode(false);
+        }
+        refresh_all(&held);
+    });
+    let held = controller.clone();
+    let weak = ui.as_weak();
+    ui.global::<MacroLogic>().on_select_step(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<MacroData>().set_selected_step(index);
+            ui.global::<MacroData>().set_call_contract(-1);
+            ui.global::<MacroData>().set_call_function(-1);
+            ui.global::<MacroData>().set_call_error("".into());
+        }
+        refresh_all(&held);
+    });
+    let held = controller.clone();
+    ui.global::<MacroLogic>().on_remove_step(move |index| {
+        if host_current(&held, key, generation) {
+            form_edit(&held, |draft| super::macro_form::remove_step(draft, index.max(0) as usize).map(|draft| (draft, 0)));
+            refresh_all(&held);
+        }
+    });
+    let held = controller.clone();
+    let weak = ui.as_weak();
+    ui.global::<MacroLogic>().on_move_step(move |index, delta| {
+        if !host_current(&held, key, generation) {
+            return;
+        }
+        if let Some(moved) = form_edit(&held, |draft| super::macro_form::move_step(draft, index.max(0) as usize, delta)) {
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<MacroData>().set_selected_step(moved as i32);
+            }
+        }
+        refresh_all(&held);
+    });
+    let held = controller.clone();
+    ui.global::<MacroLogic>().on_toggle_step(move |index| {
+        if host_current(&held, key, generation) {
+            form_edit(&held, |draft| super::macro_form::toggle_step(draft, index.max(0) as usize).map(|draft| (draft, 0)));
+            refresh_all(&held);
+        }
+    });
+    let held = controller.clone();
+    ui.global::<MacroLogic>().on_set_field(move |index, field, value| {
+        if host_current(&held, key, generation) && value.len() <= 64 * 1024 {
+            form_edit(&held, |draft| super::macro_form::set_field(draft, index.max(0) as usize, field.as_str(), value.as_str()).map(|draft| (draft, 0)));
+            refresh_all(&held);
+        }
+    });
+    let held = controller.clone();
+    let weak = ui.as_weak();
+    ui.global::<MacroLogic>().on_choose_call(move |contract, function| {
+        let Some(ui) = weak.upgrade() else { return };
+        let data = ui.global::<MacroData>();
+        data.set_call_contract(contract);
+        data.set_call_function(function);
+        data.set_call_error("".into());
+        data.set_call_arguments("".into());
+        project_call(&ui, &held.state.lock().unwrap());
+    });
+    let held = controller.clone();
+    let weak = ui.as_weak();
+    ui.global::<MacroLogic>().on_encode_call(move |index, arguments, send| {
+        let Some(ui) = weak.upgrade() else { return };
+        if !host_current(&held, key, generation) {
+            return;
+        }
+        let data = ui.global::<MacroData>();
+        let function = call_function(&held.state.lock().unwrap(), data.get_call_contract(), data.get_call_function());
+        let Some(function) = function else { return };
+        let mut failure = None;
+        form_edit(&held, |draft| match super::macro_form::set_call(draft, index.max(0) as usize, &function, arguments.as_str(), send) {
+            Ok(draft) => Ok((draft, 0)),
+            Err(error) => {
+                failure = Some(error.clone());
+                Err(error)
+            }
+        });
+        data.set_call_error(failure.unwrap_or_default().into());
+        refresh_all(&held);
+    });
+    let held = controller.clone();
+    let weak = ui.as_weak();
     ui.global::<Logic>().on_new_macro(move || {
         if !host_current(&held, key, generation) {
             return;
@@ -1849,7 +1940,8 @@ fn project(
 
     let current_result =
         selected_result.filter(|run| record.is_some_and(|record| record.draft == run.json));
-    let steps = definition
+    let draft_definition = record.and_then(|record| macro_model::decode_macro(record.draft.as_bytes()).ok());
+    let steps = draft_definition.as_ref().or(definition)
         .map(|definition| {
             definition
                 .steps
@@ -1888,6 +1980,46 @@ fn project(
         })
         .unwrap_or_default();
     data.set_steps(super::model(steps));
+    let draft = record.map(|record| record.draft.as_str()).unwrap_or("");
+    let draft_value: serde_json::Value = serde_json::from_str(draft).unwrap_or_default();
+    let draft_steps = draft_value["steps"].as_array().cloned().unwrap_or_default();
+    data.set_step_summaries(super::model(draft_steps.iter().map(|step| super::macro_form::summary(step).into()).collect()));
+    let mut selected_step = data.get_selected_step();
+    if selected_step >= draft_steps.len() as i32 {
+        selected_step = draft_steps.len() as i32 - 1;
+        data.set_selected_step(selected_step);
+    }
+    let index = usize::try_from(selected_step).ok();
+    data.set_form_fields(super::model(
+        index
+            .map(|index| super::macro_form::fields(draft, index))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|field| super::MacroFormField { key: field.key.into(), label: field.label.into(), value: field.value.into(), hint: field.hint.into(), kind: field.kind.into() })
+            .collect(),
+    ));
+    data.set_references(super::model(index.map(|index| super::macro_form::references(draft, index)).unwrap_or_default().into_iter().map(Into::into).collect()));
+    data.set_step_kind(
+        index
+            .and_then(|index| draft_definition.as_ref().and_then(|definition| definition.steps.get(index)))
+            .map(|step| step_labels(&step.kind).0)
+            .or_else(|| index.and_then(|index| draft_steps.get(index)).map(|_| "Step (fix its fields)"))
+            .unwrap_or("")
+            .into(),
+    );
+    data.set_step_result(
+        index
+            .and_then(|index| {
+                let id = draft_steps.get(index)?["id"].as_str()?.to_string();
+                let run = current_result?;
+                let position = run.step_ids.iter().position(|step| step.as_str() == id)?;
+                let evidence = runner_step_evidence(run, position);
+                let pretty = serde_json::from_str::<serde_json::Value>(&evidence).ok().and_then(|value| serde_json::to_string_pretty(&value).ok()).unwrap_or(evidence);
+                Some(format!("Status  {}\n\n{pretty}", step_status(run.report.steps[position].status)))
+            })
+            .unwrap_or_default()
+            .into(),
+    );
     let selected_id = library.selected.as_ref();
     let runs: Vec<_> = library
         .runs
@@ -1965,3 +2097,53 @@ fn project(
 #[cfg(test)]
 #[path = "native_macro_tests.rs"]
 mod tests;
+
+/// Apply a form edit to the selected draft. The edit returns the new draft
+/// and an index (the new or moved step); errors show in the form.
+fn form_edit(controller: &Arc<Controller>, edit: impl FnOnce(&str) -> Result<(String, usize), String>) -> Option<usize> {
+    if !controller.available() {
+        return None;
+    }
+    let mut library = controller.library.lock().unwrap();
+    if library.active_run.is_some() {
+        return None;
+    }
+    let draft = library.selected_record()?.draft.clone();
+    match edit(&draft) {
+        Ok((next, index)) => {
+            library.edit(next);
+            library.set_status("Step changed. Validate before running.");
+            Some(index)
+        }
+        Err(error) => {
+            library.set_error(&error);
+            None
+        }
+    }
+}
+
+fn workspace_contracts(state: &super::session::DesktopState) -> Vec<&super::session::ContractItem> {
+    state.contracts.iter().filter(|contract| contract.kind == "src" && !contract.functions.is_empty()).collect()
+}
+
+fn call_function(state: &super::session::DesktopState, contract: i32, function: i32) -> Option<ethers::abi::Function> {
+    let contract = *workspace_contracts(state).get(usize::try_from(contract).ok()?)?;
+    let info = contract.functions.get(usize::try_from(function).ok()?)?;
+    let signature = format!("{}({})", info.name, info.params.iter().map(|(_, kind)| kind.as_str()).collect::<Vec<_>>().join(","));
+    use ethers::abi::FunctionExt;
+    contract.abi.functions().find(|item| item.abi_signature() == signature).cloned()
+}
+
+/// Contract and function pickers for the Encode call section.
+pub fn project_call(ui: &MainWindow, state: &super::session::DesktopState) {
+    let data = ui.global::<MacroData>();
+    let contracts = workspace_contracts(state);
+    data.set_contracts(super::model(contracts.iter().map(|contract| super::MacroChoice { label: contract.name.clone().into(), detail: format!("{} functions", contract.functions.len()).into() }).collect()));
+    let chosen = usize::try_from(data.get_call_contract()).ok().and_then(|index| contracts.get(index));
+    data.set_functions(super::model(chosen.map(|contract| contract.functions.iter().map(|function| super::MacroChoice { label: format!("{}({})", function.name, function.params.iter().map(|(_, kind)| kind.as_str()).collect::<Vec<_>>().join(",")).into(), detail: function.mutability.clone().into() }).collect()).unwrap_or_default()));
+    let params = chosen
+        .and_then(|contract| contract.functions.get(usize::try_from(data.get_call_function()).ok()?))
+        .map(|function| function.params.iter().map(|(name, kind)| super::MacroChoice { label: if name.is_empty() { "arg".into() } else { name.clone().into() }, detail: kind.clone().into() }).collect())
+        .unwrap_or_default();
+    data.set_call_params(super::model(params));
+}
