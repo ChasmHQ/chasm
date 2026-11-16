@@ -25,6 +25,8 @@ export struct DocTab { title: string, kind: int }
 export struct LogLine { text: string }
 export struct JobRow { id: string, name: string, status: string }
 export struct DeploymentRow { name: string, address: string }
+// One row of the workspace tree: a deployment header (function = -1) or one of its functions.
+export struct InstanceRow { deployment: int, function: int, label: string, tag: string, address: string, selected: bool }
 export struct TextRow { text: string }
 export struct ChainItem { title: string, detail: string, query: string }
 
@@ -73,6 +75,7 @@ export global AppData {
     in property <[FunctionRow]> functions;
     in property <[InputRow]> function-inputs;
     in property <[DeploymentRow]> deployments;
+    in property <[InstanceRow]> instance-rows;
     in property <[TextRow]> keystores;
     in property <[DocTab]> documents;
     in property <[LogLine]> logs;
@@ -140,6 +143,7 @@ export global Logic {
     callback read-storage();
     callback select-contract(int);
     callback select-deployment(int);
+    callback open-instance-function(int, int);
     callback address-edited(string);
     callback request-input-edited();
     callback select-function(int);
@@ -400,6 +404,56 @@ component JobsView inherits ScrollView {
     }
 }
 
+// Deployment headers carry the address and a remove button; function rows sit
+// under them with a VIEW/PAY/TX tag so one click opens the request.
+component InstanceRowView inherits ActionControl {
+    in property <InstanceRow> item;
+    label: root.item.function < 0 ? "\{root.item.label} at \{root.item.address}" : "\{root.item.tag} \{root.item.label}";
+    checkable: root.item.function >= 0;
+    selected: root.item.selected;
+    height: Theme.row-height;
+    min-width: 0px;
+    vertical-stretch: 0;
+    clicked => { Logic.open-instance-function(root.item.deployment, root.item.function); }
+    HorizontalLayout {
+        padding-left: root.item.function < 0 ? Theme.pad : Theme.pad + 0.875rem;
+        padding-right: root.item.function < 0 ? 0.25rem : Theme.pad;
+        spacing: 0.375rem;
+        if root.item.function < 0: Image {
+            source: @image-url("icons/block.svg");
+            width: 0.875rem; height: 0.875rem; y: (parent.height - self.height) / 2;
+            colorize: Theme.icon;
+            accessible-role: none;
+        }
+        if root.item.function >= 0: Rectangle {
+            width: 2.5rem; height: 1rem; y: (parent.height - self.height) / 2;
+            horizontal-stretch: 0;
+            border-width: 1px; border-radius: 2px;
+            border-color: root.item.tag == "PAY" ? Theme.warn : Theme.edge;
+            Text { text: root.item.tag; font-family: "Cascadia Mono"; font-size: 0.625rem; color: root.item.tag == "PAY" ? Theme.warn : Theme.muted; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; }
+        }
+        Text {
+            text: root.item.label;
+            font-family: root.item.function < 0 ? "Segoe UI" : "Cascadia Mono";
+            font-size: root.item.function < 0 ? 0.8125rem : 0.75rem;
+            color: root.item.selected ? Theme.text : root.item.function < 0 ? Theme.text : Theme.muted;
+            vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide;
+            accessible-role: none;
+        }
+        if root.item.function < 0: Text {
+            text: root.item.address;
+            font-family: "Cascadia Mono"; font-size: 0.6875rem; color: Theme.faint;
+            vertical-alignment: center; horizontal-stretch: 0; accessible-role: none;
+        }
+        if root.item.function < 0: IconButton {
+            icon: @image-url("icons/stop.svg"); icon-only: true;
+            label: "Remove deployment record \{root.item.label}";
+            y: (parent.height - self.height) / 2; height: Theme.row-height - 4px;
+            clicked => { Logic.remove-deployment(root.item.deployment); }
+        }
+    }
+}
+
 component NavigationView inherits Rectangle {
     min-width: 0px; min-height: 0px; background: Theme.rail;
     ScrollView {
@@ -411,16 +465,18 @@ component NavigationView inherits Rectangle {
                 if AppData.contracts.length == 0: SideNote { text: "Recompile to load workspace contracts."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
                 ListView {
                     height: min(AppData.contracts.length * Theme.row-height, 10.5rem); min-width: 0px;
-                    for row[index] in AppData.contracts: SideRow { icon: @image-url("icons/contracts.svg"); label: row.name; trailing: row.kind; selected: AppData.selected-contract == row.name; clicked => { Logic.select-contract(index); } }
-                }
-                SideHeader { title: "Deployments"; }
-                ListView {
-                    height: min(AppData.deployments.length * Theme.row-height, 8rem); min-width: 0px;
-                    for item[index] in AppData.deployments: HorizontalLayout {
-                        SideRow { icon: @image-url("icons/block.svg"); label: item.name; trailing: ""; selected: AppData.address-input == item.address; clicked => { Logic.select-deployment(index); } }
-                        IconButton { icon: @image-url("icons/stop.svg"); icon-only: true; label: "Remove deployment \{item.name}"; clicked => { Logic.remove-deployment(index); } }
+                    for row[index] in AppData.contracts: HorizontalLayout {
+                        SideRow { icon: @image-url("icons/contracts.svg"); label: row.name; selected: AppData.selected-contract == row.name; clicked => { Logic.select-contract(index); } }
+                        IconButton {
+                            icon: @image-url("icons/deploy.svg"); label: "Deploy"; accessible-label: "Deploy \{row.name}";
+                            height: Theme.row-height - 4px; y: 2px;
+                            clicked => { Logic.select-contract(index); Logic.open-deploy(); }
+                        }
                     }
                 }
+                SideHeader { title: "Deployed"; trailing: AppData.deployments.length > 0 ? "\{AppData.deployments.length}" : ""; }
+                if AppData.deployments.length == 0: SideNote { text: "Deploy a contract to call its functions here."; color: Theme.faint; font-size: 0.75rem; }
+                for entry in AppData.instance-rows: InstanceRowView { item: entry; }
             }
             if AppData.activity == 1: VerticalLayout {
                 SideHeader { title: "Chain"; }

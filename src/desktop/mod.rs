@@ -426,6 +426,24 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     }
     on_int!(ui, state, on_select_contract, |state: &mut DesktopState, value| state.select_contract(value));
     on_int!(ui, state, on_select_deployment, |state: &mut DesktopState, value| state.select_deployment(value));
+    {
+        let weak = ui.as_weak();
+        let held = state.clone();
+        ui.global::<Logic>().on_open_instance_function(move |deployment, function| {
+            {
+                let mut state = held.lock().unwrap();
+                if state.transition_pending() || state.send_busy { return; }
+                state.select_deployment(deployment);
+                if function >= 0 {
+                    if let Some(owner) = state.current_document_id() {
+                        state.select_document_function(&owner, function);
+                    }
+                }
+            }
+            panels::focus_current();
+            paint(&weak, &held);
+        });
+    }
     on_int!(ui, state, on_select_function, |state: &mut DesktopState, value| state.select_function(value));
     on_int!(ui, state, on_select_keystore, |state: &mut DesktopState, value| state.select_keystore(value));
     on_int!(ui, state, on_select_document, |state: &mut DesktopState, value| state.select_document(value));
@@ -1494,6 +1512,7 @@ fn render(ui: &MainWindow, state: &DesktopState) {
         mutability: item.mutability.clone().into(),
     }).collect()));
     data.set_deployments(model(state.deployments.iter().map(|item| DeploymentRow { name: item.name.clone().into(), address: item.address.clone().into() }).collect()));
+    data.set_instance_rows(model(instance_rows(state)));
     data.set_keystores(model(state.keystores.iter().map(|item| TextRow { text: item.clone().into() }).collect()));
     data.set_documents(model(state.documents.iter().map(|doc| DocTab { title: doc.title.clone().into(), kind: doc.kind }).collect()));
     let filter = state.log_filter.to_lowercase();
@@ -1502,6 +1521,46 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     if data.get_log_text().as_str() != log_text { data.set_log_text(log_text.into()); }
     data.set_logs(model(filtered_logs.into_iter().map(|line| LogLine { text: line.clone().into() }).collect()));
     data.set_jobs(model(state.jobs.iter().map(|job| JobRow { id: job.id.0.to_string().into(), name: format!("#{} {}", job.id.0, job.name).into(), status: job.status.clone().into() }).collect()));
+}
+
+/// Deployments with their functions inlined, so a call is one click from the sidebar.
+fn instance_rows(state: &DesktopState) -> Vec<InstanceRow> {
+    let current = state.current_contract_view().and_then(|view| view.target.as_ref().map(|target| (target.address.to_lowercase(), view.selected_function)));
+    let mut rows = Vec::new();
+    for (index, deployment) in state.deployments.iter().enumerate() {
+        let address = deployment.address.to_lowercase();
+        let active = current.as_ref().filter(|(target, _)| *target == address).map(|(_, function)| *function);
+        rows.push(InstanceRow {
+            deployment: index as i32,
+            function: -1,
+            label: deployment.name.clone().into(),
+            tag: "".into(),
+            address: short_address(&deployment.address).into(),
+            selected: active == Some(-1),
+        });
+        let mut contracts = state.contracts.iter().filter(|item| item.name == deployment.name);
+        let Some(contract) = contracts.next().filter(|_| contracts.next().is_none()) else { continue };
+        for (position, function) in contract.functions.iter().enumerate() {
+            rows.push(InstanceRow {
+                deployment: index as i32,
+                function: position as i32,
+                label: function.name.clone().into(),
+                tag: match function.mutability.as_str() {
+                    "view" | "pure" => "VIEW",
+                    "payable" => "PAY",
+                    _ => "TX",
+                }
+                .into(),
+                address: "".into(),
+                selected: active == Some(position as i32),
+            });
+        }
+    }
+    rows
+}
+
+fn short_address(address: &str) -> String {
+    if address.len() > 12 { format!("{}…{}", &address[..6], &address[address.len() - 4..]) } else { address.to_string() }
 }
 
 fn brush(r: u8, g: u8, b: u8) -> slint::Brush {

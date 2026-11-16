@@ -47,7 +47,7 @@ impl PaneKind {
         match self {
             Self::Navigation => "Navigation",
             Self::Document => "Document",
-            Self::CallResult => "Call Result",
+            Self::CallResult => "Response",
             Self::Storage => "Storage",
             // Short and distinct: these sit side by side in narrow pane headers.
             Self::DebugCode => "Code",
@@ -178,15 +178,18 @@ impl Layout {
             schema_version: SCHEMA_VERSION,
             panes: Vec::new(),
             active: BTreeMap::new(),
-            right_width: 320.0,
+            right_width: 380.0,
             bottom_height: 140.0,
             left_width: 240.0,
             maximized: None,
         };
         let panes: &[(PaneKind, Zone)] = match preset {
+            // The response follows the active contract tab on the right, so a
+            // request and its result are visible together without inner tabs.
             Preset::Contracts => &[
                 (PaneKind::Navigation, Zone::Left),
                 (PaneKind::Document, Zone::Center),
+                (PaneKind::CallResult, Zone::Right),
                 (PaneKind::Console, Zone::Bottom),
                 (PaneKind::Logs, Zone::Bottom),
                 (PaneKind::Jobs, Zone::Bottom),

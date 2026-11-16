@@ -238,3 +238,28 @@ fn monitor_clamp_handles_negative_offsets_and_high_dpi() {
     assert!(super::super::platform::clamp_panel_to_work_area(input, 1.0, small).is_none());
     assert!(super::super::platform::clamp_panel_to_work_area(input, f32::NAN, work).is_none());
 }
+
+#[test]
+fn side_response_follows_the_bound_contract_tab_only() {
+    let mut state = fixture();
+    state.layout = Layout::preset(Preset::Contracts);
+    let generic = PaneId::new(PaneKind::CallResult, None);
+    // An unbound contract tab has nothing to show on the side.
+    assert!(!displayed(&state, &generic));
+    state.documents[1].contract_view.target = Some(super::super::contract_state::Target {
+        contract: "Bank".into(),
+        address: "0x0000000000000000000000000000000000000001".into(),
+        deployment_id: None,
+        network_epoch: state.network_epoch,
+    });
+    assert!(displayed(&state, &generic));
+    let right = zone_projection(&state, Zone::Right);
+    assert_eq!((right.kind, right.title.as_str(), right.owner.as_str()), (2, "Response", state.documents[1].id.as_str()));
+    assert_eq!(zone_projection(&state, Zone::Center).title, "Request");
+    // An owned result pane wins, and the generic one steps aside.
+    let owned = PaneId::new(PaneKind::CallResult, Some(state.documents[1].id.clone()));
+    state.layout.ensure(owned, Zone::Bottom).unwrap();
+    assert!(!displayed(&state, &generic));
+    state.active_document = 0;
+    assert!(!displayed(&state, &generic));
+}

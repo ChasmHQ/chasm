@@ -66,7 +66,7 @@ impl Document {
     pub fn new(title: String, body: String, kind: i32) -> Self {
         let contract_name = match kind {
             0 => Some(title.clone()),
-            1 => title.strip_prefix("Deploy · ").map(str::to_string),
+            1 => title.strip_prefix("Deploy ").map(str::to_string),
             _ => None,
         };
         Self {
@@ -730,7 +730,7 @@ impl DesktopState {
         let index = match existing {
             Some(index) => index,
             None => {
-                let mut doc = Document::new(format!("Deploy · {owner_title}"), String::new(), 1);
+                let mut doc = Document::new(format!("Deploy {owner_title}"), String::new(), 1);
                 doc.contract_name = Some(name.clone());
                 doc.deployment_origin_document = Some(owner_id.to_string());
                 self.documents.push(doc);
@@ -3376,7 +3376,7 @@ mod tests {
             let mut state = populated_state();
             let title = match kind {
                 0 => "Vault",
-                1 => "Deploy · Vault",
+                1 => "Deploy Vault",
                 2 => "Wallet",
                 _ => "Trace",
             };

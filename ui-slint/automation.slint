@@ -68,15 +68,15 @@ export component AutomationPanel inherits Rectangle {
                         spacing: 0.75rem;
                         alignment: start;
                         SelectableText { text: AutomationData.enabled ? "Access enabled for paired local clients" : "AI access is off"; font-weight: 600; }
-                        SelectableText { text: "Pair only clients you trust. Navigation and analysis follow their selected scopes. Sensitive actions require a separate confirmation here. Passwords and private keys stay in the local Wallet form."; color: Theme.muted; }
+                        SelectableText { text: "Pair only clients you trust. No tier can read or enter private keys, mnemonics or keystore passwords, export or delete keystores, or change these access settings. Full clients can deploy, send, run macros, revert the local chain and drive the debugger without asking, and only against the Anvil node this workspace owns."; color: Theme.muted; }
                         HorizontalLayout {
                             alignment: start;
                             IconButton { icon: @image-url("icons/play.svg"); label: "Enable local API / MCP"; enabled: !AutomationData.enabled && !AutomationData.busy; clicked => { AutomationLogic.enable(); } }
                             IconButton { icon: @image-url("icons/stop.svg"); label: "Disable and revoke all"; enabled: AutomationData.enabled && !AutomationData.busy; clicked => { AutomationLogic.disable(); } }
                         }
                         if AutomationData.endpoint != "": SelectableText { text: "HTTP API: \{AutomationData.endpoint}/api/v1\nMCP: \{AutomationData.endpoint}/mcp"; color: Theme.text; }
-                        SelectableText { text: "New client permissions"; color: Theme.muted; }
-                        permissions := ComboBox { model: ["Read application state", "Read and control UI", "Read and analyze chain", "Read, control UI and analyze"]; current-index: 0; accessible-label: "Client permissions"; enabled: AutomationData.enabled && !AutomationData.busy; }
+                        SelectableText { text: "New client tier"; color: Theme.muted; }
+                        permissions := ComboBox { model: ["Limited: read state and run analysis", "Partial: also control the UI; chain, build and macro actions need your approval", "Full: all actions without approval, including debugger"]; current-index: 0; accessible-label: "Client permissions"; enabled: AutomationData.enabled && !AutomationData.busy; }
                         HorizontalLayout {
                             alignment: start;
                             IconButton { icon: @image-url("icons/wallet.svg"); label: "Create client token"; enabled: AutomationData.enabled && !AutomationData.busy; clicked => { AutomationLogic.pair(permissions.current-index); } }
@@ -94,7 +94,7 @@ export component AutomationPanel inherits Rectangle {
                             SelectableText { text: "\{client.id}\n\{client.scopes}"; }
                             HorizontalLayout { alignment: start; IconButton { icon: @image-url("icons/stop.svg"); label: "Revoke client"; clicked => { AutomationLogic.revoke(client.id); } } }
                         }
-                        SelectableText { text: "Available actions are listed in app.catalog. Signing, broadcast, keystore deletion, chain resets and debugger commands are not remotely exposed yet. This is not the Slint developer-inspection interface."; color: Theme.muted; }
+                        SelectableText { text: "Available actions and the tier each needs are listed in app.catalog. This is not the Slint developer-inspection interface."; color: Theme.muted; }
                     }
                 }
             }

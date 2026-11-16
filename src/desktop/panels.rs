@@ -111,6 +111,12 @@ pub fn bind(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle, inv
                 Ok(mut layout) => {
                     let mut state = state.lock().unwrap();
                     retain_live_owners(&mut layout, &state);
+                    // Layouts saved before the side Response pane existed gain it;
+                    // one the user hid is stored as hidden and stays that way.
+                    let response = PaneId::new(PaneKind::CallResult, None);
+                    if layout.placement(&response).is_none() {
+                        let _ = layout.ensure(response, Zone::Right);
+                    }
                     state.layout = layout;
                 }
                 Err(_) => {
@@ -786,7 +792,7 @@ fn return_to_bank(registry: &Hosts, kind: PaneKind, owner: &str) {
 
 fn live_owner(state: &DesktopState, id: &PaneId) -> bool {
     match (&id.owner, id.kind) {
-        (None, PaneKind::CallResult | PaneKind::Storage) => false,
+        (None, PaneKind::Storage) => false,
         (None, _) => true,
         (Some(owner), PaneKind::Document) => state.documents.iter().any(|doc| &doc.id == owner),
         (Some(owner), PaneKind::CallResult | PaneKind::Storage) => {
@@ -1322,13 +1328,32 @@ fn kind_index(kind: PaneKind) -> i32 {
 fn document_for<'a>(state: &'a DesktopState, id: &PaneId) -> Option<&'a Document> {
     match &id.owner {
         Some(owner) => state.documents.iter().find(|doc| &doc.id == owner),
-        None if id.kind == PaneKind::Document => {
+        None if matches!(id.kind, PaneKind::Document | PaneKind::CallResult) => {
             usize::try_from(state.active_document).ok().and_then(|index| state.documents.get(index))
         }
         None => None,
     }
 }
+/// The generic Response pane shows the active contract instance's result,
+/// unless that tab's result already has its own pane.
+fn side_response(state: &DesktopState, doc: &Document) -> bool {
+    state.current_document_id().as_deref() == Some(doc.id.as_str())
+        && doc.kind == 0
+        && doc.contract_view.target.is_some()
+        && matches!(
+            state.layout.placement(&PaneId::new(PaneKind::CallResult, None)),
+            Some(Placement::Docked { .. } | Placement::Floating { .. })
+        )
+        && state.layout.placement(&PaneId::new(PaneKind::CallResult, Some(doc.id.clone()))).is_none()
+}
+
 fn displayed(state: &DesktopState, id: &PaneId) -> bool {
+    if id.kind == PaneKind::CallResult && id.owner.is_none() {
+        return usize::try_from(state.active_document)
+            .ok()
+            .and_then(|index| state.documents.get(index))
+            .is_some_and(|doc| side_response(state, doc));
+    }
     if id.kind != PaneKind::Document || id.owner.is_some() {
         return true;
     }
@@ -1375,8 +1400,9 @@ fn projection(
         .filter(|doc| doc.kind == 0)
         .map(|doc| {
             let mut view = super::native_contract::presentation(state, doc);
-            view.result_detached =
-                state.layout.placement(&PaneId::new(PaneKind::CallResult, Some(doc.id.clone()))).is_some();
+            view.result_side = side_response(state, doc);
+            view.result_detached = view.result_side
+                || state.layout.placement(&PaneId::new(PaneKind::CallResult, Some(doc.id.clone()))).is_some();
             view.storage_detached =
                 state.layout.placement(&PaneId::new(PaneKind::Storage, Some(doc.id.clone()))).is_some();
             view
@@ -1395,6 +1421,20 @@ fn projection(
         deployment,
     )
 }
+fn document_role(kind: i32) -> &'static str {
+    match kind {
+        0 => "Request",
+        1 => "Constructor",
+        2 => "Keystores",
+        3 => "Trace",
+        4 => "Lookup",
+        5 => "Conversion",
+        6 => "Macro library",
+        7 => "Build",
+        _ => "Document",
+    }
+}
+
 fn zone_projection(state: &DesktopState, zone: Zone) -> ZoneProjection {
     let panes = state
         .layout
@@ -1412,14 +1452,18 @@ fn zone_projection(state: &DesktopState, zone: Zone) -> ZoneProjection {
     let rows = panes
         .iter()
         .enumerate()
-        .map(|(index, pane)| PanelRow {
-            id: pane.id.stable_key().into(),
-            title: projection(state, Some(&pane.id)).1.into(),
-            active: Some(index) == active,
+        .map(|(index, pane)| {
+            let projected = projection(state, Some(&pane.id));
+            // The document strip already names the document; stacked pane tabs name the role.
+            let title = if pane.id.kind == PaneKind::Document { document_role(projected.3).to_string() } else { projected.1 };
+            PanelRow { id: pane.id.stable_key().into(), title: title.into(), active: Some(index) == active }
         })
         .collect();
-    let (kind, title, owner, document_kind, document_title, document_body, contract, deployment) =
+    let (kind, mut title, owner, document_kind, document_title, document_body, contract, deployment) =
         projection(state, selected);
+    if selected.is_some_and(|id| id.kind == PaneKind::Document) {
+        title = document_role(document_kind).into();
+    }
     ZoneProjection {
         rows,
         active: selected.map(PaneId::stable_key).unwrap_or_default(),

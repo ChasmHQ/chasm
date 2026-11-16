@@ -31,6 +31,8 @@ export struct ContractViewData {
     can-read: bool,
     target-bound: bool,
     result-detached: bool,
+    // True when the side Response pane shows this tab's result.
+    result-side: bool,
     storage-detached: bool,
     arguments: string,
     value: string,
@@ -383,7 +385,7 @@ export component ContractResult inherits Rectangle {
                 ContractButton { label: "Save..."; enabled: root.active-output != ""; clicked => { ContractLogic.save-output(root.owner, root.active-output); } }
                 if root.view.result-view == 2: ContractButton { label: root.view.trace-busy ? "Loading trace..." : "Load trace"; enabled: root.view.has-result && !root.view.trace-busy && !root.view.call-busy; clicked => { ContractLogic.trace(root.owner); } }
                 if !root.view.result-detached: ContractButton { label: "Float result"; clicked => { ContractLogic.detach-result(root.owner); } }
-                if root.view.result-detached: ContractButton { label: "Return to contract"; clicked => { ContractLogic.dock-result(root.owner); } }
+                if root.view.result-detached && !root.view.result-side: ContractButton { label: "Return to contract"; clicked => { ContractLogic.dock-result(root.owner); } }
             }
         }
         result-output := ContractOutput {
@@ -531,7 +533,7 @@ export component ContractWorkspace inherits Rectangle {
             section-tabs := HorizontalLayout {
                 alignment: start;
                 DockTab { label: "Interact"; selected: root.view.section == 0 && (!root.compact || root.view.interact-view == 0); clicked => { ContractLogic.interact-view(root.owner, 0); ContractLogic.section(root.owner, 0); } }
-                if root.compact: DockTab { label: "Result"; selected: root.view.section == 0 && root.view.interact-view == 1; clicked => { ContractLogic.interact-view(root.owner, 1); ContractLogic.section(root.owner, 0); } }
+                if root.compact && !root.view.result-side: DockTab { label: "Result"; selected: root.view.section == 0 && root.view.interact-view == 1; clicked => { ContractLogic.interact-view(root.owner, 1); ContractLogic.section(root.owner, 0); } }
                 DockTab { label: "Storage"; selected: root.view.section == 1; clicked => { ContractLogic.section(root.owner, 1); } }
                 DockTab { label: "Details"; selected: root.view.section == 2; clicked => { ContractLogic.section(root.owner, 2); } }
             }
@@ -546,8 +548,8 @@ export component ContractWorkspace inherits Rectangle {
             private property <length> max-result-height: max(0px, self.available-height - 180 * Theme.unit);
             private property <length> min-result-height: min(80 * Theme.unit, self.max-result-height);
             private property <length> actual-result-height: root.view.result-detached ? 0px : ((root.view.result-height > 0 ? root.view.result-height : root.result-height) * Theme.unit).clamp(self.min-result-height, self.max-result-height);
-            private property <length> request-height: root.view.result-detached ? max(0px, self.height - Theme.control-height) : max(0px, self.available-height - self.actual-result-height);
-            if interaction.compact && root.view.interact-view == 0: ContractRequest {
+            private property <length> request-height: root.view.result-side ? self.height : root.view.result-detached ? max(0px, self.height - Theme.control-height) : max(0px, self.available-height - self.actual-result-height);
+            if interaction.compact && (root.view.interact-view == 0 || root.view.result-side): ContractRequest {
                 x: 0px;
                 y: 0px;
                 width: parent.width;
@@ -564,7 +566,7 @@ export component ContractWorkspace inherits Rectangle {
                 view: root.view;
                 owner: root.owner;
             }
-            if interaction.compact && root.view.interact-view == 1 && root.view.result-detached: HorizontalLayout {
+            if interaction.compact && root.view.interact-view == 1 && root.view.result-detached && !root.view.result-side: HorizontalLayout {
                 x: 0px;
                 y: 0px;
                 width: parent.width;
@@ -619,7 +621,7 @@ export component ContractWorkspace inherits Rectangle {
                 view: root.view;
                 owner: root.owner;
             }
-            if !interaction.compact && root.view.result-detached: HorizontalLayout {
+            if !interaction.compact && root.view.result-detached && !root.view.result-side: HorizontalLayout {
                 x: 0px;
                 y: interaction.request-height;
                 width: parent.width;
