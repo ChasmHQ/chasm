@@ -143,6 +143,16 @@ fn rpc_error(raw: &Value) -> Option<&Value> {
     None
 }
 
+/// Decoded revert of an RPC `error` object (Error(string), Panic(uint256) or a
+/// custom error from the ABI), or None when the error carries no revert data.
+pub fn revert_reason(error: &Value, contract_abi: &Abi) -> Option<String> {
+    let data = error.get("data").and_then(find_error_data)?;
+    let bytes = parse_bytes(data, MAX_PAYLOAD_BYTES).ok()?;
+    let mut out = Output::new(MAX_OUTPUT_BYTES);
+    format_revert(&mut out, contract_abi, &bytes, data);
+    Some(out.finish())
+}
+
 fn format_rpc_error(error: &Value, contract_abi: &Abi) -> String {
     let mut out = Output::new(MAX_OUTPUT_BYTES);
     out.push("RPC error");

@@ -414,11 +414,11 @@ async fn submit_transaction_guarded(
                 json!([public_transaction.clone()]),
             )
             .await?;
-            parse_quantity(&estimate["result"])?
+            preflight_quantity(&estimate, "eth_estimateGas", &plan.abi)?
         }
     };
-    let nonce = parse_quantity(&nonce["result"])?;
-    let gas_price = parse_quantity(&gas_price["result"])?;
+    let nonce = preflight_quantity(&nonce, "eth_getTransactionCount", &plan.abi)?;
+    let gas_price = preflight_quantity(&gas_price, "eth_gasPrice", &plan.abi)?;
     public_transaction["nonce"] = json!(format!("{nonce:#x}"));
     public_transaction["gasPrice"] = json!(format!("{gas_price:#x}"));
     public_transaction["gas"] = json!(format!("{gas:#x}"));
@@ -921,6 +921,24 @@ fn parse_quantity_text(text: &str) -> Result<U256, String> {
     }
     U256::from_str_radix(digits, 16).map_err(|_| "Invalid RPC quantity".into())
 }
+/// Start of the error for a call that reverted in the gas estimate.
+pub const REVERTED_BEFORE_SENDING: &str = "Reverted before sending";
+
+/// Quantity from a pre-send RPC response. An `error` there means nothing was
+/// signed; a gas estimate error is the call reverting, so name its reason.
+fn preflight_quantity(response: &Value, method: &str, abi: &Abi) -> Result<U256, String> {
+    if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+        if method == "eth_estimateGas" {
+            let reason = super::call_result::revert_reason(error, abi)
+                .unwrap_or_else(|| "the node returned no revert data (a bare revert, a require without a message, or out of gas)".into());
+            return Err(format!("{REVERTED_BEFORE_SENDING}: {reason}\nNothing was broadcast. Debug this call steps to the failing line."));
+        }
+        let code = error.get("code").and_then(Value::as_i64).unwrap_or_default();
+        return Err(format!("{method} failed (code {code}). Nothing was broadcast."));
+    }
+    parse_quantity(&response["result"])
+}
+
 fn parse_quantity(value: &Value) -> Result<U256, String> {
     parse_quantity_text(value.as_str().ok_or("Missing RPC quantity")?)
 }
@@ -1299,6 +1317,25 @@ mod tests {
         );
         assert_eq!(receipt_status(&json!({"result":{"status":"0x2"}})), None);
         assert_eq!(receipt_status(&json!({"result":{"status":"0x01"}})), None);
+    }
+
+    #[test]
+    fn presend_errors_name_the_revert_and_never_read_a_missing_quantity() {
+        use ethers::abi::{encode, Token};
+        let mut data = vec![0x08, 0xc3, 0x79, 0xa0];
+        data.extend(encode(&[Token::String("Minimum Withdrawal is 1 Ether".into())]));
+        let reverted = json!({"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"[provider message redacted]","data":format!("0x{}", ethers::utils::hex::encode(&data))}});
+        let error = preflight_quantity(&reverted, "eth_estimateGas", &Abi::default()).unwrap_err();
+        assert!(error.starts_with(REVERTED_BEFORE_SENDING), "{error}");
+        assert!(error.contains("Minimum Withdrawal is 1 Ether"), "{error}");
+        assert!(!error.contains("Missing RPC quantity"));
+        let bare = json!({"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"[provider message redacted]"}});
+        let error = preflight_quantity(&bare, "eth_estimateGas", &Abi::default()).unwrap_err();
+        assert!(error.contains("no revert data"), "{error}");
+        let nonce = preflight_quantity(&bare, "eth_getTransactionCount", &Abi::default()).unwrap_err();
+        assert!(nonce.contains("eth_getTransactionCount failed (code 3)"), "{nonce}");
+        let gas = json!({"jsonrpc":"2.0","id":1,"result":"0x5208"});
+        assert_eq!(preflight_quantity(&gas, "eth_estimateGas", &Abi::default()).unwrap(), U256::from(21000u64));
     }
 
     #[test]

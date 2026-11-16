@@ -40,6 +40,9 @@ pub struct ContractView {
     pub call_generation: u64,
     pub result_generation: u64,
     pub call_status: String,
+    /// eth_call object of the last Send that reverted before broadcast, so
+    /// the step debugger can replay it. Cleared when the next call starts.
+    pub reverted_call: Option<Value>,
     pub scroll: std::collections::HashMap<String, f32>,
     pub function_width: f32,
     pub result_height: f32,

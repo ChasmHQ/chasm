@@ -130,6 +130,24 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     });
     let held = state.clone();
     let weak = ui.as_weak();
+    ui.global::<ContractLogic>().on_field_ether(move |owner, index| {
+        let mut state = held.lock().unwrap();
+        let Some(doc_index) = document_index(&state, owner.as_str()) else { return };
+        let Some(function) = abi_function(&state, &state.documents[doc_index]) else { return };
+        let mut values = super::request_form::split(&function, &state.documents[doc_index].contract_view.arguments);
+        let Some(slot) = values.get_mut(index as usize) else { return };
+        let Ok(wei) = super::request_form::to_wei(slot, 2) else { return };
+        *slot = wei;
+        let joined = super::request_form::join(&function, &values);
+        edit_view(&mut state, owner.as_str(), |view| {
+            view.arguments = joined;
+            view.revision = view.revision.wrapping_add(1);
+        });
+        drop(state);
+        super::paint(&weak, &held);
+    });
+    let held = state.clone();
+    let weak = ui.as_weak();
     ui.global::<ContractLogic>().on_amount_edited(move |owner, amount, unit| {
         if amount.len() > 100 {
             return;
@@ -538,6 +556,7 @@ fn execute(
             generation: doc.contract_view.call_generation,
             revision: doc.contract_view.revision,
         };
+        doc.contract_view.reverted_call = None;
         let token = state.begin_request(
             super::jobs::Operation::Call,
             if send { "send call" } else { "simulate call" },
@@ -555,6 +574,15 @@ fn execute(
         }
     };
     super::paint(&weak, &held);
+    // Replay as the signer: msg.sender changes which require fails. Only the
+    // public address is copied, never the key.
+    let mut replay = request.call.clone();
+    if replay.get("from").is_none() {
+        let from = held.lock().unwrap().wallet_address.clone();
+        if !from.is_empty() {
+            replay["from"] = Value::String(from);
+        }
+    }
     runtime.spawn(async move {
         let _lease = lease;
         let result = match key {
@@ -587,6 +615,10 @@ fn execute(
                                     doc.contract_view.result_view = 0;
                                     doc.contract_view.interact_view = 1;
                                     doc.contract_view.call_status = "Call finished. Result context is captured below.".into();
+                                }
+                                Err(error) if error.starts_with(super::contract_service::REVERTED_BEFORE_SENDING) => {
+                                    doc.contract_view.call_status = error;
+                                    doc.contract_view.reverted_call = Some(replay);
                                 }
                                 Err(error) => doc.contract_view.call_status = format!("Last attempt failed: {error}\nPrevious completed result, if any, is unchanged."),
                             }
@@ -835,6 +867,7 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
             .into(),
         call_busy: state.send_busy,
         has_result: view.result.is_some(),
+        can_debug_call: view.reverted_call.is_some(),
         storage_busy: view.storage_busy,
         can_read_storage: ready
             && view
@@ -881,6 +914,7 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|field| super::RequestField {
+                    amount: field.amount,
                     name: field.name.into(),
                     kind: field.kind.into(),
                     value: field.value.into(),

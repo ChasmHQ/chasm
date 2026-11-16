@@ -90,8 +90,8 @@ Each item ships with tests, a live run through the control API and screenshots, 
 
 | Item | Status |
 |---|---|
-| 1. Field focus | Code written (`keep_rows`, request and macro fields), test not run yet |
-| 2. Revert reason on Send | Not started |
+| 1. Field focus | Done (`c9fbb89`) |
+| 2. Revert reason on Send | Done: decoded reason, nothing broadcast, Debug this call, ether to wei button. Also fixed CRLF source files mapping steps to the wrong line |
 | 4. Step semantics and docs | Not started |
 | 5. Capture and trace saving | Not started |
 | 3. Dockable debugger panes and console | Not started |

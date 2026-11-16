@@ -6,7 +6,7 @@ import { TraceLogic } from "trace.slint";
 
 export struct ContractFunction { name: string, inputs: string, mutability: string }
 export struct StorageVariable { label: string, kind: string, slot: string, value: string, note: string, mapping: bool }
-export struct RequestField { name: string, kind: string, value: string, hint: string, placeholder: string, error: string }
+export struct RequestField { name: string, kind: string, value: string, hint: string, placeholder: string, error: string, amount: bool }
 
 export struct ContractViewData {
     contract-name: string,
@@ -34,6 +34,7 @@ export struct ContractViewData {
     send-enabled: bool,
     trace-busy: bool,
     has-result: bool,
+    can-debug-call: bool,
     storage-busy: bool,
     can-read-storage: bool,
     can-read: bool,
@@ -98,6 +99,8 @@ export global ContractLogic {
     callback value-edited(string, string);
     callback field-edited(string, int, string);
     callback amount-edited(string, string, int);
+    // Read the field's text as ether and replace it with the wei amount.
+    callback field-ether(string, int);
     callback slot-edited(string, string);
     callback attach-address-edited(string, string);
     callback read(string);
@@ -341,15 +344,26 @@ component ContractRequest inherits Rectangle {
                             Text { text: field.name; color: Theme.text; font-size: 0.8125rem; min-width: 0px; overflow: elide; horizontal-stretch: 0; vertical-alignment: center; }
                             Text { text: field.kind; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                         }
-                        LineEdit {
-                            min-width: 0px;
-                            font-size: 0.8125rem;
-                            enabled: !root.view.call-busy;
-                            accessible-label: "\{field.name} (\{field.kind})";
-                            placeholder-text: field.placeholder;
-                            text: field.value;
-                            edited => { ContractLogic.field-edited(root.owner, index, self.text); }
+                        HorizontalLayout {
+                            spacing: 0.375rem;
+                            LineEdit {
+                                min-width: 0px;
+                                horizontal-stretch: 1;
+                                font-size: 0.8125rem;
+                                enabled: !root.view.call-busy;
+                                accessible-label: "\{field.name} (\{field.kind})";
+                                placeholder-text: field.placeholder;
+                                text: field.value;
+                                edited => { ContractLogic.field-edited(root.owner, index, self.text); }
+                            }
+                            if field.amount: ContractButton {
+                                label: "ether to wei";
+                                horizontal-stretch: 0;
+                                enabled: !root.view.call-busy && field.value != "" && field.error == "";
+                                clicked => { ContractLogic.field-ether(root.owner, index); }
+                            }
                         }
+                        if field.amount && field.error == "": Text { text: "Amounts are in wei. Type 1, then ether to wei, for 1 ether."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
                         if field.error != "": Text { text: field.error; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
                     }
                     if root.view.mutability == "payable": VerticalLayout {
@@ -379,9 +393,13 @@ component ContractRequest inherits Rectangle {
                     }
                     if root.view.call-busy || root.view.call-status != "": SelectableText {
                         text: root.view.call-busy ? "Calling contract..." : root.view.call-status;
-                        color: Theme.muted;
+                        color: root.view.can-debug-call ? Theme.danger : Theme.muted;
                         font-size: 0.75rem;
                         wrap: word-wrap;
+                    }
+                    if root.view.can-debug-call && !root.view.call-busy: HorizontalLayout {
+                        alignment: start;
+                        ContractButton { label: "Debug this call"; clicked => { TraceLogic.load(""); } }
                     }
                 }
             }

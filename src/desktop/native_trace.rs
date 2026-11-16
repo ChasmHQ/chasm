@@ -99,6 +99,16 @@ fn pick_target(state: &DesktopState, input: &str) -> Result<Target, String> {
         }
         return Ok(Target::Transaction(hash));
     }
+    if let Some(view) = state.current_contract_view() {
+        if let (Some(call), Some(target)) = (&view.reverted_call, &view.target) {
+            return Ok(Target::Call {
+                title: format!("Reverted call {}", target.contract),
+                call: call.clone(),
+                block: "latest".into(),
+                target: target.address.clone(),
+            });
+        }
+    }
     let result = state.current_contract_view().and_then(|view| view.result.as_ref());
     if let Some(result) = result {
         if let Some(hash) = result.context.request["transactionHash"].as_str() {
@@ -128,7 +138,9 @@ fn programs(state: &DesktopState) -> Vec<Program> {
         .filter_map(|(name, runtime)| {
             let path = std::path::Path::new(&runtime.source_path);
             let path = if path.is_absolute() { path.to_path_buf() } else { state.workspace.join(path) };
-            let source = std::fs::read_to_string(&path).ok()?;
+            // Foundry hands solc the source with LF line endings, so source map
+            // offsets drift by one byte per line on a CRLF checkout.
+            let source = std::fs::read_to_string(&path).ok()?.replace("\r\n", "\n");
             Some(Program { name: name.clone(), runtime: runtime.code.clone(), source_map: runtime.source_map.clone(), source_path: runtime.source_path.clone(), source })
         })
         .collect()
@@ -406,4 +418,21 @@ fn printable(word: &str) -> String {
     ethers::utils::hex::decode(word.trim_start_matches("0x"))
         .map(|bytes| bytes.iter().map(|byte| if byte.is_ascii_graphic() || *byte == b' ' { *byte as char } else { '.' }).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crlf_sources_use_the_offsets_solc_saw() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("A.sol"), "line one\r\nline two\r\n").unwrap();
+        let mut state = DesktopState::new(workspace.path().to_path_buf(), 1.0);
+        state.runtimes.insert("A".into(), super::super::session::RuntimeInfo { code: vec![0x00], source_map: "9:8:0".into(), source_path: "A.sol".into() });
+        let programs = programs(&state);
+        assert_eq!(programs.len(), 1);
+        // Offset 9 is the start of line two in the LF text solc compiled.
+        assert_eq!(&programs[0].source[9..17], "line two");
+    }
 }

@@ -13,6 +13,8 @@ pub struct Field {
     pub hint: String,
     pub placeholder: String,
     pub error: String,
+    /// A uint whose name reads like a wei amount; the form offers ether to wei.
+    pub amount: bool,
 }
 
 /// Split a stored draft into one text value per input. A draft that is not a
@@ -80,6 +82,10 @@ pub fn fields(function: &Function, arguments: &str) -> Vec<Field> {
                 hint: super::deployment::field_hint(&param.kind),
                 placeholder: super::deployment::field_placeholder(&param.kind),
                 error,
+                amount: matches!(param.kind, ParamType::Uint(_)) && {
+                    let name = param.name.to_ascii_lowercase();
+                    ["amount", "value", "wei", "price", "fee", "deposit"].iter().any(|word| name.contains(word))
+                },
             }
         })
         .collect()
