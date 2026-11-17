@@ -1,0 +1,90 @@
+// Saved call history for the project (.chasm/history.jsonl), shown in
+// Explorer. Each row can be repeated, debugged or turned into a macro step.
+import { ListView } from "scroll.slint";
+import { ActionControl, DockTab, IconButton, SideHeader, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct HistoryRow { title: string, detail: string, status: string, summary: string, can-debug: bool }
+
+export global HistoryData {
+    in property <[HistoryRow]> rows;
+    in property <string> file;
+    in property <string> status;
+    in-out property <int> selected: -1;
+    // 0 all, 1 sends only, 2 failures only.
+    in-out property <int> filter: 0;
+}
+
+export global HistoryLogic {
+    callback repeat(int);
+    callback debug(int);
+    callback to-macro(int);
+    callback set-filter(int);
+    callback clear();
+}
+
+component RowButton inherits ActionControl {
+    in property <string> text;
+    label: root.text;
+    height: Theme.control-height;
+    min-width: content.min-width;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius;
+    content := HorizontalLayout {
+        padding-left: 0.5rem; padding-right: 0.5rem;
+        Text { text: root.text; color: root.enabled ? Theme.text : Theme.faint; font-size: 0.75rem; vertical-alignment: center; }
+    }
+}
+
+export component HistoryView inherits Rectangle {
+    min-width: 0px; min-height: 0px;
+    background: Theme.canvas;
+    VerticalLayout {
+        padding: Theme.pad; spacing: 0.5rem;
+        HorizontalLayout {
+            spacing: 0.25rem;
+            DockTab { label: "All"; selected: HistoryData.filter == 0; horizontal-stretch: 0; clicked => { HistoryLogic.set-filter(0); } }
+            DockTab { label: "Sends"; selected: HistoryData.filter == 1; horizontal-stretch: 0; clicked => { HistoryLogic.set-filter(1); } }
+            DockTab { label: "Failures"; selected: HistoryData.filter == 2; horizontal-stretch: 0; clicked => { HistoryLogic.set-filter(2); } }
+            Rectangle { horizontal-stretch: 1; }
+            IconButton { icon: @image-url("icons/stop.svg"); label: "Clear history"; enabled: HistoryData.rows.length > 0; clicked => { HistoryLogic.clear(); } }
+        }
+        SelectableText { text: "Every Send and Simulate in this project, newest first, saved in \{HistoryData.file}. Repeat refills the request tab; To macro adds the call as a step of the selected macro."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        if HistoryData.status != "": SelectableText { text: HistoryData.status; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+        if HistoryData.rows.length == 0: SelectableText { text: "No calls yet. Send or simulate a function from a contract tab."; color: Theme.faint; font-size: 0.8125rem; }
+        ListView {
+            vertical-stretch: 1;
+            for row[index] in HistoryData.rows: Rectangle {
+                height: 3.75rem;
+                background: HistoryData.selected == index ? Theme.selected : transparent;
+                HorizontalLayout {
+                    padding-left: Theme.pad; padding-right: 0.375rem; spacing: 0.5rem;
+                    ActionControl {
+                        label: "\{row.title} \{row.status}";
+                        transparent-background: true;
+                        horizontal-stretch: 1;
+                        clicked => { HistoryData.selected = index; }
+                        VerticalLayout {
+                            alignment: center; spacing: 0.125rem;
+                            HorizontalLayout {
+                                spacing: 0.5rem;
+                                Text {
+                                    text: row.status;
+                                    width: 4.5rem;
+                                    color: row.status == "ok" ? Theme.ok : row.status == "reverted" || row.status == "failed" ? Theme.danger : Theme.warn;
+                                    font-family: "Cascadia Mono"; font-size: 0.75rem;
+                                }
+                                Text { text: row.title; color: Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
+                            }
+                            Text { text: row.detail; color: Theme.muted; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
+                            Text { text: row.summary; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
+                        }
+                    }
+                    RowButton { text: "Repeat"; clicked => { HistoryLogic.repeat(index); } }
+                    RowButton { text: "Debug"; enabled: row.can-debug; clicked => { HistoryLogic.debug(index); } }
+                    RowButton { text: "To macro"; clicked => { HistoryLogic.to-macro(index); } }
+                }
+            }
+        }
+    }
+}

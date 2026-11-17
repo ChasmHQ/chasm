@@ -12,6 +12,8 @@ import { FoundryWorkspace } from "foundry.slint";
 export { FoundryData, FoundryLogic, FoundryArtifactRow, FoundryWorkspace } from "foundry.slint";
 import { DebugData, DebugLogic, DebugToolbar, DebugCodePane, DebugInspectorPane, DebugInspectionPane, DebugSessionPane } from "debugger.slint";
 import { TraceData, TraceLogic, TraceDebugger } from "trace.slint";
+import { HistoryData, HistoryLogic, HistoryView } from "history.slint";
+export { HistoryData, HistoryLogic, HistoryRow } from "history.slint";
 export { TraceData, TraceLogic, TraceLine, TraceOp, TraceValue, TraceTarget } from "trace.slint";
 export { DebugData, DebugLogic, CodeRow, ExecStat } from "debugger.slint";
 import { ContractData, ContractLogic, ContractViewData, ContractWorkspace, ContractResult, ContractStorage } from "contract.slint";
@@ -502,7 +504,8 @@ component NavigationView inherits Rectangle {
                 SideHeader { title: "Chain"; }
                 SideNote { text: AppData.block-label; color: Theme.text; wrap: word-wrap; }
                 SideRow { icon: @image-url("icons/refresh.svg"); label: "Refresh chain"; clicked => { Logic.fetch-block(); } }
-                SideRow { icon: @image-url("icons/search.svg"); label: "Investigation"; clicked => { AppData.explorer-tab = 1; InvestigationLogic.open-embedded(); } }
+                SideRow { icon: @image-url("icons/search.svg"); label: "Investigation"; selected: AppData.explorer-tab == 1; clicked => { AppData.explorer-tab = 1; InvestigationLogic.open-embedded(); } }
+                SideRow { icon: @image-url("icons/logs.svg"); label: "History"; selected: AppData.explorer-tab == 2; clicked => { AppData.explorer-tab = 2; } }
             }
             if AppData.activity == 2: VerticalLayout {
                 SideHeader { title: "Tools"; }
@@ -595,6 +598,7 @@ export component ExplorerWorkspace inherits Rectangle {
             height: Theme.tab-height;
             DockTab { label: "Chain"; selected: AppData.explorer-tab == 0; clicked => { AppData.explorer-tab = 0; } }
             DockTab { label: "Investigation"; selected: AppData.explorer-tab == 1; clicked => { AppData.explorer-tab = 1; InvestigationLogic.open-embedded(); } }
+            DockTab { label: "History"; selected: AppData.explorer-tab == 2; clicked => { AppData.explorer-tab = 2; } }
             Rectangle { horizontal-stretch: 1; }
         }
         if AppData.explorer-tab == 0: VerticalLayout {
@@ -616,6 +620,7 @@ export component ExplorerWorkspace inherits Rectangle {
             }
         }
         if AppData.explorer-tab == 1: InvestigationPanel { vertical-stretch: 1; }
+        if AppData.explorer-tab == 2: HistoryView { vertical-stretch: 1; }
     }
 }
 

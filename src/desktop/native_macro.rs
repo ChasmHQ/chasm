@@ -2145,6 +2145,38 @@ fn call_function(state: &super::session::DesktopState, contract: i32, function: 
     contract.abi.functions().find(|item| item.abi_signature() == signature).cloned()
 }
 
+/// Add a history entry as a raw_send / raw_call step of the selected macro,
+/// creating a macro when none is selected. The target becomes the step
+/// that deployed it when the macro has one; otherwise the literal address.
+pub fn add_history_step(ui: &MainWindow, state: &State, entry: &super::history::Entry) -> Result<String, String> {
+    if entry.data.is_empty() {
+        return Err("This entry has no calldata to replay.".into());
+    }
+    let controller = controller_for(state).ok_or("Macros are unavailable for this window.")?;
+    if controller.library.lock().unwrap().selected_record().is_none() && !begin_new(&controller) {
+        return Err("Could not create a macro for this step.".into());
+    }
+    let kind = if entry.kind == "send" { "raw_send" } else { "raw_call" };
+    let added = form_edit(&controller, |draft| {
+        let (draft, index) = super::macro_form::add_step(draft, kind, None)?;
+        let mut draft = draft;
+        for (key, value) in [("target", entry.address.as_str()), ("data", entry.data.as_str()), ("value", if entry.value.is_empty() { "0" } else { entry.value.as_str() })] {
+            draft = super::macro_form::set_field(&draft, index, key, value)?;
+        }
+        let signer = (0..3)
+            .find(|index| super::session::anvil_dev_account(*index).is_some_and(|(address, _)| address.eq_ignore_ascii_case(&entry.from)))
+            .map(|index| format!("anvil_account{index}"))
+            .unwrap_or_else(|| "unlocked_wallet_ref".into());
+        draft = super::macro_form::set_field(&draft, index, "signer", &signer)?;
+        Ok((draft, index))
+    })
+    .ok_or_else(|| controller.library.lock().unwrap().error.clone())?;
+    ui.global::<MacroData>().set_selected_step(added as i32);
+    ui.global::<MacroData>().set_json_mode(false);
+    refresh_all(&controller);
+    Ok(format!("Added {}.{} as step {} of the selected macro. Open Macros to edit or run it.", entry.contract, entry.function, added + 1))
+}
+
 /// Contract and function pickers for the Encode call section.
 pub fn project_call(ui: &MainWindow, state: &super::session::DesktopState) {
     let data = ui.global::<MacroData>();

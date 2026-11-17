@@ -65,6 +65,7 @@ pub fn wire(
                             Query::Macros => value["macros"] = macro_state(&ui),
                             Query::Debugger => value["debugger"] = debugger_state(&ui),
                             Query::Screenshot => value["screenshot"] = screenshot(&ui)?,
+                            Query::History => value["status"] = ui.global::<super::HistoryData>().get_status().as_str().into(),
                             _ => {}
                         }
                         Ok(value)
@@ -473,6 +474,20 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
         Command::TraceBreakpoint { line } => ui.global::<super::TraceLogic>().invoke_toggle_breakpoint(*line as i32),
         Command::TraceOpenSaved { name } => ui.global::<super::TraceLogic>().invoke_open_saved(name.as_str().into()),
         Command::TraceConsole { line } => ui.global::<super::TraceLogic>().invoke_console_run(line.as_str().into()),
+        Command::HistoryAction { action, index } => {
+            let logic = ui.global::<super::HistoryLogic>();
+            ui.global::<super::HistoryData>().set_filter(0);
+            match action.as_str() {
+                "repeat" => logic.invoke_repeat(*index as i32),
+                "debug" => logic.invoke_debug(*index as i32),
+                "to_macro" => logic.invoke_to_macro(*index as i32),
+                "show" => {
+                    ui.global::<AppData>().set_explorer_tab(2);
+                    ui.global::<Logic>().invoke_open_activity(1);
+                }
+                _ => {}
+            }
+        }
         Command::TraceView { opcodes, state, console, compact, opcodes_width, state_width, console_height } => {
             let data = ui.global::<super::TraceData>();
             if let Some(value) = opcodes { data.set_show_opcodes(*value); }

@@ -25,6 +25,8 @@ mod request_form;
 mod storage_layout;
 mod trace_debug;
 mod address_book;
+mod history;
+mod native_history;
 mod native_trace;
 mod trace_console;
 mod macro_form;
@@ -1003,6 +1005,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     });
     native_debugger::wire(ui, state, runtime.clone());
     native_trace::wire(ui, state, runtime.clone());
+    native_history::wire(ui, state, runtime.clone());
     native_contract::wire(ui, state, runtime);
 }
 
@@ -1528,6 +1531,7 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     native_macro::project_call(ui, state);
     native_debugger::render(ui, state);
     native_trace::render(ui, state);
+    native_history::render(ui, state);
     native_contract::render(ui, state);
     data.set_active_document(state.active_document);
     render_deployment_form(ui, state);

@@ -1,6 +1,7 @@
 use super::call_result::TraceState;
 use super::contract_state::{ContractView, Target};
 use super::session::{DesktopState, Document};
+use super::history;
 use super::{ContractData, ContractFunction, ContractLogic, ContractViewData, MainWindow};
 use serde_json::Value;
 use slint::{ComponentHandle, Weak};
@@ -577,6 +578,23 @@ fn execute(
     // Replay as the signer: msg.sender changes which require fails. Only the
     // public address is copied, never the key.
     let mut replay = request.call.clone();
+    // What History needs to repeat this call; filled in when it finishes.
+    let record = {
+        let state = held.lock().unwrap();
+        history::Entry {
+            time: history::now(),
+            kind: if key.is_some() { "send" } else { "simulate" }.into(),
+            contract: request.context.contract.clone(),
+            address: request.context.address.clone(),
+            function: request.context.signature.clone(),
+            arguments: document_index(&state, &stamp.document).map(|index| state.documents[index].contract_view.arguments.clone()).unwrap_or_default(),
+            value: request.call["value"].as_str().and_then(|hex| u128::from_str_radix(hex.trim_start_matches("0x"), 16).ok()).unwrap_or(0).to_string(),
+            from: state.wallet_address.clone(),
+            data: request.call["data"].as_str().unwrap_or("").to_string(),
+            ..Default::default()
+        }
+    };
+    let workspace = held.lock().unwrap().workspace.clone();
     if replay.get("from").is_none() {
         let from = held.lock().unwrap().wallet_address.clone();
         if !from.is_empty() {
@@ -594,6 +612,22 @@ fn execute(
             let summary = result.as_ref().map(|result| result.simple.clone()).map_err(Clone::clone);
             let tx = result.as_ref().ok().and_then(|result| result.context.request.get("transactionHash").and_then(Value::as_str).map(str::to_string));
             state.finish_request(&token, &summary, tx.clone());
+            let mut record = record;
+            record.tx = tx.clone().unwrap_or_default();
+            match &result {
+                Ok(result) => {
+                    let reverted = result.raw["result"]["status"] == "0x0" || result.raw.get("error").is_some_and(|error| !error.is_null());
+                    record.status = if result.context.request["submissionState"] == "unknown" { "unknown" } else if reverted { "reverted" } else { "ok" }.into();
+                    record.summary = history::summarize(&result.simple);
+                }
+                Err(error) => {
+                    record.status = if error.starts_with(super::contract_service::REVERTED_BEFORE_SENDING) { "reverted" } else { "failed" }.into();
+                    record.summary = history::summarize(error);
+                }
+            }
+            if let Err(error) = history::append(&workspace, &record) {
+                state.push_log(format!("Could not save history: {error}"));
+            }
             if let Ok(result) = &result {
                 let status = if result.context.request["submissionState"] == "unknown" { Some("unknown") }
                     else if result.raw["result"]["status"] == "0x0" || result.raw.get("error").is_some_and(|error| !error.is_null()) { Some("failed") }

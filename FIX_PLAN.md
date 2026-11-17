@@ -97,6 +97,7 @@ Each item ships with tests, a live run through the control API and screenshots, 
 | 3. Dockable debugger panes and console | Done inside the Debugger view: resizable Source / Opcodes / State / Console with splitters, pane toggles, Compact mode, sevm-style console with history. Panes are not yet separate docking-system panes (floating/moving to other zones) |
 
 | G1. Address labels | Done: Anvil accounts, the signer and deployments (numbered when repeated) are named in Explorer lookups and lists, call results, storage values and the debugger stack, storage and call frames. Workspace selectors show as function names in Explorer |
+| G2. Saved History | Done: every Send and Simulate goes to `.chasm/history.jsonl` (500 kept, public addresses only). Explorer > History lists them with All / Sends / Failures, Repeat (refills the tab), Debug (mined tx, or replays a call) and To macro (raw step in the selected macro). API: `history.list`, `history.action` |
 
 ## Goals after round 2 (agreed 2026-11-17)
 

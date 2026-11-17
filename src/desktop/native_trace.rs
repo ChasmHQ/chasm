@@ -449,7 +449,7 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Se
         Target::Transaction(hash) => {
             let tx = call("eth_getTransactionByHash", json!([hash])).await?;
             if tx.is_null() {
-                return Err("This node has no transaction with that hash.".into());
+                return Err("This node has no transaction with that hash. A chain revert or a node restart removes later transactions; send it again to debug it.".into());
             }
             let receipt = call("eth_getTransactionReceipt", json!([hash])).await?;
             let to = tx["to"].as_str().map(str::to_string).or_else(|| receipt["contractAddress"].as_str().map(str::to_string)).unwrap_or_default();
