@@ -49,6 +49,10 @@ export global TraceLogic {
 component ToolButton inherits ActionControl {
     in property <string> text;
     in property <string> key;
+    // What the button does, shown in the summary row while hovered.
+    in property <string> tip;
+    callback hover-tip(string);
+    changed hovered => { root.hover-tip(self.hovered ? root.tip : ""); }
     label: root.text;
     height: Theme.control-height;
     min-width: content.min-width;
@@ -80,16 +84,20 @@ component StateList inherits Rectangle {
 }
 
 export component TraceDebugger inherits Rectangle {
+    private property <string> tip;
     background: Theme.canvas;
     min-width: 0px; min-height: 0px;
     forward-focus: keys;
     keys := FocusScope {
         key-pressed(event) => {
             if !TraceData.loaded { return reject; }
+            // Ctrl reverses any step key.
             if event.text == Key.F5 && !event.modifiers.shift { TraceLogic.navigate("continue"); return accept; }
             if event.text == Key.F5 && event.modifiers.shift { TraceLogic.navigate("back"); return accept; }
-            if event.text == Key.F10 && !event.modifiers.shift { TraceLogic.navigate("next"); return accept; }
-            if event.text == Key.F10 && event.modifiers.shift { TraceLogic.navigate("prev-next"); return accept; }
+            if event.text == Key.F10 && (event.modifiers.control || event.modifiers.shift) { TraceLogic.navigate("prev-next"); return accept; }
+            if event.text == Key.F10 { TraceLogic.navigate("next"); return accept; }
+            if event.text == Key.F11 && event.modifiers.control && event.modifiers.shift { TraceLogic.navigate("finish-back"); return accept; }
+            if event.text == Key.F11 && event.modifiers.control { TraceLogic.navigate("step-back"); return accept; }
             if event.text == Key.F11 && event.modifiers.shift { TraceLogic.navigate("finish"); return accept; }
             if event.text == Key.F11 { TraceLogic.navigate("step"); return accept; }
             if event.text == Key.F7 { TraceLogic.navigate("op"); return accept; }
@@ -149,15 +157,19 @@ export component TraceDebugger inherits Rectangle {
                     content-height: self.visible-height;
                     tools := HorizontalLayout {
                         padding-left: 0.375rem; padding-right: Theme.pad; spacing: 0.125rem;
-                        ToolButton { text: "Back"; key: "Shift+F5"; clicked => { TraceLogic.navigate("back"); } }
-                        ToolButton { text: "Continue"; key: "F5"; clicked => { TraceLogic.navigate("continue"); } }
+                        ToolButton { text: "Back"; key: "Shift+F5"; tip: "Run backwards to the previous breakpoint, or the start."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("back"); } }
+                        ToolButton { text: "Continue"; key: "F5"; tip: "Run to the next breakpoint, or the end."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("continue"); } }
                         Rectangle { width: 1px; background: Theme.line; }
-                        ToolButton { text: "Step into"; key: "F11"; clicked => { TraceLogic.navigate("step"); } }
-                        ToolButton { text: "Step over"; key: "F10"; clicked => { TraceLogic.navigate("next"); } }
-                        ToolButton { text: "Step out"; key: "Shift+F11"; clicked => { TraceLogic.navigate("finish"); } }
+                        ToolButton { text: "Step into"; key: "F11"; tip: "Next source line, entering any call or internal function it makes."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("step"); } }
+                        ToolButton { text: "Step over"; key: "F10"; tip: "Next line in this function. Calls and internal functions on this line run to completion."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("next"); } }
+                        ToolButton { text: "Step out"; key: "Shift+F11"; tip: "Run until this function returns, then stop in its caller."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("finish"); } }
+                        ToolButton { text: "Step instruction"; key: "F7"; tip: "Exactly one EVM instruction forward (sevm stepi)."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("op"); } }
                         Rectangle { width: 1px; background: Theme.line; }
-                        ToolButton { text: "Opcode"; key: "F7"; clicked => { TraceLogic.navigate("op"); } }
-                        ToolButton { text: "Opcode back"; key: "F8"; clicked => { TraceLogic.navigate("op-back"); } }
+                        Text { text: "Reverse"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; }
+                        ToolButton { text: "Into"; key: "Ctrl+F11"; tip: "Reverse step into: the previous source line, wherever it ran."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("step-back"); } }
+                        ToolButton { text: "Over"; key: "Ctrl+F10"; tip: "Reverse step over: the previous line in this function, skipping calls."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("prev-next"); } }
+                        ToolButton { text: "Out"; key: "Ctrl+Shift+F11"; tip: "Reverse step out: back to the step that called this function."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("finish-back"); } }
+                        ToolButton { text: "Instruction"; key: "F8"; tip: "Exactly one EVM instruction back."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("op-back"); } }
                         Rectangle { width: 1px; background: Theme.line; }
                         Text { text: "Find"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; }
                         LineEdit { width: 6.5rem; font-size: 0.75rem; text <=> TraceData.opcode-filter; accepted => { TraceLogic.next-opcode(self.text, true); } }
@@ -175,7 +187,7 @@ export component TraceDebugger inherits Rectangle {
                         padding-left: Theme.pad; padding-right: Theme.pad; padding-top: 0.25rem; padding-bottom: 0.25rem; spacing: 1rem;
                         SelectableText { text: TraceData.title; font-weight: 600; font-size: 0.8125rem; horizontal-stretch: 0; wrap: no-wrap; }
                         SelectableText { text: TraceData.location; color: Theme.accent; font-family: "Cascadia Mono"; font-size: 0.75rem; horizontal-stretch: 0; wrap: no-wrap; }
-                        SelectableText { text: TraceData.summary; color: Theme.muted; font-size: 0.75rem; horizontal-stretch: 1; wrap: no-wrap; overflow: elide; }
+                        SelectableText { text: root.tip != "" ? root.tip : TraceData.summary; color: root.tip != "" ? Theme.text : Theme.muted; font-size: 0.75rem; horizontal-stretch: 1; wrap: no-wrap; overflow: elide; }
                     }
                 }
                 HorizontalLayout {

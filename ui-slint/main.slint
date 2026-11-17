@@ -1285,7 +1285,10 @@ export component MainWindow inherits Window {
                             MenuRow { label: "Toggle sidebar"; shortcut: "Ctrl+\\"; enabled: false; }
                             MenuRow { label: "Open project"; shortcut: "Ctrl+O"; enabled: false; }
                             MenuRow { label: "Recompile"; shortcut: "Ctrl+B"; enabled: false; }
-                            MenuRow { label: "Debugger: continue, step, next, finish"; shortcut: "F5 F11 F10 Shift+F11"; enabled: false; }
+                            MenuRow { label: "Debugger: continue / back"; shortcut: "F5 / Shift+F5"; enabled: false; }
+                            MenuRow { label: "Debugger: step into, over, out"; shortcut: "F11 F10 Shift+F11"; enabled: false; }
+                            MenuRow { label: "Debugger: step instruction / back"; shortcut: "F7 / F8"; enabled: false; }
+                            MenuRow { label: "Debugger: reverse a step (see DEBUGGER.md)"; shortcut: "Ctrl + step key"; enabled: false; }
                             MenuRow { label: "Shortcut list"; shortcut: "Ctrl+/"; enabled: false; }
                             MenuRow { label: "About Chasm desktop"; clicked => { Logic.about(); Logic.close-menu(); } }
                         }

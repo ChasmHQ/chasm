@@ -37,9 +37,11 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                 "continue" => session.resume(true),
                 "back" => session.resume(false),
                 "step" => session.step_line(true),
+                "step-back" => session.step_line(false),
                 "next" => session.next_line(true),
                 "prev-next" => session.next_line(false),
-                "finish" => session.finish(),
+                "finish" => session.finish(true),
+                "finish-back" => session.finish(false),
                 "op" => session.step_opcode(true),
                 "op-back" => session.step_opcode(false),
                 _ => false,
@@ -141,7 +143,7 @@ fn programs(state: &DesktopState) -> Vec<Program> {
             // Foundry hands solc the source with LF line endings, so source map
             // offsets drift by one byte per line on a CRLF checkout.
             let source = std::fs::read_to_string(&path).ok()?.replace("\r\n", "\n");
-            Some(Program { name: name.clone(), runtime: runtime.code.clone(), source_map: runtime.source_map.clone(), source_path: runtime.source_path.clone(), source })
+            Some(Program { name: name.clone(), runtime: runtime.code.clone(), source_map: runtime.source_map.clone(), source_path: runtime.source_path.clone(), source, source_id: runtime.source_id })
         })
         .collect()
 }
@@ -429,7 +431,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(workspace.path().join("A.sol"), "line one\r\nline two\r\n").unwrap();
         let mut state = DesktopState::new(workspace.path().to_path_buf(), 1.0);
-        state.runtimes.insert("A".into(), super::super::session::RuntimeInfo { code: vec![0x00], source_map: "9:8:0".into(), source_path: "A.sol".into() });
+        state.runtimes.insert("A".into(), super::super::session::RuntimeInfo { code: vec![0x00], source_map: "9:8:0".into(), source_path: "A.sol".into(), source_id: Some(0) });
         let programs = programs(&state);
         assert_eq!(programs.len(), 1);
         // Offset 9 is the start of line two in the LF text solc compiled.

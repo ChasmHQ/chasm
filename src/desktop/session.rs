@@ -1956,6 +1956,9 @@ pub struct RuntimeInfo {
     pub code: Vec<u8>,
     pub source_map: String,
     pub source_path: String,
+    /// solc source id of `source_path`; source map entries with another id
+    /// are imports or compiler-generated code.
+    pub source_id: Option<u32>,
 }
 
 impl CompileReport {
@@ -2000,6 +2003,7 @@ pub fn contracts_from_compile_report(raw: &str) -> Result<CompileReport, String>
                     code,
                     source_map: item.pointer("/artifact/deployedBytecode/sourceMap").and_then(Value::as_str).unwrap_or("").to_string(),
                     source_path: item.get("source_path").and_then(Value::as_str).unwrap_or("").to_string(),
+                    source_id: item.pointer("/artifact/id").and_then(Value::as_u64).and_then(|id| u32::try_from(id).ok()),
                 });
             }
         }

@@ -971,7 +971,7 @@ pub fn command_schema() -> Value {
         ("contracts.trace", object(json!({}), vec![])),
         ("contracts.storage.read", object(json!({"slot":{"type":"string","maxLength":80}}), vec!["slot"])),
         ("debugger.trace", object(json!({"hash":{"type":["string","null"],"maxLength":66,"description":"Transaction hash; empty traces the active tab's last transaction or call"}}), vec![])),
-        ("debugger.trace.step", object(json!({"action":{"enum":["continue","back","step","next","prev-next","finish","op","op-back"]}}), vec!["action"])),
+        ("debugger.trace.step", object(json!({"action":{"enum":["continue","back","step","step-back","next","prev-next","finish","finish-back","op","op-back"],"description":"step: next source line, entering calls and internal functions. next: next line in this frame; calls and internal functions run to completion. finish: run until this frame returns. op: one EVM instruction. continue: next breakpoint. Each -back / back / prev- form is the reverse. See DEBUGGER.md."}}), vec!["action"])),
         ("debugger.trace.seek", object(json!({"step":{"type":"integer","minimum":0}}), vec!["step"])),
         ("debugger.trace.breakpoint", object(json!({"line":{"type":"integer","minimum":1}}), vec!["line"])),
         ("explorer.lookup", object(json!({"query":{"type":"string","maxLength":200,"description":"Address, transaction hash, block hash or block number"}}), vec!["query"])),

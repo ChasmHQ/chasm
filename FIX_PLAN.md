@@ -92,7 +92,7 @@ Each item ships with tests, a live run through the control API and screenshots, 
 |---|---|
 | 1. Field focus | Done (`c9fbb89`) |
 | 2. Revert reason on Send | Done: decoded reason, nothing broadcast, Debug this call, ether to wei button. Also fixed CRLF source files mapping steps to the wrong line |
-| 4. Step semantics and docs | Not started |
+| 4. Step semantics and docs | Done: Over/Out handle internal functions, every step has a reverse, Step instruction naming, hover help, `DEBUGGER.md`. Lines of solc's generated helpers are no longer shown as your source |
 | 5. Capture and trace saving | Not started |
 | 3. Dockable debugger panes and console | Not started |
 

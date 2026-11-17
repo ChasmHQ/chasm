@@ -5,6 +5,10 @@
 //! mapped back to a Solidity line with the compiler's deployed source map when
 //! the executing contract's runtime code is one of the workspace artifacts.
 //! Navigation is over the recorded steps, so stepping backwards is free.
+//!
+//! Step over and step out work on frames: an external call (deeper call
+//! depth) and an internal Solidity function call (a JUMP the source map marks
+//! `i`, returning through a JUMP marked `o`) each open one frame.
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -23,6 +27,8 @@ pub struct Step {
     pub storage: Vec<(String, String)>,
     /// Address whose code runs at this step.
     pub address: String,
+    /// Frame nesting: external call depth plus internal function calls.
+    pub nest: u32,
 }
 
 /// One compiled contract the trace can be mapped to.
@@ -33,6 +39,8 @@ pub struct Program {
     pub source_map: String,
     pub source_path: String,
     pub source: String,
+    /// solc source id of `source`; None maps every non-generated entry.
+    pub source_id: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -62,6 +70,8 @@ pub struct Session {
     /// Per program: pc -> instruction index, and instruction index -> source range.
     pc_index: Vec<HashMap<u64, usize>>,
     ranges: Vec<Vec<Option<(usize, usize)>>>,
+    /// Per program: instruction index -> source map jump type (`i`, `o`, `-`).
+    jumps: Vec<Vec<char>>,
 }
 
 impl Session {
@@ -113,7 +123,8 @@ impl Session {
         self.go(target)
     }
 
-    /// Next step on a different source line, at any depth (step into).
+    /// Next step on a different source line, entering any call (step into).
+    /// Backwards it is the reverse: the previous line, wherever it ran.
     pub fn step_line(&mut self, forward: bool) -> bool {
         let start_line = self.line_key(self.cursor);
         let mut index = self.cursor;
@@ -130,9 +141,10 @@ impl Session {
         }
     }
 
-    /// Next different line at the same or a shallower depth (step over).
+    /// Next different line in this frame or an outer one (step over): calls
+    /// and internal functions made by the line run to completion.
     pub fn next_line(&mut self, forward: bool) -> bool {
-        let depth = self.steps.get(self.cursor).map(|step| step.depth).unwrap_or(1);
+        let nest = self.steps.get(self.cursor).map(|step| step.nest).unwrap_or(0);
         let start_line = self.line_key(self.cursor);
         let mut index = self.cursor;
         loop {
@@ -141,7 +153,7 @@ impl Session {
                 return self.go(index);
             }
             index = next;
-            if self.steps[index].depth > depth {
+            if self.steps[index].nest > nest {
                 continue;
             }
             let key = self.line_key(index);
@@ -151,12 +163,18 @@ impl Session {
         }
     }
 
-    /// First step after the current call frame returns.
-    pub fn finish(&mut self) -> bool {
-        let depth = self.steps.get(self.cursor).map(|step| step.depth).unwrap_or(1);
-        match (self.cursor + 1..self.steps.len()).find(|&index| self.steps[index].depth < depth) {
+    /// Step out: the first step after the current frame (external call or
+    /// internal function) returns. Backwards: the step that entered it.
+    pub fn finish(&mut self, forward: bool) -> bool {
+        let nest = self.steps.get(self.cursor).map(|step| step.nest).unwrap_or(0);
+        let found = if forward {
+            (self.cursor + 1..self.steps.len()).find(|&index| self.steps[index].nest < nest)
+        } else {
+            (0..self.cursor).rev().find(|&index| self.steps[index].nest < nest)
+        };
+        match found {
             Some(index) => self.go(index),
-            None => self.go(self.steps.len().saturating_sub(1)),
+            None => self.go(if forward { self.steps.len().saturating_sub(1) } else { 0 }),
         }
     }
 
@@ -258,6 +276,7 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
             memory: log["memory"].as_array().map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string)).collect()).unwrap_or_default(),
             storage: log["storage"].as_object().map(|map| map.iter().map(|(slot, value)| (slot.clone(), value.as_str().unwrap_or("").to_string())).collect()).unwrap_or_default(),
             address: address_at.get(depth as usize).cloned().unwrap_or_default(),
+            nest: 0,
             stack: stack.clone(),
         });
         previous = Some((depth, op, stack));
@@ -273,16 +292,70 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
     };
     for program in &programs {
         session.pc_index.push(pc_to_instruction(&program.runtime));
-        session.ranges.push(parse_source_map(&program.source_map));
+        session.ranges.push(parse_source_map(&program.source_map, program.source_id));
     }
     for (address, code) in code_at {
         if let Some(index) = programs.iter().position(|program| same_code(&program.runtime, code)) {
             session.mapped.insert(address.to_ascii_lowercase(), index);
         }
     }
+    for program in &programs {
+        session.jumps.push(jump_types(&program.source_map));
+    }
     session.programs = programs;
     session.steps = steps;
+    session.assign_nesting();
     Ok(session)
+}
+
+impl Session {
+    fn assign_nesting(&mut self) {
+        let mut nest = 0u32;
+        // Nest at the call site, per open external call.
+        let mut calls: Vec<u32> = Vec::new();
+        let mut previous_depth = self.steps.first().map(|step| step.depth).unwrap_or(1);
+        for index in 0..self.steps.len() {
+            let depth = self.steps[index].depth;
+            if depth > previous_depth {
+                calls.push(nest);
+                nest += 1;
+            }
+            while depth < previous_depth {
+                nest = calls.pop().unwrap_or(0);
+                previous_depth -= 1;
+            }
+            previous_depth = depth;
+            self.steps[index].nest = nest;
+            if self.steps[index].op == "JUMP" {
+                let floor = calls.last().map(|base| base + 1).unwrap_or(0);
+                match self.jump_type(index) {
+                    Some('i') => nest += 1,
+                    Some('o') if nest > floor => nest -= 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn jump_type(&self, index: usize) -> Option<char> {
+        let step = &self.steps[index];
+        let program = *self.mapped.get(&step.address)?;
+        let instruction = *self.pc_index[program].get(&step.pc)?;
+        self.jumps[program].get(instruction).copied()
+    }
+}
+
+/// Jump type per instruction from a compressed source map (field 4).
+pub fn jump_types(map: &str) -> Vec<char> {
+    let mut jump = '-';
+    map.split(';')
+        .map(|entry| {
+            if let Some(kind) = entry.split(':').nth(3).and_then(|text| text.chars().next()) {
+                jump = kind;
+            }
+            jump
+        })
+        .collect()
 }
 
 /// Runtime code equality ignoring the CBOR metadata tail solc appends.
@@ -324,8 +397,9 @@ pub fn pc_to_instruction(code: &[u8]) -> HashMap<u64, usize> {
 }
 
 /// Decode a compressed solc source map into (start, length) per instruction.
-/// Entries for generated code (file -1) have no source range.
-pub fn parse_source_map(map: &str) -> Vec<Option<(usize, usize)>> {
+/// Entries for generated code (file -1), and with `file` set for any file but
+/// that one (imports, solc's generated Yul helpers), have no source range.
+pub fn parse_source_map(map: &str, file_id: Option<u32>) -> Vec<Option<(usize, usize)>> {
     let mut out = Vec::new();
     let (mut start, mut length, mut file) = (0i64, 0i64, 0i64);
     for entry in map.split(';') {
@@ -334,7 +408,8 @@ pub fn parse_source_map(map: &str) -> Vec<Option<(usize, usize)>> {
         start = pick(0, start);
         length = pick(1, length);
         file = pick(2, file);
-        out.push((file >= 0 && start >= 0 && length >= 0).then_some((start as usize, length as usize)));
+        let own = file >= 0 && file_id.is_none_or(|id| file == i64::from(id));
+        out.push((own && start >= 0 && length >= 0).then_some((start as usize, length as usize)));
     }
     out
 }
@@ -360,8 +435,11 @@ mod tests {
     #[test]
     fn source_map_inherits_missing_fields_and_skips_generated_code() {
         // The file index carries over too, so 20:2 stays in generated code until :0.
-        let ranges = parse_source_map("10:5:0:-;;12::0;:3:-1;20:2;30:1:0");
+        let ranges = parse_source_map("10:5:0:-;;12::0;:3:-1;20:2;30:1:0", None);
         assert_eq!(ranges, vec![Some((10, 5)), Some((10, 5)), Some((12, 5)), None, None, Some((30, 1))]);
+        // Entries in another file (here solc's generated helpers, id 1) are not this source.
+        let ranges = parse_source_map("10:5:0;40:9:1;12:2:0", Some(0));
+        assert_eq!(ranges, vec![Some((10, 5)), None, Some((12, 2))]);
     }
 
     #[test]
@@ -384,6 +462,7 @@ mod tests {
             source_map: format!("{line3}:5:0;;{line4}:5:0;;"),
             source_path: "src/A.sol".into(),
             source,
+            source_id: Some(0),
         };
         let logs: Vec<Value> = (0..5).map(|pc| json!({"pc":pc,"op":if pc == 3 {"SSTORE"} else {"JUMPDEST"},"gas":100-pc,"gasCost":1,"depth":1,"stack":["0x01"],"memory":[]})).collect();
         let trace = json!({"failed":false,"gas":21000,"returnValue":"","structLogs":logs});
@@ -411,6 +490,51 @@ mod tests {
         assert!(session.resume(true));
         assert_eq!(session.cursor, 4);
         assert_eq!(session.frames(), vec![(1, "0x00000000000000000000000000000000000000aa".into(), "A".into())]);
+    }
+
+    /// f() calls g() internally on line 3; g's body is line 6.
+    fn internal_call_fixture() -> Session {
+        let source = "contract A {\n  function f() public {\n    g();\n    x = 1;\n  }\n  function g() internal {\n    y = 2;\n  }\n}\n".to_string();
+        let call = source.find("g();").unwrap();
+        let after = source.find("x = 1").unwrap();
+        let body = source.find("y = 2").unwrap();
+        // pc: 0 line 3, 1 JUMP into g, 2-3 line 7 (g body), 4 JUMP out, 5 line 4.
+        let map = format!("{call}:4:0:-;{call}:4:0:i;{body}:5:0:-;{body}:5:0:-;{body}:5:0:o;{after}:5:0:-");
+        let runtime = vec![0x5b, 0x56, 0x5b, 0x5b, 0x56, 0x5b, 0xa2, 0x00, 0x01];
+        let program = Program { name: "A".into(), runtime: runtime.clone(), source_map: map, source_path: "A.sol".into(), source, source_id: Some(0) };
+        let ops = ["JUMPDEST", "JUMP", "JUMPDEST", "JUMPDEST", "JUMP", "JUMPDEST"];
+        let logs: Vec<Value> = ops.iter().enumerate().map(|(pc, op)| json!({"pc":pc,"op":op,"gas":100,"gasCost":1,"depth":1,"stack":[],"memory":[]})).collect();
+        let trace = json!({"failed":false,"gas":21000,"returnValue":"","structLogs":logs});
+        let mut code = HashMap::new();
+        code.insert("0x00000000000000000000000000000000000000aa".to_string(), runtime);
+        from_trace("t".into(), "0x00000000000000000000000000000000000000aa", &trace, vec![program], &code).unwrap()
+    }
+
+    #[test]
+    fn step_over_skips_internal_functions_and_step_out_leaves_them() {
+        let mut session = internal_call_fixture();
+        assert_eq!(session.steps.iter().map(|step| step.nest).collect::<Vec<_>>(), vec![0, 0, 1, 1, 1, 0]);
+        // Over from line 3 lands on line 4, not inside g().
+        assert!(session.next_line(true));
+        assert_eq!(session.location(session.cursor).unwrap().line, 4);
+        // Back over returns to line 3 without stopping in g().
+        assert!(session.next_line(false));
+        assert_eq!(session.location(session.cursor).unwrap().line, 3);
+        // Into enters g().
+        session.go(0);
+        assert!(session.step_line(true));
+        assert_eq!(session.location(session.cursor).unwrap().line, 7);
+        // Out leaves g() to the caller's next step; back out returns to the call.
+        assert!(session.finish(true));
+        assert_eq!(session.cursor, 5);
+        session.go(3);
+        assert!(session.finish(false));
+        assert_eq!(session.cursor, 1);
+    }
+
+    #[test]
+    fn jump_types_carry_over_like_other_fields() {
+        assert_eq!(jump_types("1:2:0:i;;3:4:0:o;5:6;7:8:0:-"), vec!['i', 'i', 'o', 'o', '-']);
     }
 
     #[test]
