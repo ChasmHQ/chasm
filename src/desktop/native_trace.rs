@@ -598,6 +598,7 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     ));
     data.set_ops_current((session.cursor - start) as i32);
 
+    let labels = super::address_book::labels(state);
     // Machine state, with values changed by the previous step highlighted.
     let previous = session.cursor.checked_sub(1).and_then(|index| session.steps.get(index));
     let stack_len = step.stack.len();
@@ -610,7 +611,11 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
                 // Highlight only words this step pushed or rewrote.
                 let position = stack_len - 1 - depth;
                 let changed = previous.is_some_and(|prev| prev.stack.get(position) != Some(word));
-                TraceValue { label: if depth == 0 { "top".into() } else { format!("[{depth}]").into() }, value: trace_debug::describe_word(word).into(), changed }
+                let value = match super::address_book::word_label(word, &labels) {
+                    Some(label) => format!("{}  ({label})", trace_debug::describe_word(word)),
+                    None => trace_debug::describe_word(word),
+                };
+                TraceValue { label: if depth == 0 { "top".into() } else { format!("[{depth}]").into() }, value: value.into(), changed }
             })
             .collect(),
     ));
@@ -630,7 +635,13 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
             .iter()
             .map(|(slot, value)| TraceValue {
                 label: short_word(slot).into(),
-                value: format!("slot 0x{}\n{}", slot.trim_start_matches("0x"), trace_debug::describe_word(&compact_word(value))).into(),
+                value: format!(
+                    "slot 0x{}\n{}{}",
+                    slot.trim_start_matches("0x"),
+                    trace_debug::describe_word(&compact_word(value)),
+                    super::address_book::word_label(value, &labels).map(|label| format!("  ({label})")).unwrap_or_default()
+                )
+                .into(),
                 changed: previous.is_some_and(|prev| !prev.storage.iter().any(|(old_slot, old)| old_slot == slot && old == value)),
             })
             .collect(),
@@ -639,7 +650,7 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
         session
             .frames()
             .into_iter()
-            .map(|(depth, address, name)| TraceValue { label: format!("depth {depth}").into(), value: format!("{name}  {address}").into(), changed: false })
+            .map(|(depth, address, name)| TraceValue { label: format!("depth {depth}").into(), value: match labels.get(&address) { Some(label) if label != &name => format!("{name}  {address} ({label})"), _ => format!("{name}  {address}") }.into(), changed: false })
             .collect(),
     ));
     data.set_step_info(super::model(vec![

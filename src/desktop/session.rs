@@ -125,6 +125,10 @@ pub struct ChainRow {
     pub title: String,
     pub detail: String,
     pub query: String,
+    /// Full recipient of a transaction row, for its address label.
+    pub to: Option<String>,
+    /// Function selector of a transaction row (0x + 8 hex), for its name.
+    pub selector: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2769,6 +2773,8 @@ pub async fn latest_chain(
                     title: format!("#{number}"),
                     detail: format!("{} tx  {}", txs.len(), short_hex(hash)),
                     query: number.to_string(),
+                    to: None,
+                    selector: None,
                 });
             }
             for tx in txs.iter().rev() {
@@ -2782,6 +2788,8 @@ pub async fn latest_chain(
                     title: short_hex(tx_hash),
                     detail: format!("#{number}  {} ETH  to {to}{}", wei_to_ether(tx.get("value").unwrap_or(&Value::Null)), if selector.is_empty() { String::new() } else { format!("  {selector}") }),
                     query: tx_hash.to_string(),
+                    to: tx.get("to").and_then(Value::as_str).map(str::to_string),
+                    selector: (!selector.is_empty()).then(|| selector.clone()),
                 });
             }
         }

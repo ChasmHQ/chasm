@@ -96,6 +96,8 @@ Each item ships with tests, a live run through the control API and screenshots, 
 | 5. Capture and trace saving | Done for the step debugger: `.chasm/traces/`, Saved traces list (open, show in folder, delete), path in the status line. Offline engine examples are labelled as built-in; saving its sessions as captures needs a replay baseline and stays open |
 | 3. Dockable debugger panes and console | Done inside the Debugger view: resizable Source / Opcodes / State / Console with splitters, pane toggles, Compact mode, sevm-style console with history. Panes are not yet separate docking-system panes (floating/moving to other zones) |
 
+| G1. Address labels | Done: Anvil accounts, the signer and deployments (numbered when repeated) are named in Explorer lookups and lists, call results, storage values and the debugger stack, storage and call frames. Workspace selectors show as function names in Explorer |
+
 ## Goals after round 2 (agreed 2026-11-17)
 
 In order of impact. Start after the five items above are done.

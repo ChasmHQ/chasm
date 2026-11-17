@@ -24,6 +24,7 @@ mod deployment;
 mod request_form;
 mod storage_layout;
 mod trace_debug;
+mod address_book;
 mod native_trace;
 mod trace_console;
 mod macro_form;
@@ -1501,7 +1502,16 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_call_output(state.call_output.clone().into());
     data.set_storage_output(state.storage_output.clone().into());
     data.set_converter_output(state.converter_output.clone().into());
-    data.set_explorer_result(state.explorer_result.clone().into());
+    let labels = address_book::labels(state);
+    let selectors = address_book::selectors(state);
+    let mut explorer = address_book::annotate(&state.explorer_result, &labels);
+    // Name the selector line of a transaction lookup.
+    if let Some(line) = explorer.lines().find(|line| line.starts_with("Selector  0x")).map(str::to_string) {
+        if let Some(name) = selectors.get(line.trim_start_matches("Selector  ").trim()) {
+            explorer = explorer.replacen(&line, &format!("{line}  {name}"), 1);
+        }
+    }
+    data.set_explorer_result(explorer.into());
     data.set_recent_blocks(model(state.recent_blocks.iter().map(|item| ChainItem {
         title: item.title.clone().into(),
         detail: item.detail.clone().into(),
@@ -1509,7 +1519,7 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     }).collect()));
     data.set_recent_transactions(model(state.recent_transactions.iter().map(|item| ChainItem {
         title: item.title.clone().into(),
-        detail: item.detail.clone().into(),
+        detail: address_book::transaction_detail(item, &labels, &selectors).into(),
         query: item.query.clone().into(),
     }).collect()));
     data.set_document_body(state.document_body().into());

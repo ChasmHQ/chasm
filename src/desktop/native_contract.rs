@@ -934,7 +934,7 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
                     label: variable.label.clone().into(),
                     kind: variable.type_label.clone().into(),
                     slot: if variable.offset > 0 { format!("{}+{}", variable.slot, variable.offset) } else { variable.slot.clone() }.into(),
-                    value: variable.value.clone().into(),
+                    value: super::address_book::annotate(&variable.value, &super::address_book::labels(state)).into(),
                     note: variable.note.clone().into(),
                     mapping: variable.type_label.starts_with("mapping("),
                 })
@@ -980,14 +980,18 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
         .into(),
         ..Default::default()
     };
+    let labels = super::address_book::labels(state);
     if let Some(result) = &view.result {
-        data.simple_output = format!(
-            "{}\n{}\nFunction: {}\nPinned block: {}\n\n{}",
-            result.context.contract,
-            result.context.address,
-            result.context.signature,
-            result.context.source["block"]["number"],
-            result.simple
+        data.simple_output = super::address_book::annotate(
+            &format!(
+                "{}\n{}\nFunction: {}\nPinned block: {}\n\n{}",
+                result.context.contract,
+                result.context.address,
+                result.context.signature,
+                result.context.source["block"]["number"],
+                result.simple
+            ),
+            &labels,
         )
         .into();
         data.raw_output = serde_json::to_string_pretty(&serde_json::json!({"context":{"contract":result.context.contract,"address":result.context.address,"function":result.context.signature,"workspaceEpoch":result.context.workspace_epoch,"networkEpoch":result.context.network_epoch,"source":result.context.source},"request":result.context.request,"response":result.raw})).unwrap_or_default().into();
@@ -998,7 +1002,7 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
             }
             TraceState::Loading => "Tracing the captured context…".into(),
             TraceState::Ready(text) | TraceState::Unavailable(text) | TraceState::Failed(text) => {
-                text.clone().into()
+                super::address_book::annotate(text, &labels).into()
             }
         };
     } else {
