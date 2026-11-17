@@ -80,6 +80,32 @@ trace ends there.
 - **Find** jumps to the next or previous step with an opcode, for example
   `SSTORE`, `CALL`, `LOG2` or `REVERT`.
 
+## Layout
+
+- Drag the bars between Source, Opcodes and State, and above the Console, to resize them. With a bar focused, the arrow keys move it in 20 px steps.
+- **Panes** in the second toolbar row hides or shows Opcodes, State and Console.
+- **Compact** uses smaller rows and fonts for small windows.
+
+## Console
+
+The console at the bottom takes sevm-style commands over the recorded steps. Up and Down recall earlier commands.
+
+| Command | Reverse | What it does |
+|---|---|---|
+| `s`, `step` | `rs` | Step into |
+| `n`, `next` | `rn` | Step over |
+| `si`, `stepi` | `rsi` | Step instruction |
+| `fin`, `finish` | `rfin` | Step out |
+| `c`, `continue` | `rc` | Run to a breakpoint |
+| `b <line>` / `d <line>` / `d` | | Set, delete, or delete all breakpoints |
+| `info b` | | List breakpoints |
+| `goto <step>` | | Jump to a step number (1-based) |
+| `find <OP>` | `rfind <OP>` | Next step running an opcode |
+| `p stack[i]`, `p $i`, `p stack` | | Stack words, 0 is the top |
+| `x <offset> [bytes]` | | Memory bytes, 32 by default |
+| `sload <slot>` | | Storage value of a slot touched so far |
+| `where`, `help` | | Current position, command list |
+
 ## State panes
 
 - **Stack:** top first. Changed entries are highlighted.
@@ -102,6 +128,8 @@ AI clients with the `debug` scope use the same commands:
   - `op`, `op-back`
 - `debugger.trace.seek` with `{"step": n}`.
 - `debugger.trace.breakpoint` with `{"line": n}`.
+- `debugger.trace.console` with `{"line": "n"}`; output is in `debugger.state` `trace.console`.
+- `debugger.trace.view` with any of `opcodes`, `state`, `console`, `compact` (booleans) and `opcodes_width`, `state_width`, `console_height` (px).
 - `debugger.trace.open_saved` with `{"name": "<file>.json"}`, a name from `debugger.state` `trace.saved`.
 - The `debugger.state` query returns the trace position under `debugger.trace`.
 

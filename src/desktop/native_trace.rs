@@ -67,6 +67,54 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     });
     let weak = ui.as_weak();
     let held = state.clone();
+    ui.global::<TraceLogic>().on_console_run(move |line| {
+        let line = line.trim().to_string();
+        if line.is_empty() || line.len() > 200 {
+            return;
+        }
+        {
+            let mut state = held.lock().unwrap();
+            let output = match state.trace.as_mut() {
+                Some(session) => super::trace_console::run(session, &line),
+                None => "No trace loaded. Debug a transaction or call first.".into(),
+            };
+            let entry = format!("(trace) {line}\n{output}\n");
+            state.trace_console.push_str(&entry);
+            // Keep the transcript bounded; drop whole lines from the start.
+            if state.trace_console.len() > 64 * 1024 {
+                let cut = state.trace_console.len() - 48 * 1024;
+                let cut = state.trace_console[cut..].find('\n').map(|at| cut + at + 1).unwrap_or(cut);
+                state.trace_console.drain(..cut);
+            }
+            if state.trace_history.last() != Some(&line) {
+                state.trace_history.push(line);
+                if state.trace_history.len() > 100 {
+                    state.trace_history.remove(0);
+                }
+            }
+            state.trace_history_at = state.trace_history.len();
+        }
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<TraceData>().set_console_input("".into());
+        }
+        super::paint(&weak, &held);
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
+    ui.global::<TraceLogic>().on_console_history(move |direction| {
+        let text = {
+            let mut state = held.lock().unwrap();
+            let len = state.trace_history.len();
+            let at = if direction < 0 { state.trace_history_at.saturating_sub(1) } else { (state.trace_history_at + 1).min(len) };
+            state.trace_history_at = at;
+            state.trace_history.get(at).cloned().unwrap_or_default()
+        };
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<TraceData>().set_console_input(text.into());
+        }
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
     ui.global::<TraceLogic>().on_open_saved(move |name| {
         {
             let mut state = held.lock().unwrap();
@@ -464,6 +512,10 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     let data = ui.global::<TraceData>();
     data.set_busy(state.trace_busy);
     data.set_status(state.trace_status.clone().into());
+    if data.get_console_text().as_str() != state.trace_console {
+        data.set_console_text(state.trace_console.clone().into());
+        data.set_console_lines(super::model(state.trace_console.lines().map(Into::into).collect()));
+    }
     data.set_targets(super::model(recent_targets(state)));
     data.set_saved(super::model(
         saved_traces(&state.workspace)

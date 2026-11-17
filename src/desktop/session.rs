@@ -177,6 +177,10 @@ pub struct DesktopState {
     pub trace_busy: bool,
     pub trace_status: String,
     pub trace_input: String,
+    /// Trace console transcript and command history (newest last).
+    pub trace_console: String,
+    pub trace_history: Vec<String>,
+    pub trace_history_at: usize,
     /// Lowercased addresses whose function list is folded in the sidebar.
     pub collapsed_instances: HashSet<String>,
     /// Lowercased addresses the user opened explicitly; others start folded
@@ -328,6 +332,9 @@ impl DesktopState {
             trace_busy: false,
             trace_status: String::new(),
             trace_input: String::new(),
+            trace_console: String::new(),
+            trace_history: Vec::new(),
+            trace_history_at: 0,
             collapsed_instances: HashSet::new(),
             expanded_instances: HashSet::new(),
             deployment_epochs: HashMap::new(),

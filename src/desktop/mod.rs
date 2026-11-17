@@ -25,6 +25,7 @@ mod request_form;
 mod storage_layout;
 mod trace_debug;
 mod native_trace;
+mod trace_console;
 mod macro_form;
 pub(crate) mod debug_session;
 mod debug_transport;

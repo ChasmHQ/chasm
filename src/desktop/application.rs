@@ -79,6 +79,10 @@ pub enum Command {
     TraceBreakpoint { line: u32 },
     #[serde(rename = "debugger.trace.open_saved")]
     TraceOpenSaved { name: String },
+    #[serde(rename = "debugger.trace.console")]
+    TraceConsole { line: String },
+    #[serde(rename = "debugger.trace.view")]
+    TraceView { opcodes: Option<bool>, state: Option<bool>, console: Option<bool>, compact: Option<bool>, opcodes_width: Option<f32>, state_width: Option<f32>, console_height: Option<f32> },
     #[serde(rename = "explorer.lookup")]
     Lookup { query: String },
     #[serde(rename = "contracts.storage.variables")]
@@ -234,7 +238,7 @@ impl Command {
             | Self::RunMacro { .. } => "act",
             Self::DebugLaunch { .. } | Self::DebugStart {} | Self::DebugNavigate { .. }
             | Self::DebugEvaluate { .. } | Self::DebugConsole { .. } | Self::DebugCancel {}
-            | Self::TraceLoad { .. } | Self::TraceStep { .. } | Self::TraceSeek { .. } | Self::TraceBreakpoint { .. } | Self::TraceOpenSaved { .. } => "debug",
+            | Self::TraceLoad { .. } | Self::TraceStep { .. } | Self::TraceSeek { .. } | Self::TraceBreakpoint { .. } | Self::TraceOpenSaved { .. } | Self::TraceConsole { .. } => "debug",
             _ => "ui",
         }
     }
@@ -278,6 +282,8 @@ impl Command {
             Self::TraceSeek { .. } => "debugger.trace.seek",
             Self::TraceBreakpoint { .. } => "debugger.trace.breakpoint",
             Self::TraceOpenSaved { .. } => "debugger.trace.open_saved",
+            Self::TraceConsole { .. } => "debugger.trace.console",
+            Self::TraceView { .. } => "debugger.trace.view",
             Self::ReadVariables {} => "contracts.storage.variables",
             Self::ReadMapping { .. } => "contracts.storage.mapping",
             Self::OpenDeploy {} => "contracts.deploy.open",
@@ -977,6 +983,8 @@ pub fn command_schema() -> Value {
         ("debugger.trace.step", object(json!({"action":{"enum":["continue","back","step","step-back","next","prev-next","finish","finish-back","op","op-back"],"description":"step: next source line, entering calls and internal functions. next: next line in this frame; calls and internal functions run to completion. finish: run until this frame returns. op: one EVM instruction. continue: next breakpoint. Each -back / back / prev- form is the reverse. See DEBUGGER.md."}}), vec!["action"])),
         ("debugger.trace.seek", object(json!({"step":{"type":"integer","minimum":0}}), vec!["step"])),
         ("debugger.trace.breakpoint", object(json!({"line":{"type":"integer","minimum":1}}), vec!["line"])),
+        ("debugger.trace.view", object(json!({"opcodes":{"type":"boolean"},"state":{"type":"boolean"},"console":{"type":"boolean"},"compact":{"type":"boolean","description":"Smaller rows and fonts for small windows"},"opcodes_width":{"type":"number","minimum":220,"maximum":700},"state_width":{"type":"number","minimum":200,"maximum":900},"console_height":{"type":"number","minimum":70,"maximum":600}}), vec![])),
+        ("debugger.trace.console", object(json!({"line":{"type":"string","maxLength":200,"description":"Trace console command, e.g. n, si, b 28, p stack[0], x 0x40 64, sload 0, find SSTORE, goto 120, help. Output is in debugger.state trace.console."}}), vec!["line"])),
         ("debugger.trace.open_saved", object(json!({"name":{"type":"string","maxLength":128,"description":"File name from debugger.state trace.saved, in .chasm/traces"}}), vec!["name"])),
         ("explorer.lookup", object(json!({"query":{"type":"string","maxLength":200,"description":"Address, transaction hash, block hash or block number"}}), vec!["query"])),
         ("contracts.storage.variables", object(json!({}), vec![])),

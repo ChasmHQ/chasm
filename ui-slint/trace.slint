@@ -37,6 +37,19 @@ export global TraceData {
     in-out property <string> input;
     in-out property <string> opcode-filter: "SSTORE";
     in-out property <int> state-tab: 0;
+    // Pane sizes in logical px and the compact density switch. Kept here so
+    // they survive reloading the session.
+    in-out property <float> opcodes-width: 260;
+    in-out property <float> state-width: 380;
+    in-out property <float> console-height: 150;
+    in-out property <bool> show-opcodes: true;
+    in-out property <bool> show-state: true;
+    in-out property <bool> show-console: true;
+    in-out property <bool> compact;
+    // Console transcript and prompt.
+    in property <string> console-text;
+    in property <[string]> console-lines;
+    in-out property <string> console-input;
 }
 
 export global TraceLogic {
@@ -50,6 +63,54 @@ export global TraceLogic {
     callback open-saved(string);
     callback reveal-saved(string);
     callback delete-saved(string);
+    callback console-run(string);
+    callback console-history(int);
+}
+
+// Drag handle between two trace panes. `extent` is the size of the pane on
+// the `grows` side (left or above); dragging updates it through `resized`.
+component PaneSplitter inherits Rectangle {
+    in property <bool> horizontal;
+    in property <float> extent;
+    in property <float> minimum: 120;
+    in property <float> maximum: 900;
+    // +1 when dragging right/down grows the pane, -1 when it shrinks it.
+    in property <int> sign: 1;
+    callback resized(float);
+    private property <float> initial;
+    private property <length> origin;
+    min-width: root.horizontal ? 0px : 5px;
+    max-width: root.horizontal ? 100000px : 5px;
+    min-height: root.horizontal ? 5px : 0px;
+    max-height: root.horizontal ? 5px : 100000px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    background: keyboard.has-focus ? Theme.accent : touch.has-hover || touch.pressed ? Theme.edge : Theme.line;
+    accessible-role: slider;
+    accessible-label: "Resize debugger pane";
+    accessible-value: root.extent;
+    forward-focus: keyboard;
+    touch := TouchArea {
+        mouse-cursor: root.horizontal ? ns-resize : ew-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.initial = root.extent;
+                root.origin = root.horizontal ? self.absolute-position.y + self.mouse-y : self.absolute-position.x + self.mouse-x;
+            }
+        }
+        moved => {
+            if self.pressed {
+                let delta = (root.horizontal ? self.absolute-position.y + self.mouse-y : self.absolute-position.x + self.mouse-x) - root.origin;
+                root.resized(max(root.minimum, min(root.maximum, root.initial + root.sign * delta / (1px * Theme.zoom))));
+            }
+        }
+    }
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow || event.text == Key.UpArrow { root.resized(max(root.minimum, min(root.maximum, root.extent - 20 * root.sign))); return accept; }
+            if event.text == Key.RightArrow || event.text == Key.DownArrow { root.resized(max(root.minimum, min(root.maximum, root.extent + 20 * root.sign))); return accept; }
+            return reject;
+        }
+    }
 }
 
 component ToolButton inherits ActionControl {
@@ -91,6 +152,8 @@ component StateList inherits Rectangle {
 
 export component TraceDebugger inherits Rectangle {
     private property <string> tip;
+    private property <length> step-row: TraceData.compact ? 1.125rem : 1.375rem;
+    private property <length> mono: TraceData.compact ? 0.6875rem : 0.75rem;
     background: Theme.canvas;
     min-width: 0px; min-height: 0px;
     forward-focus: keys;
@@ -193,29 +256,37 @@ export component TraceDebugger inherits Rectangle {
                         ToolButton { text: "Over"; key: "Ctrl+F10"; tip: "Reverse step over: the previous line in this function, skipping calls."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("prev-next"); } }
                         ToolButton { text: "Out"; key: "Ctrl+Shift+F11"; tip: "Reverse step out: back to the step that called this function."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("finish-back"); } }
                         ToolButton { text: "Instruction"; key: "F8"; tip: "Exactly one EVM instruction back."; hover-tip(text) => { root.tip = text; } clicked => { TraceLogic.navigate("op-back"); } }
-                        Rectangle { width: 1px; background: Theme.line; }
-                        Text { text: "Find"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; }
-                        LineEdit { width: 6.5rem; font-size: 0.75rem; text <=> TraceData.opcode-filter; accepted => { TraceLogic.next-opcode(self.text, true); } }
-                        ToolButton { text: "Prev"; clicked => { TraceLogic.next-opcode(TraceData.opcode-filter, false); } }
-                        ToolButton { text: "Next"; clicked => { TraceLogic.next-opcode(TraceData.opcode-filter, true); } }
-                        Rectangle { horizontal-stretch: 1; }
-                        Text { text: "Step \{TraceData.cursor + 1} of \{TraceData.total}"; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
                     }
                     }
                 }
                 Rectangle {
-                    height: summary-row.preferred-height;
+                    height: max(summary-row.preferred-height, Theme.control-height + 0.25rem);
                     background: Theme.panel;
                     summary-row := HorizontalLayout {
-                        padding-left: Theme.pad; padding-right: Theme.pad; padding-top: 0.25rem; padding-bottom: 0.25rem; spacing: 1rem;
-                        SelectableText { text: TraceData.title; font-weight: 600; font-size: 0.8125rem; horizontal-stretch: 0; wrap: no-wrap; }
-                        SelectableText { text: TraceData.location; color: Theme.accent; font-family: "Cascadia Mono"; font-size: 0.75rem; horizontal-stretch: 0; wrap: no-wrap; }
-                        SelectableText { text: root.tip != "" ? root.tip : TraceData.summary; color: root.tip != "" ? Theme.text : Theme.muted; font-size: 0.75rem; horizontal-stretch: 1; wrap: no-wrap; overflow: elide; }
+                        padding-left: Theme.pad; padding-right: 0.375rem; spacing: 1rem;
+                        SelectableText { text: TraceData.title; font-weight: 600; font-size: 0.8125rem; horizontal-stretch: 0; wrap: no-wrap; vertical-alignment: center; }
+                        SelectableText { text: TraceData.location; color: Theme.accent; font-family: "Cascadia Mono"; font-size: 0.75rem; horizontal-stretch: 0; wrap: no-wrap; vertical-alignment: center; }
+                        SelectableText { text: root.tip != "" ? root.tip : TraceData.summary; color: root.tip != "" ? Theme.text : Theme.muted; font-size: 0.75rem; horizontal-stretch: 1; min-width: 0px; wrap: no-wrap; overflow: elide; vertical-alignment: center; }
+                        HorizontalLayout {
+                            horizontal-stretch: 0; spacing: 0.125rem;
+                            Rectangle { width: 1px; background: Theme.line; }
+                            Text { text: "Find"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; }
+                            LineEdit { width: 6.5rem; font-size: 0.75rem; text <=> TraceData.opcode-filter; accepted => { TraceLogic.next-opcode(self.text, true); } }
+                            ToolButton { text: "Prev"; clicked => { TraceLogic.next-opcode(TraceData.opcode-filter, false); } }
+                            ToolButton { text: "Next"; clicked => { TraceLogic.next-opcode(TraceData.opcode-filter, true); } }
+                            Rectangle { width: 1px; background: Theme.line; }
+                            Text { text: "Panes"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; }
+                            DockTab { label: "Opcodes"; selected: TraceData.show-opcodes; clicked => { TraceData.show-opcodes = !TraceData.show-opcodes; } }
+                            DockTab { label: "State"; selected: TraceData.show-state; clicked => { TraceData.show-state = !TraceData.show-state; } }
+                            DockTab { label: "Console"; selected: TraceData.show-console; clicked => { TraceData.show-console = !TraceData.show-console; } }
+                            DockTab { label: "Compact"; selected: TraceData.compact; clicked => { TraceData.compact = !TraceData.compact; } }
+                            Text { text: "Step \{TraceData.cursor + 1} of \{TraceData.total}"; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
+                        }
                     }
                 }
                 HorizontalLayout {
                     vertical-stretch: 1;
-                    spacing: 1px;
+                    spacing: 0px;
                     // Source listing.
                     Rectangle {
                         horizontal-stretch: 5; min-width: 0px;
@@ -226,14 +297,14 @@ export component TraceDebugger inherits Rectangle {
                                 property <int> current: TraceData.source-current;
                                 changed current => {
                                     if self.current >= 0 {
-                                        let top = self.current * 1.375rem;
+                                        let top = self.current * root.step-row;
                                         if top + self.content-y < 2rem || top + self.content-y > self.visible-height - 3rem {
                                             self.content-y = min(0px, max(self.visible-height - self.content-height, 6rem - top));
                                         }
                                     }
                                 }
                                 for line in TraceData.source: Rectangle {
-                                    height: 1.375rem;
+                                    height: root.step-row;
                                     background: line.current ? #d7ba7d2e : transparent;
                                     HorizontalLayout {
                                         TouchArea {
@@ -248,20 +319,21 @@ export component TraceDebugger inherits Rectangle {
                                                     background: line.breakpoint ? Theme.danger : transparent;
                                                     border-width: line.breakpoint ? 0px : 0px;
                                                 }
-                                                Text { text: line.number; color: line.current ? Theme.accent : Theme.faint; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
+                                                Text { text: line.number; color: line.current ? Theme.accent : Theme.faint; font-family: "Cascadia Mono"; font-size: root.mono; vertical-alignment: center; }
                                             }
                                         }
-                                        Text { text: line.current ? "›" : " "; width: 0.75rem; color: Theme.accent; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
-                                        Text { text: line.text; color: line.hits > 0 ? Theme.text : Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: line.current ? "›" : " "; width: 0.75rem; color: Theme.accent; font-family: "Cascadia Mono"; font-size: root.mono; vertical-alignment: center; }
+                                        Text { text: line.text; color: line.hits > 0 ? Theme.text : Theme.muted; font-family: "Cascadia Mono"; font-size: root.mono; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                                         if line.hits > 0: Text { text: "\{line.hits}×"; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.625rem; vertical-alignment: center; width: 2.5rem; horizontal-alignment: right; }
                                     }
                                 }
                             }
                         }
                     }
+                    if TraceData.show-opcodes: PaneSplitter { extent: TraceData.opcodes-width; sign: -1; minimum: 220; maximum: 700; resized(value) => { TraceData.opcodes-width = value; } }
                     // Opcode listing around the cursor.
-                    Rectangle {
-                        horizontal-stretch: 0; width: 16rem;
+                    if TraceData.show-opcodes: Rectangle {
+                        horizontal-stretch: 0; width: TraceData.opcodes-width * Theme.unit;
                         background: Theme.inset;
                         VerticalLayout {
                             SideHeader { title: "Executed opcodes"; trailing: "pc  op  gas"; }
@@ -269,35 +341,36 @@ export component TraceDebugger inherits Rectangle {
                                 property <int> current: TraceData.ops-current;
                                 changed current => {
                                     if self.current >= 0 {
-                                        let top = self.current * 1.375rem;
+                                        let top = self.current * root.step-row;
                                         if top + self.content-y < 2rem || top + self.content-y > self.visible-height - 3rem {
                                             self.content-y = min(0px, max(self.visible-height - self.content-height, self.visible-height / 2 - top));
                                         }
                                     }
                                 }
                                 init => {
-                                    self.content-y = min(0px, max(self.visible-height - self.content-height, self.visible-height / 2 - self.current * 1.375rem));
+                                    self.content-y = min(0px, max(self.visible-height - self.content-height, self.visible-height / 2 - self.current * root.step-row));
                                 }
                                 for op in TraceData.ops: ActionControl {
                                     label: "\{op.pc} \{op.op}";
-                                    height: 1.375rem;
+                                    height: root.step-row;
                                     selected: op.current;
                                     transparent-background: !op.current && !self.hovered;
                                     clicked => { TraceLogic.seek(op.index); }
                                     HorizontalLayout {
                                         padding-left: 0.5rem; spacing: 0.5rem;
                                         Text { text: op.depth > 1 ? "\{op.depth}" : " "; width: 1rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: center; }
-                                        Text { text: op.pc; width: 3.5rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
-                                        Text { text: op.op; color: op.current ? Theme.accent : op.op == "SSTORE" || op.op == "SLOAD" ? Theme.warn : op.op == "CALL" || op.op == "DELEGATECALL" || op.op == "STATICCALL" || op.op == "REVERT" ? Theme.danger : Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 1; }
+                                        Text { text: op.pc; width: 3.5rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: root.mono; vertical-alignment: center; }
+                                        Text { text: op.op; color: op.current ? Theme.accent : op.op == "SSTORE" || op.op == "SLOAD" ? Theme.warn : op.op == "CALL" || op.op == "DELEGATECALL" || op.op == "STATICCALL" || op.op == "REVERT" ? Theme.danger : Theme.text; font-family: "Cascadia Mono"; font-size: root.mono; vertical-alignment: center; horizontal-stretch: 1; }
                                         Text { text: op.gas; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: center; }
                                     }
                                 }
                             }
                         }
                     }
+                    if TraceData.show-state: PaneSplitter { extent: TraceData.state-width; sign: -1; minimum: 200; maximum: 900; resized(value) => { TraceData.state-width = value; } }
                     // Machine state.
-                    Rectangle {
-                        horizontal-stretch: 3; min-width: 0px;
+                    if TraceData.show-state: Rectangle {
+                        horizontal-stretch: 0; width: TraceData.state-width * Theme.unit;
                         background: Theme.panel;
                         VerticalLayout {
                             HorizontalLayout {
@@ -312,7 +385,50 @@ export component TraceDebugger inherits Rectangle {
                             if TraceData.state-tab == 2: StateList { items: TraceData.storage; empty: "No storage touched yet in this frame."; vertical-stretch: 1; }
                             if TraceData.state-tab == 3: StateList { items: TraceData.frames; empty: "No call frames."; vertical-stretch: 1; }
                             SideHeader { title: "This step"; }
-                            StateList { items: TraceData.step-info; empty: ""; height: 8.5rem; }
+                            StateList { items: TraceData.step-info; empty: ""; height: TraceData.compact ? 7rem : 8.5rem; }
+                        }
+                    }
+                }
+                if TraceData.show-console: PaneSplitter { horizontal: true; extent: TraceData.console-height; sign: -1; minimum: 70; maximum: 600; resized(value) => { TraceData.console-height = value; } }
+                // sevm-style command line over the recorded steps.
+                if TraceData.show-console: Rectangle {
+                    height: TraceData.console-height * Theme.unit;
+                    background: Theme.inset;
+                    VerticalLayout {
+                        console-log := ListView {
+                            vertical-stretch: 1; min-height: 0px;
+                            // Follow new output to the last line.
+                            property <int> count: TraceData.console-lines.length;
+                            changed count => { self.content-y = min(0px, self.visible-height - self.content-height); }
+                            changed content-height => { self.content-y = min(0px, self.visible-height - self.content-height); }
+                            for item in TraceData.console-lines: SelectableText {
+                                height: root.step-row;
+                                x: 0.5rem;
+                                text: item;
+                                wrap: no-wrap;
+                                // Echoed commands are dimmed so the output stands out.
+                                color: item.starts-with("(trace) ") ? Theme.muted : Theme.text;
+                                font-family: "Cascadia Mono";
+                                font-size: root.mono;
+                                vertical-alignment: center;
+                            }
+                        }
+                        FocusScope {
+                            height: Theme.control-height;
+                            forward-focus: console-prompt;
+                            capture-key-pressed(event) => {
+                                if event.text == Key.UpArrow { TraceLogic.console-history(-1); return accept; }
+                                if event.text == Key.DownArrow { TraceLogic.console-history(1); return accept; }
+                                return reject;
+                            }
+                            console-prompt := LineEdit {
+                                width: parent.width; height: parent.height;
+                                font-family: "Cascadia Mono"; font-size: 0.8125rem;
+                                placeholder-text: "(trace) s, n, si, fin, c, rc, b 28, p stack[0], x 0x40, sload 0, find SSTORE, help";
+                                accessible-label: "Trace console command";
+                                text <=> TraceData.console-input;
+                                accepted => { TraceLogic.console-run(self.text); }
+                            }
                         }
                     }
                 }

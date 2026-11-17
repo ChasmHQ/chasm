@@ -472,6 +472,17 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
         Command::TraceSeek { step } => ui.global::<super::TraceLogic>().invoke_seek(*step as i32),
         Command::TraceBreakpoint { line } => ui.global::<super::TraceLogic>().invoke_toggle_breakpoint(*line as i32),
         Command::TraceOpenSaved { name } => ui.global::<super::TraceLogic>().invoke_open_saved(name.as_str().into()),
+        Command::TraceConsole { line } => ui.global::<super::TraceLogic>().invoke_console_run(line.as_str().into()),
+        Command::TraceView { opcodes, state, console, compact, opcodes_width, state_width, console_height } => {
+            let data = ui.global::<super::TraceData>();
+            if let Some(value) = opcodes { data.set_show_opcodes(*value); }
+            if let Some(value) = state { data.set_show_state(*value); }
+            if let Some(value) = console { data.set_show_console(*value); }
+            if let Some(value) = compact { data.set_compact(*value); }
+            if let Some(value) = opcodes_width { data.set_opcodes_width(value.clamp(220.0, 700.0)); }
+            if let Some(value) = state_width { data.set_state_width(value.clamp(200.0, 900.0)); }
+            if let Some(value) = console_height { data.set_console_height(value.clamp(70.0, 600.0)); }
+        }
         Command::ReadVariables {} => {
             contract.invoke_section(owner().into(), 1);
             contract.invoke_refresh_variables(owner().into());
@@ -631,7 +642,9 @@ fn trace_state(ui: &MainWindow) -> Value {
                 "stack": rows(trace.get_stack()).into_iter().take(8).map(|item| item.value.to_string()).collect::<Vec<_>>(),
                 "storage": rows(trace.get_storage()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
                 "frames": rows(trace.get_frames()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
+                "panes": {"opcodes": trace.get_show_opcodes(), "state": trace.get_show_state(), "console": trace.get_show_console(), "compact": trace.get_compact(), "opcodesWidth": trace.get_opcodes_width(), "stateWidth": trace.get_state_width(), "consoleHeight": trace.get_console_height()},
                 "savedFolder": trace.get_saved_folder().as_str(),
+                "console": trace.get_console_text().as_str().chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>(),
                 "saved": rows(trace.get_saved()).into_iter().map(|item| json!({"name":item.query.as_str(),"label":item.label.as_str(),"size":item.detail.as_str()})).collect::<Vec<_>>(),
     })
 }
