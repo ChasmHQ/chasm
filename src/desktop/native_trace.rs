@@ -255,7 +255,8 @@ fn programs(state: &DesktopState) -> Vec<Program> {
             // Foundry hands solc the source with LF line endings, so source map
             // offsets drift by one byte per line on a CRLF checkout.
             let source = std::fs::read_to_string(&path).ok()?.replace("\r\n", "\n");
-            Some(Program { name: name.clone(), runtime: runtime.code.clone(), source_map: runtime.source_map.clone(), source_path: runtime.source_path.clone(), source, source_id: runtime.source_id })
+            let abi = state.contracts.iter().find(|contract| &contract.name == name).map(|contract| contract.abi.clone());
+            Some(Program { name: name.clone(), runtime: runtime.code.clone(), source_map: runtime.source_map.clone(), source_path: runtime.source_path.clone(), source, source_id: runtime.source_id, layout: state.storage_layouts.get(name).cloned(), abi })
         })
         .collect()
 }
@@ -322,6 +323,9 @@ pub struct SavedTrace {
     pub trace: Value,
     /// address -> 0x runtime code
     pub code: HashMap<String, String>,
+    /// 0x calldata of the outermost call.
+    #[serde(default)]
+    pub input: String,
 }
 
 pub const TRACE_FORMAT: &str = "chasm-trace/1";
@@ -333,7 +337,9 @@ impl SavedTrace {
             .iter()
             .filter_map(|(address, code)| Some((address.clone(), ethers::utils::hex::decode(code.trim_start_matches("0x")).ok()?)))
             .collect();
-        trace_debug::from_trace(self.title.clone(), &self.target, &self.trace, programs, &code)
+        let mut session = trace_debug::from_trace(self.title.clone(), &self.target, &self.trace, programs, &code)?;
+        session.calldata = ethers::utils::hex::decode(self.input.trim_start_matches("0x")).unwrap_or_default();
+        Ok(session)
     }
 }
 
@@ -445,6 +451,7 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Se
         Target::Transaction(hash) => Some(hash.clone()),
         Target::Call { .. } => None,
     };
+    let mut input = String::new();
     let (title, trace, target_address, block) = match target {
         Target::Transaction(hash) => {
             let tx = call("eth_getTransactionByHash", json!([hash])).await?;
@@ -455,10 +462,12 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Se
             let to = tx["to"].as_str().map(str::to_string).or_else(|| receipt["contractAddress"].as_str().map(str::to_string)).unwrap_or_default();
             let trace = call("debug_traceTransaction", json!([hash, trace_debug::trace_options()])).await?;
             let block = tx["blockNumber"].as_str().unwrap_or("latest").to_string();
+            input = tx["input"].as_str().unwrap_or("").to_string();
             let short = format!("{}…{}", &hash[..10], &hash[hash.len() - 6..]);
             (format!("Transaction {short}"), trace, to, block)
         }
         Target::Call { title, call: request, block, target } => {
+            input = request["data"].as_str().unwrap_or("").to_string();
             let trace = call("debug_traceCall", json!([request, block, trace_debug::trace_options()])).await?;
             (title, trace, target, block)
         }
@@ -494,6 +503,7 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Se
         block,
         trace,
         code: code_at.iter().map(|(address, code)| (address.clone(), format!("0x{}", ethers::utils::hex::encode(code)))).collect(),
+        input,
     };
     let session = saved.session(programs)?;
     Ok((session, saved, hash))
@@ -646,6 +656,7 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
             })
             .collect(),
     ));
+    data.set_variables(super::model(variables(session, &labels)));
     data.set_frames(super::model(
         session
             .frames()
@@ -660,6 +671,63 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
         TraceValue { label: "code".into(), value: format!("{}  {}", session.mapped.get(&step.address).map(|program| session.programs[*program].name.as_str()).unwrap_or("not a workspace contract"), step.address).into(), changed: false },
         TraceValue { label: "return".into(), value: if session.return_value.is_empty() { "none".into() } else { session.return_value.clone().into() }, changed: false },
     ]));
+}
+
+/// Arguments of the outermost call, then every storage write up to the cursor
+/// by variable name with its old and new value. Writes after the cursor are
+/// listed dimmed as "later", so the whole effect of the call is visible.
+fn variables(session: &Session, labels: &HashMap<String, String>) -> Vec<TraceValue> {
+    let mut rows = Vec::new();
+    if let Some((function, args)) = session.call_arguments() {
+        rows.push(TraceValue { label: "call".into(), value: function.into(), changed: false });
+        for (name, value) in args {
+            let value = super::address_book::annotate(&value, labels);
+            rows.push(TraceValue { label: name.into(), value: value.into(), changed: false });
+        }
+    }
+    let mut layouts: HashMap<String, Option<super::storage_layout::Layout>> = HashMap::new();
+    for write in &session.writes {
+        let layout = layouts.entry(write.address.clone()).or_insert_with(|| session.layout_at(&write.address));
+        let named = layout.as_ref().and_then(|layout| layout.name_slot(write.slot, &session.preimages));
+        let later = write.step > session.cursor;
+        let fields = named.unwrap_or_else(|| vec![super::storage_layout::SlotField { path: format!("slot {:#x}", write.slot), type_label: "bytes32".into(), offset: 0, size: 32 }]);
+        for field in fields {
+            let before = super::storage_layout::scalar(&field.type_label, write.before, field.offset, field.size);
+            let after = super::storage_layout::scalar(&field.type_label, write.after, field.offset, field.size);
+            if before == after && field.size < 32 {
+                continue; // another variable packed in the same slot changed
+            }
+            let mut value = format!("{before} → {after}");
+            // Wei amounts are easier to read in ether.
+            if field.type_label.starts_with("uint") {
+                if let Some(ether) = as_ether(&after) {
+                    value.push_str(&format!("  ({ether} ether)"));
+                }
+            }
+            if let Some(label) = labels.get(&after.to_ascii_lowercase()) {
+                value.push_str(&format!("  ({label})"));
+            }
+            if later {
+                value.push_str("  (later, step ");
+                value.push_str(&(write.step + 1).to_string());
+                value.push(')');
+            }
+            rows.push(TraceValue { label: super::address_book::annotate(&field.path, labels).into(), value: value.into(), changed: !later && write.step + 1 >= session.cursor && write.step <= session.cursor });
+        }
+    }
+    rows
+}
+
+/// `value` in ether when it is at least 0.001 ether, with trailing zeros trimmed.
+fn as_ether(value: &str) -> Option<String> {
+    let wei = ethers::types::U256::from_dec_str(value).ok()?;
+    if wei < ethers::types::U256::exp10(15) {
+        return None;
+    }
+    let unit = ethers::types::U256::exp10(18);
+    let fraction = format!("{:018}", (wei % unit).as_u64());
+    let fraction = fraction.trim_end_matches('0');
+    Some(if fraction.is_empty() { (wei / unit).to_string() } else { format!("{}.{fraction}", wei / unit) })
 }
 
 fn compact_word(word: &str) -> String {
@@ -698,6 +766,7 @@ mod tests {
             block: "latest".into(),
             trace: json!({"failed":true,"gas":21000,"returnValue":"","structLogs":logs}),
             code: HashMap::from([("0x00000000000000000000000000000000000000aa".to_string(), "0x00".to_string())]),
+            input: String::new(),
         };
         let hash = format!("0x{}", "ab".repeat(32));
         let path = save_trace(workspace.path(), &saved, Some(&hash)).unwrap();

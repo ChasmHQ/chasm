@@ -29,6 +29,8 @@ export global TraceData {
     in property <[TraceValue]> memory;
     in property <[TraceValue]> storage;
     in property <[TraceValue]> frames;
+    // Call arguments and named storage writes.
+    in property <[TraceValue]> variables;
     in property <[TraceValue]> step-info;
     in property <[TraceTarget]> targets;
     // Recordings saved under .chasm/traces; `query` is the file name.
@@ -132,21 +134,40 @@ component ToolButton inherits ActionControl {
     }
 }
 
+component StateRow inherits Rectangle {
+    in property <TraceValue> item;
+    height: max(1.5rem, row-layout.preferred-height + 0.25rem);
+    background: root.item.changed ? #d7ba7d22 : transparent;
+    row-layout := HorizontalLayout {
+        padding-left: 0.5rem; padding-right: 0.75rem; padding-top: 0.125rem; spacing: 0.5rem;
+        Text { text: root.item.label; width: 4.5rem; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: top; overflow: elide; }
+        SelectableText { text: root.item.value; color: root.item.changed ? Theme.accent : Theme.text; font-family: "Cascadia Mono"; font-size: 0.6875rem; wrap: word-wrap; min-width: 0px; horizontal-stretch: 1; }
+    }
+}
+
+// Name above value, for long names such as mapping keys.
+component StackedRow inherits Rectangle {
+    in property <TraceValue> item;
+    height: max(1.5rem, row-layout.preferred-height);
+    background: root.item.changed ? #d7ba7d22 : transparent;
+    row-layout := VerticalLayout {
+        padding-left: 0.5rem; padding-right: 0.75rem; padding-top: 0.25rem; padding-bottom: 0.25rem;
+        SelectableText { text: root.item.label; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.6875rem; wrap: word-wrap; }
+        SelectableText { text: root.item.value; color: root.item.changed ? Theme.accent : Theme.text; font-family: "Cascadia Mono"; font-size: 0.6875rem; wrap: word-wrap; }
+    }
+}
+
 component StateList inherits Rectangle {
     in property <[TraceValue]> items;
     in property <string> empty;
+    in property <bool> stacked;
     background: Theme.inset;
-    if root.items.length == 0: Text { x: Theme.pad; y: Theme.pad; text: root.empty; color: Theme.faint; font-size: 0.75rem; }
-    ListView {
-        for item in root.items: Rectangle {
-            height: max(1.5rem, value-text.preferred-height + 0.25rem);
-            background: item.changed ? #d7ba7d22 : transparent;
-            HorizontalLayout {
-                padding-left: 0.5rem; padding-right: 0.75rem; padding-top: 0.125rem; spacing: 0.5rem;
-                Text { text: item.label; width: 4.5rem; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: top; overflow: elide; }
-                value-text := SelectableText { text: item.value; color: item.changed ? Theme.accent : Theme.text; font-family: "Cascadia Mono"; font-size: 0.6875rem; wrap: word-wrap; min-width: 0px; horizontal-stretch: 1; }
-            }
-        }
+    if root.items.length == 0: Text { x: Theme.pad; y: Theme.pad; text: root.empty; color: Theme.faint; font-size: 0.75rem; width: parent.width - 2 * Theme.pad; wrap: word-wrap; }
+    if !root.stacked: ListView {
+        for item in root.items: StateRow { item: item; }
+    }
+    if root.stacked: ListView {
+        for item in root.items: StackedRow { item: item; }
     }
 }
 
@@ -264,22 +285,22 @@ export component TraceDebugger inherits Rectangle {
                     background: Theme.panel;
                     summary-row := HorizontalLayout {
                         padding-left: Theme.pad; padding-right: 0.375rem; spacing: 1rem;
-                        SelectableText { text: TraceData.title; font-weight: 600; font-size: 0.8125rem; horizontal-stretch: 0; wrap: no-wrap; vertical-alignment: center; }
-                        SelectableText { text: TraceData.location; color: Theme.accent; font-family: "Cascadia Mono"; font-size: 0.75rem; horizontal-stretch: 0; wrap: no-wrap; vertical-alignment: center; }
+                        Text { text: TraceData.title; font-weight: 600; font-size: 0.8125rem; color: Theme.text; horizontal-stretch: 0; min-width: 0px; max-width: 16rem; overflow: elide; vertical-alignment: center; }
+                        Text { text: TraceData.location; color: Theme.accent; font-family: "Cascadia Mono"; font-size: 0.75rem; horizontal-stretch: 0; min-width: 0px; max-width: 22rem; overflow: elide; vertical-alignment: center; }
                         SelectableText { text: root.tip != "" ? root.tip : TraceData.summary; color: root.tip != "" ? Theme.text : Theme.muted; font-size: 0.75rem; horizontal-stretch: 1; min-width: 0px; wrap: no-wrap; overflow: elide; vertical-alignment: center; }
                         HorizontalLayout {
                             horizontal-stretch: 0; spacing: 0.125rem;
                             Rectangle { width: 1px; background: Theme.line; }
                             Text { text: "Find"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; }
-                            LineEdit { width: 6.5rem; font-size: 0.75rem; text <=> TraceData.opcode-filter; accepted => { TraceLogic.next-opcode(self.text, true); } }
+                            LineEdit { width: 5.5rem; font-size: 0.75rem; text <=> TraceData.opcode-filter; accepted => { TraceLogic.next-opcode(self.text, true); } }
                             ToolButton { text: "Prev"; clicked => { TraceLogic.next-opcode(TraceData.opcode-filter, false); } }
                             ToolButton { text: "Next"; clicked => { TraceLogic.next-opcode(TraceData.opcode-filter, true); } }
                             Rectangle { width: 1px; background: Theme.line; }
                             Text { text: "Panes"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; }
-                            DockTab { label: "Opcodes"; selected: TraceData.show-opcodes; clicked => { TraceData.show-opcodes = !TraceData.show-opcodes; } }
-                            DockTab { label: "State"; selected: TraceData.show-state; clicked => { TraceData.show-state = !TraceData.show-state; } }
-                            DockTab { label: "Console"; selected: TraceData.show-console; clicked => { TraceData.show-console = !TraceData.show-console; } }
-                            DockTab { label: "Compact"; selected: TraceData.compact; clicked => { TraceData.compact = !TraceData.compact; } }
+                            DockTab { label: "Ops"; min-width: self.preferred-width; selected: TraceData.show-opcodes; clicked => { TraceData.show-opcodes = !TraceData.show-opcodes; } }
+                            DockTab { label: "State"; min-width: self.preferred-width; selected: TraceData.show-state; clicked => { TraceData.show-state = !TraceData.show-state; } }
+                            DockTab { label: "Console"; min-width: self.preferred-width; selected: TraceData.show-console; clicked => { TraceData.show-console = !TraceData.show-console; } }
+                            DockTab { label: "Compact"; min-width: self.preferred-width; selected: TraceData.compact; clicked => { TraceData.compact = !TraceData.compact; } }
                             Text { text: "Step \{TraceData.cursor + 1} of \{TraceData.total}"; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
                         }
                     }
@@ -379,11 +400,13 @@ export component TraceDebugger inherits Rectangle {
                                 DockTab { label: "Memory"; selected: TraceData.state-tab == 1; clicked => { TraceData.state-tab = 1; } }
                                 DockTab { label: "Storage"; selected: TraceData.state-tab == 2; clicked => { TraceData.state-tab = 2; } }
                                 DockTab { label: "Calls"; selected: TraceData.state-tab == 3; clicked => { TraceData.state-tab = 3; } }
+                                DockTab { label: "Variables"; selected: TraceData.state-tab == 4; clicked => { TraceData.state-tab = 4; } }
                             }
                             if TraceData.state-tab == 0: StateList { items: TraceData.stack; empty: "Stack is empty."; vertical-stretch: 1; }
                             if TraceData.state-tab == 1: StateList { items: TraceData.memory; empty: "No memory used yet."; vertical-stretch: 1; }
                             if TraceData.state-tab == 2: StateList { items: TraceData.storage; empty: "No storage touched yet in this frame."; vertical-stretch: 1; }
                             if TraceData.state-tab == 3: StateList { items: TraceData.frames; empty: "No call frames."; vertical-stretch: 1; }
+                            if TraceData.state-tab == 4: StateList { stacked: true; items: TraceData.variables; empty: "No arguments decoded and no storage written. Variables need the contract's ABI and storage layout from this workspace."; vertical-stretch: 1; }
                             SideHeader { title: "This step"; }
                             StateList { items: TraceData.step-info; empty: ""; height: TraceData.compact ? 7rem : 8.5rem; }
                         }

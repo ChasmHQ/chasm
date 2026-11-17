@@ -104,6 +104,8 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 | `p stack[i]`, `p $i`, `p stack` | | Stack words, 0 is the top |
 | `x <offset> [bytes]` | | Memory bytes, 32 by default |
 | `sload <slot>` | | Storage value of a slot touched so far |
+| `args` | | Decoded arguments of the call |
+| `writes` | | Storage writes up to the cursor, by slot |
 | `where`, `help` | | Current position, command list |
 
 ## State panes
@@ -112,6 +114,8 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 - **Memory:** 32-byte words.
 - **Storage:** slots touched so far in this frame's contract.
 - **Calls:** the external call stack at the cursor.
+- **Variables:** the decoded arguments of the call, then every storage write by variable name with its old and new value, for example `balanceOf[0xf39F… (Anvil #0, signer)]  0 → 2000000000000000000 (2 ether)`. Writes after the cursor are marked *later*; the write at the cursor is highlighted. Names come from the compiler's storage layout: mapping keys and dynamic array indexes are recovered from the hashes computed in the same transaction, packed variables are split, and slots the layout cannot explain show as `slot 0x…`.
+- Known addresses are labelled everywhere (Anvil accounts, the signer, workspace deployments).
 - **This step:** the opcode, gas left and cost, depth and code address. At the
   last step it also shows the return or revert data.
 

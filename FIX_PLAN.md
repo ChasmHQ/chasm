@@ -98,6 +98,7 @@ Each item ships with tests, a live run through the control API and screenshots, 
 
 | G1. Address labels | Done: Anvil accounts, the signer and deployments (numbered when repeated) are named in Explorer lookups and lists, call results, storage values and the debugger stack, storage and call frames. Workspace selectors show as function names in Explorer |
 | G2. Saved History | Done: every Send and Simulate goes to `.chasm/history.jsonl` (500 kept, public addresses only). Explorer > History lists them with All / Sends / Failures, Repeat (refills the tab), Debug (mined tx, or replays a call) and To macro (raw step in the selected macro). API: `history.list`, `history.action` |
+| G3. Decoded variables | Done for arguments and storage: a Variables tab names every SSTORE by variable (mappings, arrays, packed fields, struct members via keccak preimages from the trace) with old → new and an ether hint, plus `args` / `writes` console commands. Not done: Solidity local variables on the stack (needs the compiler's local variable scopes, which solc does not emit in standard JSON) |
 
 ## Goals after round 2 (agreed 2026-11-17)
 

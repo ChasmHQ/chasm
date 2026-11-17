@@ -17,7 +17,9 @@ find <OP>        next step running OP; rfind <OP> searches back
 p stack[i]       stack word i (0 is the top); p stack prints all
 x <offset> [n]   n bytes of memory at offset (default 32)
 sload <slot>     storage value of a slot touched so far
-where            current location";
+where            current location
+args             decoded arguments of the call
+writes           storage writes so far, by slot";
 
 /// Run one command line and return what to print.
 pub fn run(session: &mut Session, line: &str) -> String {
@@ -41,6 +43,18 @@ pub fn run(session: &mut Session, line: &str) -> String {
         "c" | "continue" => moved(session, |s| s.resume(true)),
         "rc" => moved(session, |s| s.resume(false)),
         "where" | "w" => where_line(session),
+        "args" => match session.call_arguments() {
+            Some((function, args)) if args.is_empty() => format!("{function} takes no arguments."),
+            Some((function, args)) => format!("{function}
+{}", args.iter().map(|(name, value)| format!("  {name} = {value}")).collect::<Vec<_>>().join("
+")),
+            None => "Arguments need the called contract's ABI from this workspace.".into(),
+        },
+        "writes" => {
+            let done: Vec<String> = session.writes.iter().filter(|write| write.step <= session.cursor).map(|write| format!("step {}  slot {:#x}  {:#x} -> {:#x}", write.step + 1, write.slot, write.before, write.after)).collect();
+            if done.is_empty() { "No storage written up to this step. The Variables tab names each slot.".into() } else { done.join("
+") }
+        }
         "b" | "break" => match args.first().and_then(|text| text.parse::<usize>().ok()).filter(|line| *line > 0) {
             Some(line) if session.breakpoints.contains(&line) => format!("Breakpoint already on line {line}."),
             Some(line) => {

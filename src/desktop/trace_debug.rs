@@ -41,6 +41,19 @@ pub struct Program {
     pub source: String,
     /// solc source id of `source`; None maps every non-generated entry.
     pub source_id: Option<u32>,
+    /// Compiler storage layout JSON, for naming slots.
+    pub layout: Option<Value>,
+    pub abi: Option<ethers::abi::Abi>,
+}
+
+/// One SSTORE, named when the layout can explain the slot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StorageWrite {
+    pub step: usize,
+    pub address: String,
+    pub slot: ethers::types::U256,
+    pub before: ethers::types::H256,
+    pub after: ethers::types::H256,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -72,6 +85,12 @@ pub struct Session {
     ranges: Vec<Vec<Option<(usize, usize)>>>,
     /// Per program: instruction index -> source map jump type (`i`, `o`, `-`).
     jumps: Vec<Vec<char>>,
+    /// keccak result -> hashed bytes, from every KECCAK256 in the trace.
+    pub preimages: HashMap<ethers::types::U256, Vec<u8>>,
+    /// Every SSTORE with the slot value before and after.
+    pub writes: Vec<StorageWrite>,
+    /// Calldata of the outermost call, for decoding arguments.
+    pub calldata: Vec<u8>,
 }
 
 impl Session {
@@ -305,10 +324,85 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
     session.programs = programs;
     session.steps = steps;
     session.assign_nesting();
+    session.collect_storage(logs);
     Ok(session)
 }
 
 impl Session {
+    /// keccak preimages (from memory at each KECCAK256 and the hash on the
+    /// next step's stack) and SSTOREs with their previous value. The value
+    /// before a write is the last one this trace saw for the slot, from an
+    /// earlier SLOAD/SSTORE in the same contract; unseen slots start at zero.
+    fn collect_storage(&mut self, logs: &[Value]) {
+        use ethers::types::{H256, U256};
+        let word = |text: &str| -> Option<H256> {
+            let bytes = ethers::utils::hex::decode(format!("{:0>64}", text.trim_start_matches("0x"))).ok()?;
+            (bytes.len() == 32).then(|| H256::from_slice(&bytes))
+        };
+        let mut known: HashMap<(String, U256), H256> = HashMap::new();
+        for index in 0..self.steps.len() {
+            let step = &self.steps[index];
+            let top = |back: usize| step.stack.get(step.stack.len().wrapping_sub(1 + back)).and_then(|text| U256::from_str_radix(text.trim_start_matches("0x"), 16).ok());
+            match step.op.as_str() {
+                "KECCAK256" | "SHA3" => {
+                    let (Some(offset), Some(length)) = (top(0), top(1)) else { continue };
+                    let Some(next) = self.steps.get(index + 1) else { continue };
+                    let Some(hash) = next.stack.last().and_then(|text| U256::from_str_radix(text.trim_start_matches("0x"), 16).ok()) else { continue };
+                    if length > U256::from(256u64) || offset > U256::from(1u64 << 24) || self.preimages.len() >= 4096 {
+                        continue;
+                    }
+                    let memory: Vec<u8> = step.memory.iter().flat_map(|chunk| ethers::utils::hex::decode(chunk.trim_start_matches("0x")).unwrap_or_default()).collect();
+                    let (start, end) = (offset.as_usize(), offset.as_usize() + length.as_usize());
+                    if end <= memory.len() {
+                        self.preimages.insert(hash, memory[start..end].to_vec());
+                    }
+                }
+                "SLOAD" => {
+                    let Some(slot) = top(0) else { continue };
+                    if let Some(value) = self.steps.get(index + 1).and_then(|next| next.stack.last()).and_then(|text| word(text)) {
+                        known.entry((step.address.clone(), slot)).or_insert(value);
+                    }
+                }
+                "SSTORE" => {
+                    let (Some(slot), Some(value)) = (top(0), step.stack.get(step.stack.len().wrapping_sub(2)).and_then(|text| word(text))) else { continue };
+                    let key = (step.address.clone(), slot);
+                    let before = known.get(&key).copied().unwrap_or_default();
+                    known.insert(key, value);
+                    if self.writes.len() < 4096 {
+                        self.writes.push(StorageWrite { step: index, address: step.address.clone(), slot, before, after: value });
+                    }
+                }
+                _ => {}
+            }
+        }
+        let _ = logs;
+    }
+
+    /// Storage layout of the code running at `address`.
+    pub fn layout_at(&self, address: &str) -> Option<super::storage_layout::Layout> {
+        let program = self.programs.get(*self.mapped.get(address)?)?;
+        super::storage_layout::Layout::from_json(program.layout.as_ref()?).ok()
+    }
+
+    /// Function and decoded arguments of the outermost call, when its ABI is known.
+    pub fn call_arguments(&self) -> Option<(String, Vec<(String, String)>)> {
+        use ethers::abi::FunctionExt;
+        let program = self.programs.get(*self.mapped.get(&self.target)?)?;
+        let abi = program.abi.as_ref()?;
+        if self.calldata.len() < 4 {
+            return None;
+        }
+        let function = abi.functions().find(|function| function.selector() == self.calldata[..4])?;
+        let tokens = function.decode_input(&self.calldata[4..]).ok()?;
+        let args = function
+            .inputs
+            .iter()
+            .zip(tokens)
+            .map(|(param, token)| (if param.name.is_empty() { param.kind.to_string() } else { param.name.clone() }, token_text(&token)))
+            .collect();
+        Some((function.abi_signature(), args))
+    }
+
     fn assign_nesting(&mut self) {
         let mut nest = 0u32;
         // Nest at the call site, per open external call.
@@ -342,6 +436,19 @@ impl Session {
         let program = *self.mapped.get(&step.address)?;
         let instruction = *self.pc_index[program].get(&step.pc)?;
         self.jumps[program].get(instruction).copied()
+    }
+}
+
+fn token_text(token: &ethers::abi::Token) -> String {
+    use ethers::abi::Token;
+    match token {
+        Token::Address(address) => ethers::utils::to_checksum(address, None),
+        Token::Uint(value) | Token::Int(value) => value.to_string(),
+        Token::Bool(value) => value.to_string(),
+        Token::String(text) => format!("{text:?}"),
+        Token::Bytes(bytes) | Token::FixedBytes(bytes) => format!("0x{}", ethers::utils::hex::encode(bytes)),
+        Token::Array(items) | Token::FixedArray(items) => format!("[{}]", items.iter().map(token_text).collect::<Vec<_>>().join(", ")),
+        Token::Tuple(items) => format!("({})", items.iter().map(token_text).collect::<Vec<_>>().join(", ")),
     }
 }
 
@@ -463,6 +570,8 @@ mod tests {
             source_path: "src/A.sol".into(),
             source,
             source_id: Some(0),
+            layout: None,
+            abi: None,
         };
         let logs: Vec<Value> = (0..5).map(|pc| json!({"pc":pc,"op":if pc == 3 {"SSTORE"} else {"JUMPDEST"},"gas":100-pc,"gasCost":1,"depth":1,"stack":["0x01"],"memory":[]})).collect();
         let trace = json!({"failed":false,"gas":21000,"returnValue":"","structLogs":logs});
@@ -501,7 +610,7 @@ mod tests {
         // pc: 0 line 3, 1 JUMP into g, 2-3 line 7 (g body), 4 JUMP out, 5 line 4.
         let map = format!("{call}:4:0:-;{call}:4:0:i;{body}:5:0:-;{body}:5:0:-;{body}:5:0:o;{after}:5:0:-");
         let runtime = vec![0x5b, 0x56, 0x5b, 0x5b, 0x56, 0x5b, 0xa2, 0x00, 0x01];
-        let program = Program { name: "A".into(), runtime: runtime.clone(), source_map: map, source_path: "A.sol".into(), source, source_id: Some(0) };
+        let program = Program { name: "A".into(), runtime: runtime.clone(), source_map: map, source_path: "A.sol".into(), source, source_id: Some(0), layout: None, abi: None };
         let ops = ["JUMPDEST", "JUMP", "JUMPDEST", "JUMPDEST", "JUMP", "JUMPDEST"];
         let logs: Vec<Value> = ops.iter().enumerate().map(|(pc, op)| json!({"pc":pc,"op":op,"gas":100,"gasCost":1,"depth":1,"stack":[],"memory":[]})).collect();
         let trace = json!({"failed":false,"gas":21000,"returnValue":"","structLogs":logs});

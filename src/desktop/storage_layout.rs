@@ -180,6 +180,109 @@ impl Layout {
     }
 }
 
+/// One named piece of a storage slot: the access path (`balanceOf[0xf39F…]`),
+/// its type label, and where it sits in the word.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotField {
+    pub path: String,
+    pub type_label: String,
+    pub offset: u64,
+    pub size: u64,
+}
+
+impl Layout {
+    /// Name a slot seen in a trace. `preimages` maps keccak results to the
+    /// bytes hashed in the same execution, which recovers mapping keys and
+    /// dynamic array bases. Packed variables sharing a slot are all returned.
+    pub fn name_slot(&self, slot: U256, preimages: &std::collections::HashMap<U256, Vec<u8>>) -> Option<Vec<SlotField>> {
+        let direct: Vec<SlotField> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.slot == slot)
+            .map(|entry| SlotField { path: entry.label.clone(), type_label: self.label_of(&entry.type_id), offset: entry.offset, size: self.bytes(&entry.type_id) })
+            .collect();
+        if !direct.is_empty() {
+            return Some(direct);
+        }
+        let (path, type_id) = self.locate(slot, preimages, 0)?;
+        Some(vec![SlotField { path, type_label: self.label_of(&type_id), offset: 0, size: self.bytes(&type_id) }])
+    }
+
+    fn label_of(&self, type_id: &str) -> String {
+        self.type_info(type_id)["label"].as_str().unwrap_or(type_id).to_string()
+    }
+
+    /// Access path and type id of the value starting at `slot`.
+    fn locate(&self, slot: U256, preimages: &std::collections::HashMap<U256, Vec<u8>>, depth: usize) -> Option<(String, String)> {
+        if depth > 6 {
+            return None;
+        }
+        if let Some(entry) = self.entries.iter().find(|entry| entry.slot == slot && entry.offset == 0) {
+            return Some((entry.label.clone(), entry.type_id.clone()));
+        }
+        // mapping: keccak(key . base)
+        if let Some(bytes) = preimages.get(&slot).filter(|bytes| bytes.len() == 64) {
+            let base = U256::from_big_endian(&bytes[32..]);
+            if let Some((path, type_id)) = self.locate(base, preimages, depth + 1) {
+                let info = self.type_info(&type_id);
+                if info["encoding"] == "mapping" {
+                    let key_type = self.label_of(info["key"].as_str().unwrap_or(""));
+                    let value_type = info["value"].as_str().unwrap_or("").to_string();
+                    return Some((format!("{path}[{}]", key_text(&key_type, &bytes[..32])), value_type));
+                }
+            }
+        }
+        // dynamic array element: keccak(base) + index
+        for (hash, bytes) in preimages.iter().filter(|(hash, bytes)| bytes.len() == 32 && **hash <= slot && slot - **hash < U256::from(1u64 << 20)) {
+            let base = U256::from_big_endian(bytes);
+            let Some((path, type_id)) = self.locate(base, preimages, depth + 1) else { continue };
+            let info = self.type_info(&type_id);
+            if info["encoding"] != "dynamic_array" {
+                continue;
+            }
+            let element = info["base"].as_str().unwrap_or("").to_string();
+            let size = self.bytes(&element).max(1);
+            let offset = (slot - *hash).as_u64();
+            let path = if size >= 32 {
+                format!("{path}[{}]", offset / size.div_ceil(32))
+            } else {
+                let per_slot = 32 / size;
+                format!("{path}[{}..{}]", offset * per_slot, offset * per_slot + per_slot - 1)
+            };
+            return Some((path, element));
+        }
+        // struct member: the member's slot is the struct's base plus its index
+        for back in 1..32u64 {
+            let Some(base) = slot.checked_sub(U256::from(back)) else { break };
+            if !preimages.contains_key(&base) && !self.entries.iter().any(|entry| entry.slot == base) {
+                continue;
+            }
+            let Some((path, type_id)) = self.locate(base, preimages, depth + 1) else { continue };
+            let members = self.type_info(&type_id)["members"].as_array().cloned().unwrap_or_default();
+            if let Some(member) = members.iter().find(|member| member["slot"].as_str() == Some(&back.to_string()) && member["offset"].as_u64().unwrap_or(0) == 0) {
+                return Some((format!("{path}.{}", member["label"].as_str().unwrap_or("?")), member["type"].as_str().unwrap_or("").to_string()));
+            }
+            break;
+        }
+        None
+    }
+}
+
+/// A mapping key as written in source: addresses checksummed, integers decimal.
+fn key_text(key_type: &str, word: &[u8]) -> String {
+    let value = U256::from_big_endian(word);
+    if key_type == "address" || key_type.starts_with("contract ") {
+        return ethers::utils::to_checksum(&ethers::types::Address::from_slice(&word[12..]), None);
+    }
+    if key_type.starts_with("uint") || key_type.starts_with("enum ") {
+        return value.to_string();
+    }
+    if key_type == "bool" {
+        return (!value.is_zero()).to_string();
+    }
+    format!("0x{}", hex(word))
+}
+
 fn word(value: U256) -> [u8; 32] {
     let mut bytes = [0u8; 32];
     value.to_big_endian(&mut bytes);
@@ -273,6 +376,40 @@ fn encode_key(key_type: &str, key: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn trace_slots_are_named_from_keccak_preimages() {
+        let layout = Layout::from_json(&serde_json::json!({
+            "storage": [
+                {"label":"balanceOf","slot":"0","offset":0,"type":"t_mapping"},
+                {"label":"owner","slot":"1","offset":0,"type":"t_address"},
+                {"label":"paused","slot":"1","offset":20,"type":"t_bool"},
+                {"label":"luckyNumbers","slot":"2","offset":0,"type":"t_array"}
+            ],
+            "types": {
+                "t_mapping":{"encoding":"mapping","label":"mapping(address => uint256)","key":"t_address","value":"t_uint256","numberOfBytes":"32"},
+                "t_address":{"encoding":"inplace","label":"address","numberOfBytes":"20"},
+                "t_bool":{"encoding":"inplace","label":"bool","numberOfBytes":"1"},
+                "t_uint256":{"encoding":"inplace","label":"uint256","numberOfBytes":"32"},
+                "t_array":{"encoding":"dynamic_array","label":"uint256[]","base":"t_uint256","numberOfBytes":"32"}
+            }
+        })).unwrap();
+        let mut preimages = std::collections::HashMap::new();
+        let mut key = vec![0u8; 12];
+        key.extend_from_slice(&ethers::utils::hex::decode("f39fd6e51aad88f6f4ce6ab8827279cfffb92266").unwrap());
+        key.extend_from_slice(&word(U256::zero()));
+        let slot = U256::from_big_endian(&keccak256(&key));
+        preimages.insert(slot, key);
+        let named = layout.name_slot(slot, &preimages).unwrap();
+        assert_eq!(named[0].path, "balanceOf[0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266]");
+        assert_eq!(named[0].type_label, "uint256");
+        let packed = layout.name_slot(U256::one(), &preimages).unwrap();
+        assert_eq!(packed.iter().map(|field| field.path.as_str()).collect::<Vec<_>>(), vec!["owner", "paused"]);
+        let base = U256::from_big_endian(&keccak256(word(U256::from(2))));
+        preimages.insert(base, word(U256::from(2)).to_vec());
+        assert_eq!(layout.name_slot(base + 2, &preimages).unwrap()[0].path, "luckyNumbers[2]");
+        assert!(layout.name_slot(U256::from(99), &preimages).is_none());
+    }
+
     use super::*;
     use serde_json::json;
 
