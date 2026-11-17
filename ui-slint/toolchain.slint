@@ -1,0 +1,125 @@
+// Workspace > Compiler and libraries: the solc version and the Solidity
+// libraries the project imports.
+import { LineEdit } from "std-widgets.slint";
+import { ScrollView } from "scroll.slint";
+import { ActionControl, DockTab, IconButton, SideHeader, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct LibraryRow { id: string, title: string, prefix: string, installed: string, used: string, missing: bool }
+export struct PragmaRow { file: string, pragma: string }
+
+export global ToolchainData {
+    in property <string> locked;
+    in property <[string]> installed-solc;
+    in property <[PragmaRow]> pragmas;
+    in property <[LibraryRow]> libraries;
+    in property <string> status;
+    in property <bool> busy;
+    in property <string> lib-folder;
+    in property <int> missing-count;
+    in-out property <string> solc-input;
+    in-out property <string> tag-input;
+}
+
+export global ToolchainLogic {
+    callback lock-solc(string);
+    callback install(string, string);
+    callback use-version(string, string);
+    callback remove(string);
+}
+
+component Small inherits ActionControl {
+    in property <string> text;
+    label: root.text;
+    height: Theme.control-height;
+    min-width: content.min-width;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius;
+    content := HorizontalLayout {
+        padding-left: 0.5rem; padding-right: 0.5rem;
+        Text { text: root.text; color: root.enabled ? Theme.text : Theme.faint; font-size: 0.75rem; vertical-alignment: center; }
+    }
+}
+
+export component ToolchainWorkspace inherits ScrollView {
+    min-width: 0px; min-height: 0px;
+    content-width: self.visible-width;
+    horizontal-scrollbar-policy: always-off;
+    VerticalLayout {
+        padding: Theme.pad; spacing: 0.5rem; alignment: start;
+        if ToolchainData.status != "": SelectableText { text: ToolchainData.status; color: Theme.accent; font-size: 0.8125rem; wrap: word-wrap; }
+
+        if ToolchainData.missing-count > 0: Rectangle {
+            height: missing-text.preferred-height + 1rem;
+            background: #e0af6822;
+            border-radius: Theme.radius;
+            missing-text := SelectableText {
+                x: Theme.pad; width: parent.width - 2 * Theme.pad;
+                text: "This project imports \{ToolchainData.missing-count} library(ies) that are not mapped, so it cannot compile. They are listed first under Libraries: Install, then Use.";
+                color: Theme.warn; font-size: 0.8125rem; wrap: word-wrap;
+            }
+        }
+        SelectableText { text: "Solidity compiler"; font-weight: 600; font-size: 0.9375rem; }
+        SelectableText {
+            text: ToolchainData.locked == ""
+                ? "Auto: each file is compiled with the newest installed solc its pragma allows; a missing version is downloaded."
+                : "Locked to solc \{ToolchainData.locked} for every file (saved in .chasm/chasm.toml). Files whose pragma excludes it fail to compile.";
+            color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 0.375rem;
+            LineEdit { text <=> ToolchainData.solc-input; placeholder-text: "0.8.24, or empty for Auto"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 1; accepted => { ToolchainLogic.lock-solc(self.text); } }
+            IconButton { icon: @image-url("icons/refresh.svg"); label: ToolchainData.solc-input == "" ? "Use Auto" : "Lock and recompile"; primary: true; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.lock-solc(ToolchainData.solc-input); } }
+        }
+        SideHeader { title: "Installed"; trailing: "click to use"; }
+        if ToolchainData.installed-solc.length == 0: SelectableText { text: "No solc installed yet. One is downloaded on the first compile."; color: Theme.faint; font-size: 0.75rem; }
+        FlexboxLayout {
+            spacing: 0.25rem;
+            for version in ToolchainData.installed-solc: DockTab {
+                label: version; selected: ToolchainData.locked == version;
+                min-width: self.preferred-width;
+                clicked => { ToolchainData.solc-input = version; }
+            }
+        }
+        SideHeader { title: "Pragmas in this project"; }
+        for row in ToolchainData.pragmas: HorizontalLayout {
+            spacing: 0.75rem;
+            Text { text: row.file; color: Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
+            Text { text: row.pragma; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; horizontal-stretch: 0; }
+        }
+
+        Rectangle { height: 1px; background: Theme.line; }
+        SelectableText { text: "Libraries"; font-weight: 600; font-size: 0.9375rem; }
+        SelectableText { text: "Each version is downloaded once with git into \{ToolchainData.lib-folder} and shared by every project. Use maps the import prefix to it in this project's remappings."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 0.375rem;
+            Text { text: "Version tag"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; }
+            LineEdit { text <=> ToolchainData.tag-input; placeholder-text: "empty for the default release"; font-size: 0.8125rem; width: 14rem; }
+        }
+        for library in ToolchainData.libraries: Rectangle {
+            height: library-row.preferred-height;
+            background: library.missing ? #e0af6822 : Theme.panel;
+            library-row := HorizontalLayout {
+                padding: 0.5rem; padding-left: Theme.pad; spacing: 0.5rem;
+                VerticalLayout {
+                    horizontal-stretch: 1; spacing: 0.125rem;
+                    HorizontalLayout {
+                        spacing: 0.5rem;
+                        Text { text: library.title; color: Theme.text; font-size: 0.8125rem; font-weight: 600; horizontal-stretch: 0; }
+                        Text { text: library.prefix; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; horizontal-stretch: 1; overflow: elide; min-width: 0px; }
+                    }
+                    Text {
+                        text: library.missing ? "Imported by this project but not mapped. Install, then Use."
+                            : library.used != "" ? "Used in this project: \{library.used}"
+                            : "Not used in this project.";
+                        color: library.missing ? Theme.warn : Theme.muted; font-size: 0.75rem;
+                    }
+                    Text { text: library.installed == "" ? "Not installed." : "Installed: \{library.installed}"; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
+                }
+                Small { text: ToolchainData.busy ? "Working…" : "Install"; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.install(library.id, ToolchainData.tag-input); } }
+                Small { text: "Use"; enabled: !ToolchainData.busy && library.installed != ""; clicked => { ToolchainLogic.use-version(library.id, ToolchainData.tag-input); } }
+                Small { text: "Remove"; enabled: !ToolchainData.busy && library.used != ""; clicked => { ToolchainLogic.remove(library.id); } }
+            }
+        }
+    }
+}

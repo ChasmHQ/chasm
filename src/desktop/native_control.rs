@@ -66,6 +66,7 @@ pub fn wire(
                             Query::Debugger => value["debugger"] = debugger_state(&ui),
                             Query::Screenshot => value["screenshot"] = screenshot(&ui)?,
                             Query::History => value["status"] = ui.global::<super::HistoryData>().get_status().as_str().into(),
+                            Query::Toolchain => value["status"] = ui.global::<super::ToolchainData>().get_status().as_str().into(),
                             _ => {}
                         }
                         Ok(value)
@@ -482,6 +483,19 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             data.set_value(value.as_str().into());
             data.set_slot(slot.clone().unwrap_or_default().into());
             ui.global::<super::ChainLogic>().invoke_apply_cheat();
+        }
+        Command::Toolchain { action, library, version } => {
+            let logic = ui.global::<super::ToolchainLogic>();
+            let library = library.clone().unwrap_or_default();
+            let version = version.clone().unwrap_or_default();
+            match action.as_str() {
+                "open" => ui.global::<Logic>().invoke_open_toolchain(),
+                "lock_solc" => logic.invoke_lock_solc(version.into()),
+                "install" => logic.invoke_install(library.into(), version.into()),
+                "use" => logic.invoke_use_version(library.into(), version.into()),
+                "remove" => logic.invoke_remove(library.into()),
+                _ => {}
+            }
         }
         Command::HistoryAction { action, index } => {
             let logic = ui.global::<super::HistoryLogic>();

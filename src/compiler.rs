@@ -28,6 +28,22 @@ impl Compiler {
         Self::new_impl(root, remappings, false)
     }
 
+    /// Like new_for_storage_layout() with an exact solc version ("0.8.24"),
+    /// installed into the svm folder when missing. Empty means Auto.
+    pub fn new_for_storage_layout_with_solc(root: PathBuf, remappings: Vec<String>, solc: &str) -> Result<Self> {
+        let mut compiler = Self::new_impl(root, remappings, true)?;
+        if !solc.is_empty() {
+            let version = semver::Version::parse(solc.trim()).map_err(|_| anyhow::anyhow!("solc version {solc:?} is not a version like 0.8.24."))?;
+            let binary = match foundry_compilers::solc::Solc::find_svm_installed_version(&version)? {
+                Some(binary) => binary,
+                None => foundry_compilers::solc::Solc::blocking_install(&version)
+                    .map_err(|error| anyhow::anyhow!("Could not download solc {version}: {error}"))?,
+            };
+            compiler.project.compiler = foundry_compilers::multi::MultiCompiler::new(Some(foundry_compilers::solc::SolcCompiler::Specific(binary)), None)?;
+        }
+        Ok(compiler)
+    }
+
     /// Like new() but requests storageLayout from solc.
     /// Used on-demand by the storage inspector so the overhead only hits
     /// when the user actually opens that tab, not on every recompile.

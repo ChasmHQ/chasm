@@ -25,6 +25,8 @@ mod request_form;
 mod storage_layout;
 mod trace_debug;
 mod address_book;
+mod toolchain;
+mod native_toolchain;
 mod chain_tools;
 mod native_chain;
 mod history;
@@ -421,7 +423,7 @@ macro_rules! on_void {
             if state.transition_pending() && !matches!(stringify!($method), "on_cancel_delete_keystore" | "on_cancel_open_folder" | "on_close_menu" | "on_dismiss_notice") { return; }
             $apply(&mut state);
             drop(state);
-            if matches!(stringify!($method), "on_open_wallet" | "on_open_deploy" | "on_new_macro" | "on_open_foundry_build") { panels::focus_current(); }
+            if matches!(stringify!($method), "on_open_wallet" | "on_open_deploy" | "on_new_macro" | "on_open_foundry_build" | "on_open_toolchain") { panels::focus_current(); }
             paint(&weak, &held);
         });
     }};
@@ -483,6 +485,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     on_int!(ui, state, on_set_converter_tool, |state: &mut DesktopState, value| state.set_converter_tool(value));
     on_int!(ui, state, on_set_converter_mode, |state: &mut DesktopState, value| state.set_converter_mode(value));
     on_void!(ui, state, on_open_foundry_build, |state: &mut DesktopState| state.open_foundry_build());
+    on_void!(ui, state, on_open_toolchain, |state: &mut DesktopState| state.open_toolchain());
     on_void!(ui, state, on_clear_logs, |state: &mut DesktopState| state.clear_logs());
     {
         let weak = ui.as_weak();
@@ -718,7 +721,14 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                         }
                         Err(error) => {
                             state.compile_label = "Compile failed".into();
-                            state.notice = error.clone();
+                            // An unmapped library import is the usual cause; name the fix.
+                            let missing: Vec<&str> = toolchain::missing_imports(&state.workspace).iter().map(|library| library.title).collect();
+                            state.notice = if missing.is_empty() {
+                                error.clone()
+                            } else {
+                                format!("Missing libraries: {}. Open Workspace > Compiler and libraries to install and use them.
+{error}", missing.join(", "))
+                            };
                             state.push_log(error);
                         }
                     }
@@ -1014,6 +1024,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     native_trace::wire(ui, state, runtime.clone());
     native_history::wire(ui, state, runtime.clone());
     native_chain::wire(ui, state, runtime.clone());
+    native_toolchain::wire(ui, state, runtime.clone());
     native_contract::wire(ui, state, runtime);
 }
 
@@ -1541,6 +1552,7 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     native_trace::render(ui, state);
     native_history::render(ui, state);
     native_chain::render(ui, state);
+    native_toolchain::render(ui, state);
     native_contract::render(ui, state);
     data.set_active_document(state.active_document);
     render_deployment_form(ui, state);

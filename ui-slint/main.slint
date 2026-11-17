@@ -14,6 +14,8 @@ import { DebugData, DebugLogic, DebugToolbar, DebugCodePane, DebugInspectorPane,
 import { TraceData, TraceLogic, TraceDebugger } from "trace.slint";
 import { HistoryData, HistoryLogic, HistoryView } from "history.slint";
 import { ChainData, ChainLogic, TimelineView } from "chain.slint";
+import { ToolchainData, ToolchainLogic, ToolchainWorkspace } from "toolchain.slint";
+export { ToolchainData, ToolchainLogic, LibraryRow, PragmaRow } from "toolchain.slint";
 export { ChainData, ChainLogic, TimelineRow } from "chain.slint";
 export { HistoryData, HistoryLogic, HistoryRow } from "history.slint";
 export { TraceData, TraceLogic, TraceLine, TraceOp, TraceValue, TraceTarget } from "trace.slint";
@@ -127,6 +129,7 @@ export global AppData {
 
 export global Logic {
     callback open-activity(int);
+    callback open-toolchain();
     callback toggle-menu(int);
     callback close-menu();
     callback quit();
@@ -671,6 +674,7 @@ component WorkspacePane inherits Rectangle {
     if root.kind == 1 && root.document-kind == 5: ConverterWorkspace { }
     if root.kind == 1 && root.document-kind == 6: MacroWorkspace { }
     if root.kind == 1 && root.document-kind == 7: FoundryWorkspace { }
+    if root.kind == 1 && root.document-kind == 8: ToolchainWorkspace { }
     if root.kind == 2: ContractResult { view: root.contract-view; owner: root.owner; }
     if root.kind == 3: ContractStorage { view: root.contract-view; owner: root.owner; }
     if root.kind == 4: DebugCodePane { }
@@ -1250,6 +1254,7 @@ export component MainWindow inherits Window {
                         if AppData.menu-open == 0: VerticalLayout {
                             MenuRow { label: "Open Folder…"; shortcut: "Ctrl+O"; enabled: !AppData.workspace-busy && !AppData.folder-picker-busy && !AppData.wallet-busy; clicked => { Logic.open-folder(); } }
                             MenuRow { label: "Recompile workspace"; shortcut: "Ctrl+B"; clicked => { Logic.recompile(); Logic.close-menu(); } }
+                            MenuRow { label: "Compiler and libraries…"; clicked => { Logic.open-toolchain(); Logic.close-menu(); } }
                             MenuRow { label: "Quit Chasm"; clicked => { Logic.quit(); } }
                         }
                         if AppData.menu-open == 1: VerticalLayout {

@@ -506,7 +506,7 @@ impl DesktopState {
             0 if self
                 .documents
                 .get(self.active_document as usize)
-                .is_none_or(|doc| (4..=7).contains(&doc.kind)) =>
+                .is_none_or(|doc| (4..=8).contains(&doc.kind)) =>
             {
                 let index = self
                     .last_contracts_document
@@ -535,6 +535,11 @@ impl DesktopState {
         self.menu_open = -1;
         self.status_left = format!("Opened {}", self.heading());
         self.push_log(format!("Opened {}", self.heading()));
+    }
+
+    pub fn open_toolchain(&mut self) {
+        self.open_tool_document(8, "Compiler and libraries");
+        self.status_left = "Opened Compiler and libraries".into();
     }
 
     pub fn open_foundry_build(&mut self) {
@@ -2208,8 +2213,10 @@ pub fn compile_workspace_report(
 ) -> Result<CompileReport, String> {
     // Only workspace sources are compiled, so the storage layout stays small
     // and the Storage tab can name every variable without a second compile.
+    // A version locked in .chasm/chasm.toml wins over the per-file pragma choice.
+    let solc = crate::config::ChasmConfig::load(root).map(|config| config.compiler.solc).unwrap_or_default();
     let compile = || -> Result<String, String> {
-        Compiler::new_for_storage_layout(root.to_path_buf(), remappings.clone())
+        Compiler::new_for_storage_layout_with_solc(root.to_path_buf(), remappings.clone(), &solc)
             .and_then(|compiler| compiler.compile_to_json())
             .map_err(|error| error.to_string())
     };

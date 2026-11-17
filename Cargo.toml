@@ -21,6 +21,7 @@ futures = "0.3"
 walkdir = "2.5.0"
 clap = { version = "4.5.54", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json", "cookies"] }
+semver = "1" # solc versions; already in the tree via foundry-compilers
 slint = { version = "1.17", features = ["renderer-skia"] }
 toml = "0.8"
 rand = "0.8"

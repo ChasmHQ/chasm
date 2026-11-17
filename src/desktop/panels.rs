@@ -1449,6 +1449,7 @@ fn document_role(kind: i32) -> &'static str {
         5 => "Conversion",
         6 => "Macro library",
         7 => "Build",
+        8 => "Toolchain",
         _ => "Document",
     }
 }

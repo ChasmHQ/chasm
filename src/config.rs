@@ -8,10 +8,28 @@ use walkdir::WalkDir;
 pub struct ChasmConfig {
     #[serde(default)]
     pub remappings: Vec<String>,
+    /// `[compiler]`: a locked solc version, or none to pick one per pragma.
+    #[serde(default, skip_serializing_if = "CompilerConfig::is_auto")]
+    pub compiler: CompilerConfig,
     /// Keys Chasm does not manage (for example foundry.toml settings) are
     /// kept verbatim so saving remappings never drops the user's settings.
     #[serde(flatten)]
     pub other: toml::Table,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
+pub struct CompilerConfig {
+    /// Exact solc version such as "0.8.24". Empty means Auto: each source
+    /// gets the newest installed version its pragma allows, downloading one
+    /// when none fits.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub solc: String,
+}
+
+impl CompilerConfig {
+    pub fn is_auto(&self) -> bool {
+        self.solc.is_empty()
+    }
 }
 
 impl ChasmConfig {
