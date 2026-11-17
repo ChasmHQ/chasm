@@ -1,0 +1,120 @@
+// Explorer > Timeline: a snapshot before every Send, Deploy and cheat, with
+// Revert to here, and cheatcodes for the local node.
+import { LineEdit } from "std-widgets.slint";
+import { ListView } from "scroll.slint";
+import { ActionControl, DockTab, IconButton, SideHeader, Theme } from "theme.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct TimelineRow { label: string, detail: string }
+
+export global ChainData {
+    in property <[TimelineRow]> points;
+    in property <string> status;
+    in property <bool> busy;
+    // time, timestamp, mine, deal, nonce, storage, code
+    in-out property <string> action: "time";
+    in-out property <string> address;
+    in-out property <string> value;
+    in-out property <string> slot;
+}
+
+export global ChainLogic {
+    callback revert-to(int);
+    callback apply-cheat();
+    callback snapshot();
+}
+
+component SmallButton inherits ActionControl {
+    in property <string> text;
+    label: root.text;
+    height: Theme.control-height;
+    min-width: content.min-width;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius;
+    content := HorizontalLayout {
+        padding-left: 0.5rem; padding-right: 0.5rem;
+        Text { text: root.text; color: root.enabled ? Theme.text : Theme.faint; font-size: 0.75rem; vertical-alignment: center; }
+    }
+}
+
+component CheatField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in-out property <string> text;
+    spacing: 0.25rem;
+    Text { text: root.label; color: Theme.muted; font-size: 0.75rem; }
+    LineEdit { text <=> root.text; placeholder-text: root.placeholder; font-size: 0.8125rem; min-width: 0px; }
+}
+
+export component TimelineView inherits Rectangle {
+    min-width: 0px; min-height: 0px;
+    background: Theme.canvas;
+    HorizontalLayout {
+        padding: Theme.pad; spacing: Theme.pad;
+        // Timeline.
+        VerticalLayout {
+            horizontal-stretch: 3; spacing: 0.5rem;
+            HorizontalLayout {
+                spacing: 0.5rem;
+                SelectableText { text: "Snapshots, newest first"; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                IconButton { icon: @image-url("icons/storage.svg"); label: "Snapshot now"; enabled: !ChainData.busy; clicked => { ChainLogic.snapshot(); } }
+            }
+            SelectableText { text: "Chasm takes a snapshot before every Send, Deploy and cheat. Revert to here returns the chain to that moment: later blocks, deployments and snapshots are gone. The list lasts while the node runs."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+            if ChainData.status != "": SelectableText { text: ChainData.status; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+            if ChainData.points.length == 0: SelectableText { text: "No snapshots yet. Send, deploy or apply a cheat, or press Snapshot now."; color: Theme.faint; font-size: 0.8125rem; }
+            ListView {
+                vertical-stretch: 1;
+                for point[index] in ChainData.points: Rectangle {
+                    height: 2.75rem;
+                    background: Theme.panel;
+                    HorizontalLayout {
+                        padding-left: Theme.pad; padding-right: 0.375rem; spacing: 0.5rem;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 1;
+                            Text { text: point.label; color: Theme.text; font-size: 0.8125rem; overflow: elide; min-width: 0px; }
+                            Text { text: point.detail; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
+                        }
+                        SmallButton { text: "Revert to here"; enabled: !ChainData.busy; clicked => { ChainLogic.revert-to(index); } }
+                    }
+                }
+            }
+        }
+        Rectangle { width: 1px; background: Theme.line; }
+        // Cheatcodes.
+        VerticalLayout {
+            horizontal-stretch: 2; spacing: 0.5rem; alignment: start;
+            SelectableText { text: "Cheatcodes"; font-weight: 600; }
+            SelectableText { text: "Change the local node directly. Each change is undoable from the timeline."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+            // Wraps onto as many rows as the pane needs; labels never elide.
+            FlexboxLayout {
+                spacing: 0.25rem;
+                for item in [{id: "time", label: "Time"}, {id: "timestamp", label: "Timestamp"}, {id: "mine", label: "Mine"}, {id: "deal", label: "Deal"}, {id: "nonce", label: "Nonce"}, {id: "storage", label: "Storage"}, {id: "code", label: "Code"}]: DockTab {
+                    label: item.label; selected: ChainData.action == item.id;
+                    min-width: self.preferred-width;
+                    clicked => { ChainData.action = item.id; }
+                }
+            }
+            SelectableText {
+                text: ChainData.action == "time" ? "Advance block time, then mine one block."
+                    : ChainData.action == "timestamp" ? "Set the next block's Unix timestamp and mine it."
+                    : ChainData.action == "mine" ? "Mine empty blocks."
+                    : ChainData.action == "deal" ? "Set an address's ETH balance."
+                    : ChainData.action == "nonce" ? "Set an account's nonce."
+                    : ChainData.action == "storage" ? "Write one storage slot of a contract."
+                    : "Replace the runtime code at an address.";
+                color: Theme.muted; font-size: 0.75rem; wrap: word-wrap;
+            }
+            if ChainData.action == "deal" || ChainData.action == "nonce" || ChainData.action == "storage" || ChainData.action == "code": CheatField { label: "Address"; placeholder: "0x… (a deployment or Anvil account)"; text <=> ChainData.address; }
+            if ChainData.action == "storage": CheatField { label: "Slot"; placeholder: "0, 5 or 0x…"; text <=> ChainData.slot; }
+            CheatField {
+                label: ChainData.action == "time" ? "Seconds" : ChainData.action == "timestamp" ? "Unix timestamp" : ChainData.action == "mine" ? "Blocks" : ChainData.action == "deal" ? "Balance in ether" : ChainData.action == "nonce" ? "Nonce" : ChainData.action == "storage" ? "Value (decimal or 0x)" : "Bytecode (0x…)";
+                placeholder: ChainData.action == "time" ? "86400 for one day" : ChainData.action == "deal" ? "100" : "";
+                text <=> ChainData.value;
+            }
+            HorizontalLayout {
+                alignment: start;
+                IconButton { icon: @image-url("icons/play.svg"); label: ChainData.busy ? "Working…" : "Apply"; primary: true; enabled: !ChainData.busy; clicked => { ChainLogic.apply-cheat(); } }
+            }
+        }
+    }
+}

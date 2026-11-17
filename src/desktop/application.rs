@@ -81,6 +81,10 @@ pub enum Command {
     TraceOpenSaved { name: String },
     #[serde(rename = "debugger.trace.console")]
     TraceConsole { line: String },
+    #[serde(rename = "chain.timeline.revert")]
+    TimelineRevert { index: u32 },
+    #[serde(rename = "chain.cheat")]
+    Cheat { action: String, address: Option<String>, value: String, slot: Option<String> },
     #[serde(rename = "history.action")]
     HistoryAction { action: String, index: u32 },
     #[serde(rename = "debugger.trace.view")]
@@ -240,7 +244,7 @@ impl Command {
         match self {
             Self::Send {} | Self::Deploy {} | Self::Compile {} | Self::UseDevAccount { .. }
             | Self::Snapshot {} | Self::Revert {} | Self::Mine {} | Self::Warp {}
-            | Self::RunMacro { .. } => "act",
+            | Self::RunMacro { .. } | Self::TimelineRevert { .. } | Self::Cheat { .. } => "act",
             Self::DebugLaunch { .. } | Self::DebugStart {} | Self::DebugNavigate { .. }
             | Self::DebugEvaluate { .. } | Self::DebugConsole { .. } | Self::DebugCancel {}
             | Self::TraceLoad { .. } | Self::TraceStep { .. } | Self::TraceSeek { .. } | Self::TraceBreakpoint { .. } | Self::TraceOpenSaved { .. } | Self::TraceConsole { .. } => "debug",
@@ -290,6 +294,8 @@ impl Command {
             Self::TraceConsole { .. } => "debugger.trace.console",
             Self::TraceView { .. } => "debugger.trace.view",
             Self::HistoryAction { .. } => "history.action",
+            Self::TimelineRevert { .. } => "chain.timeline.revert",
+            Self::Cheat { .. } => "chain.cheat",
             Self::ReadVariables {} => "contracts.storage.variables",
             Self::ReadMapping { .. } => "contracts.storage.mapping",
             Self::OpenDeploy {} => "contracts.deploy.open",
@@ -838,6 +844,7 @@ pub fn query(state: &DesktopState, query: &Query) -> Value {
             "notice":state.notice, "status":state.status_left, "compile":state.compile_label,
             "blockNumber":state.block_number, "networkEpoch":state.network_epoch,
             "snapshotTaken":!state.snapshot_id.is_empty(),
+            "timeline":state.timeline.iter().rev().map(|point| json!({"label":point.label,"block":point.block,"snapshot":point.id})).collect::<Vec<_>>(),
             "busy":{"deploy":state.deploy_busy,"call":state.send_busy,"chain":state.rpc_busy,"wallet":state.wallet_busy},
             "nodeOwned":state.owned_node.as_ref().is_some_and(|node| node.valid()),
             "explorer":{"query":state.explorer_input,"result":state.explorer_result,"blocks":state.recent_blocks.len(),"transactions":state.recent_transactions.len()},
@@ -990,6 +997,8 @@ pub fn command_schema() -> Value {
         ("debugger.trace.step", object(json!({"action":{"enum":["continue","back","step","step-back","next","prev-next","finish","finish-back","op","op-back"],"description":"step: next source line, entering calls and internal functions. next: next line in this frame; calls and internal functions run to completion. finish: run until this frame returns. op: one EVM instruction. continue: next breakpoint. Each -back / back / prev- form is the reverse. See DEBUGGER.md."}}), vec!["action"])),
         ("debugger.trace.seek", object(json!({"step":{"type":"integer","minimum":0}}), vec!["step"])),
         ("debugger.trace.breakpoint", object(json!({"line":{"type":"integer","minimum":1}}), vec!["line"])),
+        ("chain.timeline.revert", object(json!({"index":{"type":"integer","minimum":0,"description":"Row of app.state timeline, newest first"}}), vec!["index"])),
+        ("chain.cheat", object(json!({"action":{"enum":["time","timestamp","mine","deal","nonce","storage","code"]},"address":{"type":"string","maxLength":42},"value":{"type":"string","maxLength":100000,"description":"seconds, timestamp, blocks, ether, nonce, slot value or 0x bytecode"},"slot":{"type":"string","maxLength":80}}), vec!["action","value"])),
         ("history.action", object(json!({"action":{"enum":["repeat","debug","to_macro","show"],"description":"repeat refills the request tab; debug opens the step debugger; to_macro adds a step to the selected macro; show opens the History tab (index ignored)"},"index":{"type":"integer","minimum":0,"description":"Row in history.list, newest first"}}), vec!["action","index"])),
         ("debugger.trace.view", object(json!({"opcodes":{"type":"boolean"},"state":{"type":"boolean"},"console":{"type":"boolean"},"compact":{"type":"boolean","description":"Smaller rows and fonts for small windows"},"tab":{"type":"integer","minimum":0,"maximum":4,"description":"State pane tab: 0 Stack, 1 Memory, 2 Storage, 3 Calls, 4 Variables"},"opcodes_width":{"type":"number","minimum":220,"maximum":700},"state_width":{"type":"number","minimum":200,"maximum":900},"console_height":{"type":"number","minimum":70,"maximum":600}}), vec![])),
         ("debugger.trace.console", object(json!({"line":{"type":"string","maxLength":200,"description":"Trace console command, e.g. n, si, b 28, p stack[0], x 0x40 64, sload 0, find SSTORE, goto 120, help. Output is in debugger.state trace.console."}}), vec!["line"])),

@@ -120,6 +120,19 @@ fn matching_function_index(old: &FunctionInfo, functions: &[FunctionInfo]) -> Op
     matches.next().is_none().then_some(index)
 }
 
+/// One Anvil snapshot on the timeline and the deployments alive when it was taken.
+#[derive(Clone, Debug)]
+pub struct TimelinePoint {
+    pub id: String,
+    pub block: u64,
+    pub time: u64,
+    pub label: String,
+    pub deployments: HashSet<(String, String)>,
+}
+
+/// Points kept on the timeline; the oldest are dropped first.
+const MAX_TIMELINE: usize = 200;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChainRow {
     pub title: String,
@@ -242,6 +255,8 @@ pub struct DesktopState {
     pub snapshot_id: String,
     /// Deployments that existed when `snapshot_id` was taken; they survive a revert.
     snapshot_deployments: HashSet<(String, String)>,
+    /// Snapshots taken before each Send, Deploy and cheat, oldest first.
+    pub timeline: Vec<TimelinePoint>,
     pub menu_open: i32,
     pub deployment_menu: i32,
     pub dock_tab: i32,
@@ -392,6 +407,7 @@ impl DesktopState {
             last_tx: String::new(),
             snapshot_id: String::new(),
             snapshot_deployments: HashSet::new(),
+            timeline: Vec::new(),
             menu_open: -1,
             deployment_menu: -1,
             dock_tab: 0,
@@ -1131,6 +1147,40 @@ impl DesktopState {
         self.push_log(format!("Using Anvil dev key #{index} (local only)"));
     }
 
+    /// Deployments of the current network context, as timeline keys.
+    pub fn current_deployment_keys(&self) -> HashSet<(String, String)> {
+        self.deployments
+            .iter()
+            .filter(|deployment| self.deployment_epoch(deployment) == self.network_epoch)
+            .map(deployment_key)
+            .collect()
+    }
+
+    pub fn push_timeline(&mut self, id: String, block: u64, label: String, deployments: HashSet<(String, String)>) {
+        self.timeline.push(TimelinePoint { id, block, time: super::history::now(), label, deployments });
+        if self.timeline.len() > MAX_TIMELINE {
+            self.timeline.remove(0);
+        }
+    }
+
+    /// Anvil reverted to the point at `index`: it and every later snapshot are
+    /// consumed, and the chain is in the state it had when it was taken.
+    pub fn revert_to_point(&mut self, index: usize) {
+        let Some(point) = self.timeline.get(index).cloned() else { return };
+        self.timeline.truncate(index);
+        // The single manual snapshot is gone too when it was taken later.
+        if !self.snapshot_id.is_empty() && super::chain_tools::snapshot_order(&self.snapshot_id) >= super::chain_tools::snapshot_order(&point.id) {
+            self.snapshot_id.clear();
+        }
+        self.snapshot_deployments = point.deployments;
+        self.apply_revert();
+    }
+
+    /// The node lost the snapshot at `index` and every later one.
+    pub fn forget_points_from(&mut self, index: usize) {
+        self.timeline.truncate(index);
+    }
+
     pub fn record_snapshot(&mut self, id: String) {
         self.snapshot_deployments = self
             .deployments
@@ -1146,6 +1196,9 @@ impl DesktopState {
     /// so they are dropped, and every other open target becomes stale except
     /// documents bound to a deployment that predates the snapshot.
     pub fn apply_revert(&mut self) {
+        if let Some(id) = (!self.snapshot_id.is_empty()).then(|| super::chain_tools::snapshot_order(&self.snapshot_id)) {
+            self.timeline.retain(|point| super::chain_tools::snapshot_order(&point.id) < id);
+        }
         let previous = self.network_epoch;
         self.network_epoch = previous.wrapping_add(1);
         let kept = std::mem::take(&mut self.snapshot_deployments);

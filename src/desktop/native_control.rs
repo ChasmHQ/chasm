@@ -474,6 +474,15 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
         Command::TraceBreakpoint { line } => ui.global::<super::TraceLogic>().invoke_toggle_breakpoint(*line as i32),
         Command::TraceOpenSaved { name } => ui.global::<super::TraceLogic>().invoke_open_saved(name.as_str().into()),
         Command::TraceConsole { line } => ui.global::<super::TraceLogic>().invoke_console_run(line.as_str().into()),
+        Command::TimelineRevert { index } => ui.global::<super::ChainLogic>().invoke_revert_to(*index as i32),
+        Command::Cheat { action, address, value, slot } => {
+            let data = ui.global::<super::ChainData>();
+            data.set_action(action.as_str().into());
+            data.set_address(address.clone().unwrap_or_default().into());
+            data.set_value(value.as_str().into());
+            data.set_slot(slot.clone().unwrap_or_default().into());
+            ui.global::<super::ChainLogic>().invoke_apply_cheat();
+        }
         Command::HistoryAction { action, index } => {
             let logic = ui.global::<super::HistoryLogic>();
             ui.global::<super::HistoryData>().set_filter(0);
@@ -481,6 +490,10 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
                 "repeat" => logic.invoke_repeat(*index as i32),
                 "debug" => logic.invoke_debug(*index as i32),
                 "to_macro" => logic.invoke_to_macro(*index as i32),
+                "timeline" => {
+                    ui.global::<AppData>().set_explorer_tab(3);
+                    ui.global::<Logic>().invoke_open_activity(1);
+                }
                 "show" => {
                     ui.global::<AppData>().set_explorer_tab(2);
                     ui.global::<Logic>().invoke_open_activity(1);

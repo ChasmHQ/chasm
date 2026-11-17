@@ -603,6 +603,8 @@ fn execute(
     }
     runtime.spawn(async move {
         let _lease = lease;
+        let label = format!("before {}.{}", request.context.contract, request.context.signature);
+        let point = if key.is_some() { super::chain_tools::snapshot(&request.rpc).await.ok() } else { None };
         let result = match key {
             Some(key) => super::contract_service::send(request, key, owned.unwrap()).await,
             None => super::contract_service::simulate(request).await,
@@ -612,6 +614,10 @@ fn execute(
             let summary = result.as_ref().map(|result| result.simple.clone()).map_err(Clone::clone);
             let tx = result.as_ref().ok().and_then(|result| result.context.request.get("transactionHash").and_then(Value::as_str).map(str::to_string));
             state.finish_request(&token, &summary, tx.clone());
+            if let Some((id, block)) = point {
+                let keys = state.current_deployment_keys();
+                state.push_timeline(id, block, label, keys);
+            }
             let mut record = record;
             record.tx = tx.clone().unwrap_or_default();
             match &result {
