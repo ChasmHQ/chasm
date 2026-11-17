@@ -93,7 +93,7 @@ Each item ships with tests, a live run through the control API and screenshots, 
 | 1. Field focus | Done (`c9fbb89`) |
 | 2. Revert reason on Send | Done: decoded reason, nothing broadcast, Debug this call, ether to wei button. Also fixed CRLF source files mapping steps to the wrong line |
 | 4. Step semantics and docs | Done: Over/Out handle internal functions, every step has a reverse, Step instruction naming, hover help, `DEBUGGER.md`. Lines of solc's generated helpers are no longer shown as your source |
-| 5. Capture and trace saving | Not started |
+| 5. Capture and trace saving | Done for the step debugger: `.chasm/traces/`, Saved traces list (open, show in folder, delete), path in the status line. Offline engine examples are labelled as built-in; saving its sessions as captures needs a replay baseline and stays open |
 | 3. Dockable debugger panes and console | Not started |
 
 ## Goals after round 2 (agreed 2026-11-17)

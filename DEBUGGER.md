@@ -16,6 +16,19 @@ nothing, so every step command has a reverse.
   or pick it from *Recent transactions on this node*.
 - **The newest action:** leave the Debug bar empty and press **Debug**.
 
+## Where recordings are saved
+
+Every transaction or call you debug is saved in the project:
+
+- `.chasm/traces/<transaction hash>.json` for a mined transaction.
+- `.chasm/traces/<unix time>-<title>.json` for a call (Simulate, or a Send that reverted before broadcast).
+
+The status line names the file after each recording. The file holds the node's opcode trace and the code at each address it entered, so it reopens later without the node, after a restart, or after the chain was reset. Source lines are read again from the workspace, so edit nothing between recording and review if you want the lines to match.
+
+The Debugger start screen lists them under **Saved traces**, newest first, with **Show in folder** and **Delete**. `.chasm/` is ignored by git.
+
+The offline engine (*Captures and Foundry tests*) saves nothing to the project. *Synthetic* and *Withdrawal lab* are built-in examples shipped with the debugger, in `examples/web-debugger/`. A Foundry test run is debugged live and is gone when the session closes.
+
 The source pane shows the contract whose code is running. Code that is not a
 workspace contract (another deployment, a precompile) shows as `no source`,
 with opcodes only.
@@ -89,6 +102,7 @@ AI clients with the `debug` scope use the same commands:
   - `op`, `op-back`
 - `debugger.trace.seek` with `{"step": n}`.
 - `debugger.trace.breakpoint` with `{"line": n}`.
+- `debugger.trace.open_saved` with `{"name": "<file>.json"}`, a name from `debugger.state` `trace.saved`.
 - The `debugger.state` query returns the trace position under `debugger.trace`.
 
 ## Offline engine

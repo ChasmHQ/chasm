@@ -31,6 +31,9 @@ export global TraceData {
     in property <[TraceValue]> frames;
     in property <[TraceValue]> step-info;
     in property <[TraceTarget]> targets;
+    // Recordings saved under .chasm/traces; `query` is the file name.
+    in property <[TraceTarget]> saved;
+    in property <string> saved-folder;
     in-out property <string> input;
     in-out property <string> opcode-filter: "SSTORE";
     in-out property <int> state-tab: 0;
@@ -44,6 +47,9 @@ export global TraceLogic {
     callback toggle-breakpoint(int);
     callback next-opcode(string, bool);
     callback clear();
+    callback open-saved(string);
+    callback reveal-saved(string);
+    callback delete-saved(string);
 }
 
 component ToolButton inherits ActionControl {
@@ -131,6 +137,23 @@ export component TraceDebugger inherits Rectangle {
                     padding: Theme.pad * 2; spacing: 0.5rem; alignment: start;
                     SelectableText { text: TraceData.busy ? "Recording the execution…" : TraceData.status != "" ? TraceData.status : "Nothing loaded"; font-size: 1rem; font-weight: 600; wrap: word-wrap; }
                     SelectableText { text: "Pick a recent transaction below, paste a hash above, or use Debug in a contract's Response pane after a Send or Simulate. Every opcode is recorded once, so you can step forwards and backwards freely."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
+                    if TraceData.saved.length > 0: SideHeader { title: "Saved traces"; trailing: "reopen without the node"; }
+                    if TraceData.saved.length > 0: SelectableText { text: TraceData.saved-folder; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; wrap: word-wrap; }
+                    for item in TraceData.saved: HorizontalLayout {
+                        spacing: 0.25rem;
+                        ActionControl {
+                            label: "Open saved trace \{item.label}";
+                            height: 2.5rem; horizontal-stretch: 1;
+                            clicked => { TraceLogic.open-saved(item.query); }
+                            VerticalLayout {
+                                padding-left: Theme.pad; alignment: center;
+                                Text { text: item.label; color: Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; overflow: elide; }
+                                Text { text: item.detail; color: Theme.muted; font-size: 0.6875rem; overflow: elide; }
+                            }
+                        }
+                        ToolButton { text: "Show in folder"; clicked => { TraceLogic.reveal-saved(item.query); } }
+                        ToolButton { text: "Delete"; clicked => { TraceLogic.delete-saved(item.query); } }
+                    }
                     SideHeader { title: "Recent transactions on this node"; }
                     if TraceData.targets.length == 0: SelectableText { text: "No transactions yet. Deploy or send something first."; color: Theme.faint; font-size: 0.75rem; }
                     for target[index] in TraceData.targets: ActionControl {

@@ -386,13 +386,14 @@ export component DebugSessionPane inherits Rectangle {
                 padding: Theme.pad; spacing: 0.75rem; alignment: start;
                 SelectableText { text: "Launch source"; font-weight: 600; }
                 SelectableText { text: "Choose one explicit source before Start. Foundry executes trusted local test code; offline mode uses resources already uploaded to this gateway."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+                SelectableText { text: "Nothing here is saved to your project. Synthetic and Withdrawal lab are built-in examples shipped with the debugger (examples/web-debugger). A Foundry run is debugged live and is gone when the session closes. Transactions and calls you debug from the Debug bar are saved to .chasm/traces and listed under Saved traces."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
                 HorizontalLayout {
                     alignment: start; spacing: 0.25rem;
                     DockTab { label: "Synthetic"; selected: DebugData.launch-mode == 0; enabled: DebugData.can-start; clicked => { DebugData.launch-mode = 0; DebugLogic.launch-edited(); } }
                     DockTab { label: "Trusted Foundry"; selected: DebugData.launch-mode == 1; enabled: DebugData.can-start; clicked => { DebugData.launch-mode = 1; DebugLogic.launch-edited(); } }
                     DockTab { label: "Offline capture"; selected: DebugData.launch-mode == 2; enabled: DebugData.can-start; clicked => { DebugData.launch-mode = 2; DebugLogic.launch-edited(); } }
                 }
-                if DebugData.launch-mode == 0: SelectableText { text: "Bundled WorkshopVault fixture. Synthetic evidence only; it is not a replay of the selected project or a chain transaction."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+                if DebugData.launch-mode == 0: SelectableText { text: "Built-in example: the bundled WorkshopVault fixture. Synthetic evidence only; it is not a replay of the selected project or a chain transaction."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
                 if DebugData.launch-mode == 1: VerticalLayout {
                     spacing: 0.375rem;
                     DebugLaunchField { label: "Target .sol"; enabled: DebugData.can-start; text <=> DebugData.foundry-target; }

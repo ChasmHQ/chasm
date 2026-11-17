@@ -471,6 +471,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
         Command::TraceStep { action } => ui.global::<super::TraceLogic>().invoke_navigate(action.as_str().into()),
         Command::TraceSeek { step } => ui.global::<super::TraceLogic>().invoke_seek(*step as i32),
         Command::TraceBreakpoint { line } => ui.global::<super::TraceLogic>().invoke_toggle_breakpoint(*line as i32),
+        Command::TraceOpenSaved { name } => ui.global::<super::TraceLogic>().invoke_open_saved(name.as_str().into()),
         Command::ReadVariables {} => {
             contract.invoke_section(owner().into(), 1);
             contract.invoke_refresh_variables(owner().into());
@@ -630,6 +631,8 @@ fn trace_state(ui: &MainWindow) -> Value {
                 "stack": rows(trace.get_stack()).into_iter().take(8).map(|item| item.value.to_string()).collect::<Vec<_>>(),
                 "storage": rows(trace.get_storage()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
                 "frames": rows(trace.get_frames()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
+                "savedFolder": trace.get_saved_folder().as_str(),
+                "saved": rows(trace.get_saved()).into_iter().map(|item| json!({"name":item.query.as_str(),"label":item.label.as_str(),"size":item.detail.as_str()})).collect::<Vec<_>>(),
     })
 }
 
