@@ -104,7 +104,7 @@ Case file I/O is confined to the app-controlled repository, uses bounded reads a
 
 ## Native workspace additions (local-only)
 
-The desktop now has owner-bound contract documents, Simple/Raw JSON/Trace results, Bank-internal Storage, native dock/floating panels and a typed debugger console. These do not imply new production tools. The console and signing remain local-only; `ui.layout` still covers sidebar/zoom, not arbitrary pane placement. Native Trace uses a bounded callTracer request against the captured context, formatted locally with the captured ABI; it is not exposed by the historical analysis reader and is not verified debugger replay. Pending controller confirmations block relevant actions across native hosts. See [NATIVE_WORKSPACE.md](NATIVE_WORKSPACE.md).
+The desktop now has owner-bound contract documents, Simple/Raw JSON/Trace results, Bank-internal Storage, native dock/floating panels and a typed debugger console. These do not imply new production tools. The console and signing remain local-only; `ui.layout` still covers sidebar/zoom, not arbitrary pane placement. Native Trace uses a bounded callTracer request against the captured context, formatted locally with the captured ABI; it is not exposed by the historical analysis reader and is not verified debugger replay. Pending controller confirmations block relevant actions across native hosts. See [CLAUDE.md](CLAUDE.md) for the current layout.
 
 ## Qualification
 

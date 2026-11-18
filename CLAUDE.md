@@ -117,5 +117,5 @@ debugger's commands and keys.
 ## Workflow
 
 - Branch `UI` holds the native redesign. Do not push or merge without asking.
-- Plans and progress: `REDESIGN_PLAN.md`, `FIX_PLAN.md` (done), `NEXT_PLAN.md` (current).
+- Plans and progress: `NEXT_PLAN.md` (current); earlier plans are in `docs/archive/`.
 - Each change gets its tests and a live check through the API, then its own commit.

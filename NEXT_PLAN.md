@@ -1,6 +1,6 @@
 # Next plan, after goals G1–G7 (2026-11-18)
 
-Status: proposed, not started. FIX_PLAN.md (round 2 and goals G1–G7) is
+Status: proposed, not started. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
 finished. This plan covers what is left, ordered by what blocks real use
 first.
 
@@ -35,7 +35,7 @@ The work is only useful once it can land on `main`. Nothing here is a feature.
 
 ## P2. Finish half-done features
 
-Each item was cut short and is recorded as "not done" in FIX_PLAN.md.
+Each item was cut short and is recorded as "not done" in docs/archive/FIX_PLAN.md.
 
 1. **Deploy inside the request editor (Phase 1c).**
    - Deploy still opens a separate "Deploy Bank" tab.
