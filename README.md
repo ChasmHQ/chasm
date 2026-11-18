@@ -12,6 +12,7 @@ macros, and fork a live chain to debug real transactions.
 
 ![A reverted call shows its reason, and Debug this call opens the failing line](screenshots/native/request-revert.png)
 ![The step debugger with named storage writes](screenshots/native/debugger-variables.png)
+![An undeployed tab deploys in place](screenshots/native/inline-deploy.png)
 ![Saved call history with Repeat, Debug and To macro](screenshots/native/history.png)
 ![Snapshot timeline and local chain cheats](screenshots/native/timeline-cheats.png)
 ![Compiler versions, libraries and mainnet fork](screenshots/native/compiler-libraries-network.png)
@@ -21,6 +22,7 @@ macros, and fork a live chain to debug real transactions.
 
 ### Contracts
 - **Zero-config compile.** Chasm finds the Solidity files in the folder and compiles them with `foundry-compilers`; no `foundry.toml` is needed.
+- **Deploy in place.** An undeployed contract tab shows its constructor form above the functions, with Deploy beside Send. Deploy, call and debug take five clicks.
 - **Request editor.**
   - One field per ABI parameter.
   - Values in wei, gwei or ether, with an *ether to wei* helper for amount fields.

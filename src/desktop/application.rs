@@ -682,8 +682,9 @@ pub fn validate(state: &DesktopState, command: &Command) -> Result<(), AppError>
             }
         }
         Command::Deploy {} => {
-            if active_kind(state) != Some(1) {
-                return Err(AppError::new("context_unavailable", "Open the deploy tab first (contracts.deploy.open)."));
+            let unbound = state.current_contract_view().is_some_and(|view| view.target.is_none());
+            if active_kind(state) != Some(1) && !unbound {
+                return Err(AppError::new("context_unavailable", "Open an undeployed contract tab first (contracts.deploy.open)."));
             }
             let problem = state.deployment_problem();
             if !problem.is_empty() {
@@ -930,8 +931,12 @@ fn function_id_for(state: &DesktopState, doc: &super::session::Document, index: 
 }
 
 fn deploy_form(state: &DesktopState) -> Value {
-    let Some(doc) = state.documents.get(state.active_document as usize).filter(|doc| doc.kind == 1) else {
-        return json!({"context":context(state),"open":false,"reason":"No deploy tab is active."});
+    let Some(doc) = state
+        .documents
+        .get(state.active_document as usize)
+        .filter(|doc| doc.kind == 1 || (doc.kind == 0 && doc.contract_view.target.is_none()))
+    else {
+        return json!({"context":context(state),"open":false,"reason":"No undeployed contract tab is active."});
     };
     let view = super::deployment_presentation(state, doc);
     let fields: Vec<_> = (0..slint::Model::row_count(&view.fields))

@@ -400,3 +400,29 @@ fn revert_drops_post_snapshot_deployments_and_rebinds_survivors() {
     let token = state.begin_request(Operation::Deploy, "redeploy", false);
     assert!(state.complete_deployment(&a, "Bank", NEW, &token).is_ok());
 }
+
+#[test]
+fn inline_deploy_uses_an_unbound_tab_and_opens_one_when_all_are_bound() {
+    let mut state = bank_state();
+    state.select_contract(0);
+    let a = state.current_document_id().unwrap();
+    state.current_contract_view_mut().unwrap().section = 2;
+    assert!(state.open_inline_deploy());
+    assert_eq!(state.current_document_id().as_deref(), Some(a.as_str()));
+    assert_eq!(state.current_contract_view().unwrap().section, 0);
+    assert!(state.edit_constructor_argument(0, "5".into()));
+    assert!(state.deployment_problem().contains("wallet key") || state.deployment_problem().contains("account"));
+    let token = state.begin_request(Operation::Deploy, "deploy A", false);
+    state
+        .complete_deployment(&a, "Bank", "0x1111111111111111111111111111111111111111", &token)
+        .unwrap();
+    assert!(state.open_inline_deploy());
+    let b = state.current_document_id().unwrap();
+    assert_ne!(a, b);
+    assert!(state.current_contract_view().unwrap().target.is_none());
+    assert!(state.documents.iter().all(|doc| doc.kind == 0));
+    assert!(state.open_inline_deploy());
+    assert_eq!(state.current_document_id(), Some(b));
+    state.deploy_busy = true;
+    assert!(!state.open_inline_deploy());
+}

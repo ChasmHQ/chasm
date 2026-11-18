@@ -310,4 +310,40 @@ def fork():
     check("back to a local chain", rpc("eth_getCode", [usdc, "latest"]) == "0x")
 
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, fork]
+def inline_deploy():
+    """Deploy from the contract tab, call and debug in five clicks."""
+    clicks = 0
+    artifact = next(a for a in query("workspace.artifacts")["artifacts"] if a["name"] == "Bank")
+    command("contracts.select", id=artifact["id"]); clicks += 1
+    state = query("app.state")
+    active = next(d for d in state["documents"] if d["active"])
+    check("an unbound Bank tab is open", active["kind"] == 0 and query("contracts.view")["address"] == "", str(active))
+    form = query("contracts.deploy_form")
+    check("constructor form is in the tab", form["open"] and len(form["fields"]) == 2, str(form)[:300])
+    command("contracts.constructor.edit", index=0, value=OWNER)
+    command("contracts.constructor.edit", index=1, value="[1]")
+    check("form ready", query("contracts.deploy_form")["ready"], query("contracts.deploy_form")["blockReason"])
+    before = len(state["deployments"])
+    command("contracts.deploy"); clicks += 1
+    settle()
+    state = query("app.state")
+    check("deployed from the tab", len(state["deployments"]) == before + 1, state["notice"] or state["status"])
+    check("no separate deploy tab", all(d["kind"] != 1 for d in state["documents"]), str(state["documents"]))
+    view = query("contracts.view")
+    check("tab is bound to the new address", view["address"] == state["deployments"][-1]["address"], view["address"])
+    command("contracts.function.select", id=function_id("deposit")); clicks += 1
+    command("contracts.request.edit", value=str(10**18))
+    command("contracts.send"); clicks += 1
+    settle()
+    check("deposit sent", "Transaction status: Success" in query("contracts.view")["simple"])
+    command("debugger.trace", hash=None); clicks += 1
+    for _ in range(60):
+        t = trace()
+        if t["loaded"] and not t["busy"]:
+            break
+        time.sleep(0.5)
+    check("deposit traced", t["loaded"] and t["total"] > 0, t["status"])
+    check(f"five clicks or fewer ({clicks})", clicks <= 5)
+
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, fork]

@@ -538,7 +538,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     on_void!(ui, state, on_close_menu, |state: &mut DesktopState| state.menu_open = -1);
     on_void!(ui, state, on_toggle_logs, |state: &mut DesktopState| state.show_logs = !state.show_logs);
     on_void!(ui, state, on_open_wallet, |state: &mut DesktopState| state.open_wallet_doc());
-    on_void!(ui, state, on_open_deploy, |state: &mut DesktopState| state.open_deploy_doc());
+    on_void!(ui, state, on_open_deploy, |state: &mut DesktopState| { state.open_inline_deploy(); });
     on_int!(ui, state, on_use_anvil_key, |state: &mut DesktopState, index| state.use_anvil_key(index));
     on_int!(ui, state, on_remove_deployment, |state: &mut DesktopState, index| { state.remove_deployment(index); state.deployment_menu = -1; });
     on_int!(ui, state, on_open_deployment_menu, |state: &mut DesktopState, index| state.deployment_menu = index);
@@ -928,8 +928,13 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                             state.status_left = format!("Deployment of {name} needs attention");
                         }
                         state.deploy_output = output.clone();
-                        if let Some(doc) = state.documents.iter_mut().find(|doc| Some(&doc.id) == deployment_document.as_ref() && doc.kind == 1) {
-                            doc.body = output;
+                        if let Some(doc) = state.documents.iter_mut().find(|doc| Some(&doc.id) == deployment_document.as_ref()) {
+                            match doc.kind {
+                                1 => doc.body = output,
+                                // A tab that deployed inline and is still unbound shows why.
+                                0 if doc.contract_view.target.is_none() => doc.contract_view.call_status = output,
+                                _ => {}
+                            }
                         }
                     }
                     Err(error) => {

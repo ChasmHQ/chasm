@@ -59,6 +59,15 @@ export struct ContractViewData {
     storage-scroll-y: float,
     function-width: float,
     result-height: float,
+    // Constructor form shown at the top of an unbound tab.
+    constructor-fields: [RequestField],
+    deploy-note: string,
+    deploy-ready: bool,
+    deploy-reason: string,
+    deploy-busy: bool,
+    deploy-payable: bool,
+    deploy-value: string,
+    deploy-value-error: string,
 }
 
 export global ContractData {
@@ -113,6 +122,9 @@ export global ContractLogic {
     callback trace(string);
     callback attach(string, string);
     callback deploy(string);
+    callback constructor-edited(string, int, string);
+    callback deploy-value-edited(string, string);
+    callback deploy-contract(string);
     callback save-output(string, string);
     callback detach-result(string);
     callback detach-storage(string);
@@ -334,8 +346,47 @@ component ContractRequest inherits Rectangle {
                     padding: 8 * Theme.unit;
                     spacing: 0.375rem;
                     alignment: start;
+                    if !root.view.target-bound: VerticalLayout {
+                        spacing: 0.375rem;
+                        SelectableText { text: "Deploy \{root.view.contract-name}"; font-size: 0.875rem; font-weight: 600; wrap: word-wrap; }
+                        if root.view.deploy-note != "": SelectableText { text: root.view.deploy-note; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+                        for field[index] in root.view.constructor-fields: VerticalLayout {
+                            spacing: 0.25rem;
+                            HorizontalLayout {
+                                spacing: 0.375rem;
+                                Text { text: field.name; color: Theme.text; font-size: 0.8125rem; min-width: 0px; overflow: elide; horizontal-stretch: 0; vertical-alignment: center; }
+                                Text { text: field.kind; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                            }
+                            LineEdit {
+                                min-width: 0px;
+                                font-size: 0.8125rem;
+                                enabled: !root.view.deploy-busy;
+                                accessible-label: "Constructor \{field.name} (\{field.kind})";
+                                placeholder-text: field.placeholder;
+                                text: field.value;
+                                edited => { ContractLogic.constructor-edited(root.owner, index, self.text); }
+                            }
+                            if field.error != "": Text { text: field.error; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+                        }
+                        if root.view.deploy-payable: VerticalLayout {
+                            spacing: 0.25rem;
+                            Text { text: "Deployment value (wei)"; color: Theme.text; font-size: 0.8125rem; }
+                            LineEdit {
+                                min-width: 0px;
+                                font-size: 0.8125rem;
+                                enabled: !root.view.deploy-busy;
+                                accessible-label: "Deployment value (wei)";
+                                placeholder-text: "0";
+                                text: root.view.deploy-value;
+                                edited => { ContractLogic.deploy-value-edited(root.owner, self.text); }
+                            }
+                            if root.view.deploy-value-error != "": Text { text: root.view.deploy-value-error; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+                        }
+                        if !root.view.deploy-ready && !root.view.deploy-busy && root.view.deploy-reason != "": SelectableText { text: root.view.deploy-reason; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+                        Rectangle { height: 1px; background: Theme.line; }
+                    }
                     if root.compact: CompactFunctionPicker { view: root.view; owner: root.owner; }
-                    if !root.compact: SelectableText { text: root.view.selected-name == "" ? "Select a function to prepare a call." : root.view.mutability == "" ? root.view.selected-name : "\{root.view.selected-name} · \{root.view.mutability}"; font-size: 0.875rem; font-weight: 600; wrap: word-wrap; }
+                    if !root.compact: SelectableText { text: root.view.selected-name == "" ? (root.view.target-bound ? "Select a function to prepare a call." : "Deploy, or attach an address in Details, to call functions.") : root.view.mutability == "" ? root.view.selected-name : "\{root.view.selected-name} · \{root.view.mutability}"; font-size: 0.875rem; font-weight: 600; wrap: word-wrap; }
                     if root.view.selected-function >= 0 && root.view.fields.length == 0: SelectableText { text: "No arguments."; color: Theme.faint; font-size: 0.75rem; }
                     for field[index] in root.view.fields: VerticalLayout {
                         spacing: 0.25rem;
@@ -415,8 +466,9 @@ component ContractRequest inherits Rectangle {
                 padding-right: Theme.pad;
                 spacing: 0.375rem;
                 alignment: start;
+                if !root.view.target-bound: ContractButton { label: root.view.deploy-busy ? "Deploying…" : "Deploy"; primary: true; enabled: root.view.deploy-ready && !root.view.deploy-busy; clicked => { ContractLogic.deploy-contract(root.owner); } }
                 ContractButton { label: "Read / Simulate"; enabled: root.view.target-bound && root.view.can-read && root.view.selected-function >= 0 && !root.view.call-busy; clicked => { ContractLogic.read(root.owner); } }
-                ContractButton { label: "Send"; primary: true; enabled: root.view.target-bound && root.view.send-enabled && root.view.selected-function >= 0 && root.view.mutability != "view" && root.view.mutability != "pure" && !root.view.call-busy; clicked => { ContractLogic.send(root.owner); } }
+                ContractButton { label: "Send"; primary: root.view.target-bound; enabled: root.view.target-bound && root.view.send-enabled && root.view.selected-function >= 0 && root.view.mutability != "view" && root.view.mutability != "pure" && !root.view.call-busy; clicked => { ContractLogic.send(root.owner); } }
             }
         }
     }

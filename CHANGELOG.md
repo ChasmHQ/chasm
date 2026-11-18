@@ -7,6 +7,7 @@ the `ui/` folder and the npm build are gone.
 
 ### Workspace
 - Native workspace with an activity rail (Contracts, Explorer, Converter, Macros, Debugger), dockable panes, saved layouts and Chasm-styled scrollbars.
+- An undeployed contract tab shows its constructor form and deploys in place; the tab then binds to the new address.
 - Request editor with one field per ABI parameter, wei/gwei/ether units and an *ether to wei* helper. Response in a side pane with Simple, raw JSON and trace views.
 - The function tree sits in the sidebar; functions are collapsible and highlighted by whole row.
 - Fields keep focus while typing (request, constructor and macro forms).

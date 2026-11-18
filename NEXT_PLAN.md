@@ -1,6 +1,6 @@
 # Next plan, after goals G1–G7 (2026-11-18)
 
-Status: P1 done; P2 in progress. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
+Status: P1 and P2.1 done; P2 in progress. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
 finished. This plan covers what is left, ordered by what blocks real use
 first.
 
@@ -108,7 +108,7 @@ its own commit, and is recorded in this file's progress table.
 | P1.2 warnings | done, 0 warnings (6fc9abf) |
 | P1.3 live tests in repo | done, 9 flows pass (ddb3448) |
 | P1.4 merge review | done: README, CHANGELOG, docs/archive; no debug prints or stubs; `.agents/` stays untracked. Merge waits for the user |
-| P2.1 deploy in request editor | not started |
+| P2.1 deploy in request editor | done: constructor form inside the unbound tab, Deploy beside Send; `inline_deploy` live flow measures 5 clicks |
 | P2.2 docking debugger panes | not started |
 | P2.3 offline captures | not started |
 | P2.4 templates | not started |

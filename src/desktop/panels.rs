@@ -1615,6 +1615,10 @@ fn keep_request_rows(shown: super::ContractViewData, mut next: super::ContractVi
     if shown.details == next.details && shown.selected_name == next.selected_name {
         next.fields = super::keep_rows(shown.fields, next.fields, |old, new| old.name == new.name && old.kind == new.kind);
     }
+    if shown.details == next.details {
+        next.constructor_fields =
+            super::keep_rows(shown.constructor_fields, next.constructor_fields, |old, new| old.name == new.name && old.kind == new.kind);
+    }
     next
 }
 

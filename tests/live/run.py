@@ -69,9 +69,9 @@ def main():
         if os.name == "nt":
             subprocess.run(["taskkill", "/F", "/IM", "anvil.exe"], capture_output=True)
         shutil.rmtree(work, ignore_errors=True)
-    print("\nflow        result  seconds")
+    print("\nflow           result  seconds")
     for name, result, seconds in results:
-        print(f"{name:<11} {result:<7} {seconds:6.1f}")
+        print(f"{name:<14} {result:<7} {seconds:6.1f}")
     failed = [name for name, result, _ in results if result != "pass"]
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
     sys.exit(1 if failed else 0)

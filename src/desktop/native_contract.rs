@@ -293,11 +293,66 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
         let Some(index) = document_index(&state, owner.as_str()) else {
             return;
         };
-        let id = state.documents[index].id.clone();
-        state.open_deploy_for_document(&id);
+        state.select_document(index as i32);
+        state.open_inline_deploy();
         drop(state);
         super::panels::focus_current();
         super::paint(&weak, &held);
+    });
+    // The constructor form inside an unbound contract tab edits the same
+    // per-tab draft the deploy job reads.
+    let weak = ui.as_weak();
+    let held = state.clone();
+    ui.global::<ContractLogic>().on_constructor_edited(move |owner, index, text| {
+        if text.len() > 64 * 1024 {
+            return;
+        }
+        let mut state = held.lock().unwrap();
+        if state.transition_pending() || state.deploy_busy {
+            return;
+        }
+        let Some(doc_index) = document_index(&state, owner.as_str()) else { return };
+        state.select_document(doc_index as i32);
+        if state.edit_constructor_argument(index, text.to_string()) {
+            state.view_revision = state.view_revision.wrapping_add(1);
+        }
+        drop(state);
+        super::paint(&weak, &held);
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
+    ui.global::<ContractLogic>().on_deploy_value_edited(move |owner, text| {
+        if text.len() > 100 {
+            return;
+        }
+        let mut state = held.lock().unwrap();
+        if state.transition_pending() || state.deploy_busy {
+            return;
+        }
+        let Some(doc_index) = document_index(&state, owner.as_str()) else { return };
+        state.select_document(doc_index as i32);
+        state.edit_deployment_value(text.to_string());
+        state.view_revision = state.view_revision.wrapping_add(1);
+        drop(state);
+        super::paint(&weak, &held);
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
+    ui.global::<ContractLogic>().on_deploy_contract(move |owner| {
+        {
+            let mut state = held.lock().unwrap();
+            if state.transition_pending() {
+                return;
+            }
+            let Some(doc_index) = document_index(&state, owner.as_str()) else { return };
+            if state.documents[doc_index].contract_view.target.is_some() {
+                return;
+            }
+            state.select_document(doc_index as i32);
+        }
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<super::Logic>().invoke_deploy_contract();
+        }
     });
     let weak = ui.as_weak();
     let held = state.clone();
@@ -1020,6 +1075,42 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
         .into(),
         ..Default::default()
     };
+    if view.target.is_none() {
+        let deploy = super::deployment_presentation(state, doc);
+        data.constructor_fields = super::model(
+            (0..slint::Model::row_count(&deploy.fields))
+                .filter_map(|index| slint::Model::row_data(&deploy.fields, index))
+                .map(|field| super::RequestField {
+                    name: field.name,
+                    kind: field.kind,
+                    value: field.value,
+                    hint: field.hint,
+                    placeholder: field.placeholder,
+                    error: field.error,
+                    amount: false,
+                })
+                .collect(),
+        );
+        // Field errors already sit under each field; one line says what is left.
+        let incomplete = (0..slint::Model::row_count(&data.constructor_fields))
+            .filter_map(|index| slint::Model::row_data(&data.constructor_fields, index))
+            .any(|field| field.value.is_empty() || !field.error.is_empty());
+        data.deploy_reason = if !deploy.ready && incomplete {
+            "Fill in each constructor argument to deploy.".into()
+        } else {
+            deploy.block_reason
+        };
+        data.deploy_note = deploy.note;
+        data.deploy_ready = deploy.ready;
+        data.deploy_busy = deploy.busy;
+        data.deploy_value = deploy.value;
+        data.deploy_value_error = deploy.value_error;
+        data.deploy_payable = doc
+            .contract_name()
+            .and_then(|name| state.contracts.iter().find(|item| item.name == name))
+            .and_then(|item| item.constructor.as_ref())
+            .is_some_and(|spec| spec.payable);
+    }
     let labels = super::address_book::labels(state);
     if let Some(result) = &view.result {
         data.simple_output = super::address_book::annotate(

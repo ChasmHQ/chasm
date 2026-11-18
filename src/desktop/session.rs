@@ -750,6 +750,45 @@ impl DesktopState {
         self.status_left = format!("Selected {name}");
     }
 
+    /// Shows the constructor form of the active (or selected) contract at the
+    /// top of an unbound contract tab, opening one when every tab of that
+    /// contract is already bound to an address.
+    pub fn open_inline_deploy(&mut self) -> bool {
+        if self.transition_pending() || !self.workspace_ready || self.deploy_busy {
+            return false;
+        }
+        let name = self
+            .documents
+            .get(self.active_document as usize)
+            .filter(|doc| doc.kind <= 1)
+            .and_then(|doc| doc.contract_name().map(str::to_string))
+            .or_else(|| self.selected_contract.clone());
+        let Some(name) = name else {
+            self.notice = "Select a contract before deploying.".into();
+            return false;
+        };
+        let Some(item) = unique_contract(&self.contracts, &name).cloned() else {
+            self.notice = format!("Contract {name} is missing or ambiguous in the compile output.");
+            return false;
+        };
+        let unbound = self.documents.iter().position(|doc| {
+            doc.kind == 0 && doc.contract_name() == Some(name.as_str()) && doc.contract_view.target.is_none()
+        });
+        match unbound {
+            Some(index) => self.select_document(index as i32),
+            None => self.open_contract_doc(item.name, item.functions),
+        }
+        if let Some(view) = self.current_contract_view_mut() {
+            view.section = 0;
+            view.interact_view = 0;
+            view.revision = view.revision.wrapping_add(1);
+        }
+        self.view_revision = self.view_revision.wrapping_add(1);
+        self.status_left = format!("Deploy {name}: fill in the constructor, then Deploy");
+        true
+    }
+
+    #[cfg(test)]
     pub fn open_deploy_doc(&mut self) {
         let owner = self
             .documents
@@ -766,6 +805,7 @@ impl DesktopState {
         }
     }
 
+    #[cfg(test)]
     pub fn open_deploy_for_document(&mut self, owner_id: &str) -> bool {
         if self.transition_pending() || !self.workspace_ready || self.deploy_busy {
             return false;

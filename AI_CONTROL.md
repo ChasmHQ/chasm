@@ -12,7 +12,7 @@ The panel announces a random loopback port. The production API is `http://127.0.
 
 | Capability | Limited | Partial | Full |
 |---|---|---|---|
-| Read state, artifacts, jobs, view queries (`contracts.view`, `contracts.deploy_form`, `macros.state`, `debugger.state`) | Yes | Yes | Yes |
+| Read state, artifacts, jobs, view queries (`contracts.view`, `contracts.deploy_form` (the constructor form of an undeployed tab), `macros.state`, `debugger.state`) | Yes | Yes | Yes |
 | Analysis (`/analyze`: pinned chain reads, eth_call, cases) | Yes | Yes | Yes |
 | UI control: navigate, select, edit drafts, attach, simulate, trace, storage read, macro edit/validate, panels | No | Yes | Yes |
 | Chain and build: deploy, send, compile, dev signer, snapshot, revert, mine, warp, macro run | No | One local approval per action | Yes |
