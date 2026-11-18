@@ -1,8 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ethers::types::U256;
@@ -11,7 +8,6 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use super::owned_node::OwnedNode;
 
 const MAX_STEPS: usize = 128;
 const MAX_PROBES: usize = 32;
@@ -266,13 +262,12 @@ pub enum FailureCode {
     AssertionFailed,
     LimitExceeded,
     NoMatch,
-    NotSupported,
-    Internal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownReason {
+    #[cfg(test)]
     Submission,
     Receipt,
     Control,
@@ -414,205 +409,6 @@ pub trait MacroBackend: Send + Sync {
     ) -> BoxFuture<'a, ControlOutcome<bool>>;
 }
 
-/// Defense-in-depth wrapper for the desktop's trusted in-process callbacks.
-/// The caller must bind `local_rpc_token` to the owned node's endpoint, and the
-/// wrapped implementation must repeat ownership checks at the submission point.
-pub struct LocalMacroBackend<B> {
-    inner: B,
-    owned: Option<Arc<OwnedNode>>,
-    local_rpc_token: u64,
-}
-
-impl<B: MacroBackend> LocalMacroBackend<B> {
-    pub fn new(inner: B, owned: Option<Arc<OwnedNode>>, local_rpc_token: u64) -> Self {
-        Self {
-            inner,
-            owned,
-            local_rpc_token,
-        }
-    }
-
-    async fn authorize(
-        &self,
-        token: &ExecutionToken,
-        cancel: &CancellationToken,
-    ) -> Result<(), FailureCode> {
-        if cancel.is_cancelled() {
-            return Err(FailureCode::Unavailable);
-        }
-        if token.rpc_token != self.local_rpc_token
-            || !self.inner.is_current(token)
-            || !self.owned.as_ref().is_some_and(|node| node.valid())
-        {
-            return Err(FailureCode::Unauthorized);
-        }
-        let source = self.inner.source(token, None).await?;
-        let source = canonical_source(source)?;
-        if source.chain_id != "0x7a69"
-            || !self.inner.is_current(token)
-            || !self.owned.as_ref().is_some_and(|node| node.valid())
-        {
-            return Err(FailureCode::Unauthorized);
-        }
-        Ok(())
-    }
-}
-
-impl<B: MacroBackend> MacroBackend for LocalMacroBackend<B> {
-    fn is_current(&self, token: &ExecutionToken) -> bool {
-        self.inner.is_current(token)
-    }
-
-    fn acquire_mutation_lease<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Box<dyn MutationLease + 'a>, FailureCode>> {
-        Box::pin(async move {
-            self.authorize(token, cancel).await?;
-            let lease = self.inner.acquire_mutation_lease(token, cancel).await?;
-            self.authorize(token, cancel).await?;
-            Ok(lease)
-        })
-    }
-
-    fn source<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        block: Option<u64>,
-    ) -> BoxFuture<'a, Result<SourceIdentity, FailureCode>> {
-        self.inner.source(token, block)
-    }
-
-    fn deploy<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        creation: &'a str,
-        value: &'a str,
-        exact_gas: u64,
-        signer: SignerAlias,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, MutationOutcome> {
-        Box::pin(async move {
-            let authorized = self.authorize(token, cancel).await;
-            if cancel.is_cancelled() {
-                return MutationOutcome::Cancelled;
-            }
-            if let Err(error) = authorized {
-                return MutationOutcome::Failed(error);
-            }
-            self.inner
-                .deploy(token, creation, value, exact_gas, signer, cancel)
-                .await
-        })
-    }
-
-    fn abi_call<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        request: &'a AbiRequest,
-        source: &'a SourceIdentity,
-    ) -> BoxFuture<'a, ReadOutcome> {
-        self.inner.abi_call(token, request, source)
-    }
-
-    fn abi_send<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        request: &'a AbiRequest,
-        signer: SignerAlias,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, MutationOutcome> {
-        Box::pin(async move {
-            let authorized = self.authorize(token, cancel).await;
-            if cancel.is_cancelled() {
-                return MutationOutcome::Cancelled;
-            }
-            if let Err(error) = authorized {
-                return MutationOutcome::Failed(error);
-            }
-            self.inner.abi_send(token, request, signer, cancel).await
-        })
-    }
-
-    fn raw_call<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        request: &'a RawCallRequest,
-    ) -> BoxFuture<'a, ReadOutcome> {
-        self.inner.raw_call(token, request)
-    }
-
-    fn probe_gas<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        request: &'a ProbeGasRequest,
-    ) -> BoxFuture<'a, ReadOutcome> {
-        self.inner.probe_gas(token, request)
-    }
-
-    fn raw_send<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        request: &'a RawSendRequest,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, MutationOutcome> {
-        Box::pin(async move {
-            let authorized = self.authorize(token, cancel).await;
-            if cancel.is_cancelled() {
-                return MutationOutcome::Cancelled;
-            }
-            if let Err(error) = authorized {
-                return MutationOutcome::Failed(error);
-            }
-            self.inner.raw_send(token, request, cancel).await
-        })
-    }
-
-    fn storage<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        request: &'a StorageRequest,
-    ) -> BoxFuture<'a, Result<String, FailureCode>> {
-        self.inner.storage(token, request)
-    }
-
-    fn snapshot<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, ControlOutcome<String>> {
-        Box::pin(async move {
-            let authorized = self.authorize(token, cancel).await;
-            if cancel.is_cancelled() {
-                return ControlOutcome::Cancelled;
-            }
-            if let Err(error) = authorized {
-                return ControlOutcome::Failed(error);
-            }
-            self.inner.snapshot(token, cancel).await
-        })
-    }
-
-    fn revert<'a>(
-        &'a self,
-        token: &'a ExecutionToken,
-        snapshot: &'a str,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, ControlOutcome<bool>> {
-        Box::pin(async move {
-            let authorized = self.authorize(token, cancel).await;
-            if cancel.is_cancelled() {
-                return ControlOutcome::Cancelled;
-            }
-            if let Err(error) = authorized {
-                return ControlOutcome::Failed(error);
-            }
-            self.inner.revert(token, snapshot, cancel).await
-        })
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepKind {
@@ -704,7 +500,9 @@ pub struct RunReport {
     pub steps: Vec<StepReport>,
 }
 
+/// Progress reported to the run observer; tests assert on every field.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum RunEvent {
     Started {
         id: RunId,

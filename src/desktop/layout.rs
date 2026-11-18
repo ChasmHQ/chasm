@@ -356,10 +356,6 @@ impl Layout {
         Ok(())
     }
 
-    pub fn reset(&mut self, preset: Preset) {
-        *self = Self::preset(preset);
-    }
-
     fn repair_active(&mut self) {
         self.active.retain(|zone, key| {
             self.panes

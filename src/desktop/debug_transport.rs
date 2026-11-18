@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -310,12 +309,14 @@ fn validate_ack(value: Value) -> Result<Value, (String, bool)> {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceKind {
     Capture,
     BuildInfo,
 }
 
+#[cfg(test)]
 impl ResourceKind {
     fn as_str(self) -> &'static str {
         match self {
@@ -325,23 +326,15 @@ impl ResourceKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[cfg(test)]
+#[derive(Clone, Debug, serde::Deserialize, PartialEq, Eq)]
 pub struct ResourceInfo {
     pub id: String,
     pub name: String,
     pub kind: String,
 }
 
-pub async fn upload_resource(
-    http: &reqwest::Client,
-    csrf: &str,
-    kind: ResourceKind,
-    name: &str,
-    content: &Value,
-) -> Result<ResourceInfo, String> {
-    upload_at(http, csrf, kind, name, content, BASE).await
-}
-
+#[cfg(test)]
 async fn upload_at(
     http: &reqwest::Client,
     csrf: &str,
@@ -411,12 +404,14 @@ async fn upload_at(
     Ok(resource)
 }
 
+#[cfg(test)]
 struct BoundedWriter<'a> {
     bytes: &'a mut Vec<u8>,
     limit: usize,
     exceeded: bool,
 }
 
+#[cfg(test)]
 impl std::io::Write for BoundedWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {

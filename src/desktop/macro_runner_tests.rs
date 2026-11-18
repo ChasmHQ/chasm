@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 const ADDRESS: &str = "0x1111111111111111111111111111111111111111";
 const OTHER_ADDRESS: &str = "0x2222222222222222222222222222222222222222";

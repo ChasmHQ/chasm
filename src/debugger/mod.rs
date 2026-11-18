@@ -259,28 +259,6 @@ impl Manager {
         manager
     }
 
-    /// Remove one owner-scoped resource once its source build is stale. An active
-    /// debugger session keeps its already-open worker; no new launch may resolve it.
-    pub fn revoke_resource(&self, owner: &Owner, id: &str) -> bool {
-        let removed = {
-            let mut registry = self.registry.lock().unwrap();
-            if registry
-                .resources
-                .get(id)
-                .is_none_or(|resource| resource.owner != owner.0)
-            {
-                return false;
-            }
-            registry.resources.remove(id)
-        };
-        if let Some(resource) = removed {
-            let _ = std::fs::remove_file(resource.path);
-            true
-        } else {
-            false
-        }
-    }
-
     /// Compiler integration uses the same owner-scoped, server-generated resources as uploads.
     pub fn register_build_info(
         &self,

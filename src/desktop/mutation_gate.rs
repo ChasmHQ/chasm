@@ -20,12 +20,14 @@ impl MutationGate {
         self.inner.clone().try_lock_owned().ok().map(MutationLease)
     }
 
+    #[cfg(test)]
     pub fn busy(&self) -> bool {
         self.inner.try_lock().is_err()
     }
 }
 
-pub struct MutationLease(OwnedMutexGuard<()>);
+/// Holding the lease holds the gate; dropping it releases the gate.
+pub struct MutationLease(#[allow(dead_code)] OwnedMutexGuard<()>);
 
 #[cfg(test)]
 mod tests {

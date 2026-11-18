@@ -5,20 +5,6 @@
 use ethers::abi::Function;
 use serde_json::{json, Map, Value};
 
-/// Step kinds the Add step menu offers, in menu order.
-pub const KINDS: [(&str, &str); 7] = [
-    ("call", "Call a contract function"),
-    ("raw_send", "Send raw calldata"),
-    ("raw_call", "Read with raw calldata"),
-    ("storage_read", "Read a storage slot"),
-    ("snapshot", "Take a snapshot"),
-    ("revert", "Revert to a snapshot"),
-    ("assert", "Check a value"),
-];
-
-pub const SIGNERS: [&str; 4] = ["anvil_account0", "anvil_account1", "anvil_account2", "unlocked_wallet_ref"];
-pub const COMPARATORS: [&str; 7] = ["eq", "not_eq", "zero", "nonzero", "true", "false", "hash_eq"];
-
 /// One editable field of the selected step.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FormField {

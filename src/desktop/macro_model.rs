@@ -230,6 +230,7 @@ pub enum StepKind {
     },
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
@@ -243,6 +244,7 @@ pub enum RunStatus {
     Cancelled,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StepRun {
@@ -252,6 +254,7 @@ pub struct StepRun {
     pub result: Option<Value>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MacroRun {
@@ -680,6 +683,7 @@ fn screen_reference_syntax(
     }
 }
 
+#[cfg(test)]
 fn screen_snapshot_handles(
     value: &Value,
     path: &str,
@@ -796,6 +800,7 @@ fn validate_scoped_value(value: &Value, scope: ScreenScope) -> Result<(), Vec<Va
     }
 }
 
+#[cfg(test)]
 pub fn validate_public_value(value: &Value) -> Result<(), Vec<ValidationError>> {
     validate_scoped_value(value, ScreenScope::Public)
 }
@@ -933,6 +938,7 @@ pub fn decode_macro(bytes: &[u8]) -> Result<MacroDefinition, Vec<ValidationError
     Ok(definition)
 }
 
+#[cfg(test)]
 pub fn decode_run(bytes: &[u8]) -> Result<MacroRun, Vec<ValidationError>> {
     parse_bounded_json(bytes, ScreenScope::Public)?;
     let run: MacroRun = serde_json::from_slice(bytes).map_err(|_| {
@@ -1875,6 +1881,7 @@ fn valid_param_type(kind: &ParamType) -> bool {
     }
 }
 
+#[cfg(test)]
 impl MacroRun {
     pub fn validate(&self) -> Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();

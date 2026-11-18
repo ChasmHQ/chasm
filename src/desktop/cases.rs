@@ -1099,7 +1099,7 @@ fn read_case_bytes(path: &Path) -> Result<Vec<u8>, String> {
             MAX_CASE_FILE_BYTES / (1024 * 1024)
         ));
     }
-    let mut file = std::fs::File::open(path)
+    let file = std::fs::File::open(path)
         .map_err(|error| format!("Could not read the case file: {error}"))?;
     let mut bytes = Vec::new();
     // The regular-file check and this open are not one atomic step; a document
@@ -1124,7 +1124,7 @@ fn checked_regular_file(path: &Path) -> Result<u64, String> {
 }
 
 fn read_small(path: &Path, limit: u64) -> Option<Vec<u8>> {
-    let mut file = std::fs::File::open(path).ok()?;
+    let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
     file.take(limit).read_to_end(&mut bytes).ok()?;
     Some(bytes)

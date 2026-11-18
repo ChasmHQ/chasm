@@ -7,9 +7,9 @@ export { AutomationData, AutomationLogic, AutomationClient } from "automation.sl
 import { InvestigationData, InvestigationLogic, InvestigationPanel } from "investigation.slint";
 export { InvestigationData, InvestigationLogic, InvestigationRow } from "investigation.slint";
 import { MacroWorkspace } from "macro.slint";
-export { MacroData, MacroLogic, MacroRow, MacroStep, MacroResult, MacroWorkspace, MacroFormField, MacroChoice } from "macro.slint";
+export { MacroData, MacroLogic, MacroRow, MacroStep, MacroResult, MacroFormField, MacroChoice } from "macro.slint";
 import { FoundryWorkspace } from "foundry.slint";
-export { FoundryData, FoundryLogic, FoundryArtifactRow, FoundryWorkspace } from "foundry.slint";
+export { FoundryData, FoundryLogic, FoundryArtifactRow } from "foundry.slint";
 import { DebugData, DebugLogic, DebugToolbar, DebugCodePane, DebugInspectorPane, DebugInspectionPane, DebugSessionPane } from "debugger.slint";
 import { TraceData, TraceLogic, TraceDebugger } from "trace.slint";
 import { HistoryData, HistoryLogic, HistoryView } from "history.slint";
@@ -210,6 +210,7 @@ export global Logic {
     callback hover-text(string, length, length);
 }
 
+// Exported for the copy tests, which compose it into a test window.
 export component Confirmation inherits Rectangle {
     in property <string> heading;
     in property <string> detail;
@@ -602,7 +603,7 @@ component ChainList inherits Rectangle {
     }
 }
 
-export component ExplorerWorkspace inherits Rectangle {
+component ExplorerWorkspace inherits Rectangle {
     min-width: 0px; min-height: 0px;
     background: Theme.canvas;
     VerticalLayout {
@@ -638,7 +639,7 @@ export component ExplorerWorkspace inherits Rectangle {
     }
 }
 
-export component ConverterWorkspace inherits ScrollView {
+component ConverterWorkspace inherits ScrollView {
     min-width: 0px; min-height: 0px;
     content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
     VerticalLayout {

@@ -104,6 +104,7 @@ impl ChasmConfig {
         }
     }
 
+    #[cfg(test)]
     /// Ganti semua remapping OZ dengan yang baru (untuk switch versi)
     pub fn replace_oz_remapping(&mut self, new_remapping: String) {
         self.remappings.retain(|r| !r.contains("@openzeppelin"));
@@ -202,41 +203,6 @@ pub fn global_lib_dir() -> PathBuf {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".chasm").join("lib")
-}
-
-/// Daftar versi OZ yang tersedia secara global di ~/.chasm/lib/
-/// Format direktori: openzeppelin-contracts@X.Y.Z
-pub fn list_global_oz_versions() -> Vec<String> {
-    let lib_dir = global_lib_dir();
-    if !lib_dir.exists() {
-        return vec![];
-    }
-
-    let mut versions = vec![];
-    if let Ok(entries) = std::fs::read_dir(&lib_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("openzeppelin-contracts@") && entry.path().is_dir() {
-                // Ekstrak versi dari nama folder: "openzeppelin-contracts@4.9.6" → "4.9.6"
-                if let Some(version) = name.strip_prefix("openzeppelin-contracts@") {
-                    versions.push(version.to_string());
-                }
-            }
-        }
-    }
-    // Sort semver numerik (bukan lexicographic) agar "10.0.0" > "9.0.0"
-    versions.sort_by(|a, b| {
-        let parse = |s: &str| -> Vec<u64> {
-            s.split('.').map(|n| n.parse().unwrap_or(0)).collect()
-        };
-        parse(a).cmp(&parse(b))
-    });
-    versions
-}
-
-/// Path ke instalasi OZ global untuk versi tertentu
-pub fn global_oz_path(version: &str) -> PathBuf {
-    global_lib_dir().join(format!("openzeppelin-contracts@{}", version))
 }
 
 #[cfg(test)]

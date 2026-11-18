@@ -115,11 +115,6 @@ pub fn wire(
     controller
 }
 
-pub fn render(ui: &MainWindow, state: &State) {
-    let controller = FoundryController::for_session(state, tokio::runtime::Handle::current());
-    render_controller(ui, &controller);
-}
-
 fn render_controller(ui: &MainWindow, controller: &FoundryController) {
     let data = ui.global::<FoundryData>();
     let Ok(view) = controller.view() else {

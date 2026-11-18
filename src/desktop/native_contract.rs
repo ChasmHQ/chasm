@@ -1041,7 +1041,7 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
                 "Trace is loaded on demand for this captured result. No transaction is sent.".into()
             }
             TraceState::Loading => "Tracing the captured context…".into(),
-            TraceState::Ready(text) | TraceState::Unavailable(text) | TraceState::Failed(text) => {
+            TraceState::Ready(text) | TraceState::Unavailable(text) => {
                 super::address_book::annotate(text, &labels).into()
             }
         };

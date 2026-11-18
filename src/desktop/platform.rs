@@ -90,11 +90,6 @@ pub fn visible_panel_geometry(geometry: super::layout::Geometry, scale: f32) -> 
     geometry
 }
 
-pub fn visible_panel_position(x: i32, y: i32, width: u32, height: u32, scale: f32) -> (i32, i32) {
-    let geometry = visible_panel_geometry(super::layout::Geometry { x, y, width, height, maximized: false }, scale);
-    (geometry.x, geometry.y)
-}
-
 /// Blocking. Once the desktop event loop is running, call from a worker thread.
 pub fn pick_folder(initial: Option<&Path>) -> Result<Option<PathBuf>, String> {
     pick_folder_with_owner(initial, None)

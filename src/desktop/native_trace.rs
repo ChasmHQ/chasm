@@ -489,7 +489,7 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Se
         Target::Transaction(hash) => Some(hash.clone()),
         Target::Call { .. } => None,
     };
-    let mut input = String::new();
+    let input;
     let (title, trace, target_address, block) = match target {
         Target::Transaction(hash) => {
             let tx = call("eth_getTransactionByHash", json!([hash])).await?;

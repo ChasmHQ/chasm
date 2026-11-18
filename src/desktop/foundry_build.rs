@@ -84,6 +84,7 @@ impl FoundrySettings {
         )
     }
 
+    #[cfg(test)]
     pub fn matches_required(&self, required: &FoundrySettings) -> bool {
         self.solc == required.solc
             && self.optimizer.value == required.optimizer.value
@@ -157,13 +158,17 @@ pub struct FoundryBuildReport {
     pub preflight_digest: String,
     pub settings: FoundrySettings,
     pub artifacts: Vec<FoundryArtifactSummary>,
+    #[allow(dead_code)]
     pub build_info_path: PathBuf,
+    #[allow(dead_code)]
     pub build_info: Value,
     pub warnings: Vec<String>,
     pub settings_verified: bool,
     pub sources_verified: bool,
     pub stdout: String,
     pub stderr: String,
+    /// Keeps the build folder alive while the report exists.
+    #[allow(dead_code)]
     temp_dir: Arc<tempfile::TempDir>,
 }
 
@@ -180,9 +185,6 @@ impl FoundryBuildReport {
                 .any(|artifact| artifact.id == artifact_id && artifact.deployable())
     }
 
-    pub fn output_directory(&self) -> &Path {
-        self.temp_dir.path()
-    }
 }
 
 #[cfg(test)]

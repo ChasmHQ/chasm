@@ -62,7 +62,10 @@ pub struct Location {
     pub file: String,
     pub line: usize,
     /// Byte range of the mapped expression within the line, when known.
+    /// Kept for highlighting the expression; the listing shows whole lines.
+    #[allow(dead_code)]
     pub start: usize,
+    #[allow(dead_code)]
     pub length: usize,
 }
 

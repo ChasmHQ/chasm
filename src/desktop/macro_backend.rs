@@ -175,10 +175,6 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
         })
     }
 
-    pub fn addresses(&self) -> &SignerAddresses {
-        &self.addresses
-    }
-
     fn current(&self, token: &runner::ExecutionToken) -> bool {
         token == &self.token
             && self.authority.is_current(token)

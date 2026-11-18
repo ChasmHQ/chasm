@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
+#[cfg(test)]
 use serde_json::Value;
 use tokio::{runtime::Handle, sync::watch};
 use tokio_util::sync::CancellationToken;
@@ -40,6 +41,8 @@ pub enum FoundryPhase {
 }
 
 #[derive(Clone, Debug)]
+/// Read by tests and kept for the review UI; not every field is shown yet.
+#[allow(dead_code)]
 pub struct FoundryReviewView {
     pub generation: u64,
     pub workspace: PathBuf,
@@ -53,6 +56,8 @@ pub struct FoundryReviewView {
 }
 
 #[derive(Clone, Debug)]
+/// Read by tests and kept for the review UI; not every field is shown yet.
+#[allow(dead_code)]
 pub struct FoundryArtifactView {
     pub id: String,
     pub source: String,
@@ -68,6 +73,8 @@ pub struct FoundryArtifactView {
 }
 
 #[derive(Clone, Debug)]
+/// Read by tests and kept for the review UI; not every field is shown yet.
+#[allow(dead_code)]
 pub struct FoundryReportView {
     pub generation: u64,
     pub digest: String,
@@ -93,9 +100,11 @@ pub struct FoundryView {
     pub can_confirm_trust: bool,
     pub can_build: bool,
     pub can_cancel: bool,
+    #[allow(dead_code)]
     pub can_close_or_replace_workspace: bool,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArtifactPurpose {
     Abi,
@@ -103,7 +112,10 @@ pub enum ArtifactPurpose {
     Debugger,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
+/// Returned to tests that check the resolver; callers keep the record whole.
+#[allow(dead_code)]
 pub struct ResolvedArtifact {
     pub workspace_epoch: u64,
     pub generation: u64,
@@ -112,7 +124,10 @@ pub struct ResolvedArtifact {
     pub artifact: FoundryArtifactSummary,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
+/// Returned to tests that check the resolver; callers keep the record whole.
+#[allow(dead_code)]
 pub struct ResolvedBuildInfo {
     pub workspace_epoch: u64,
     pub generation: u64,
@@ -128,26 +143,6 @@ pub struct BuildProvenance {
     pub workspace_epoch: u64,
     pub generation: u64,
     pub digest: String,
-}
-
-impl ResolvedArtifact {
-    pub fn provenance(&self) -> BuildProvenance {
-        BuildProvenance {
-            workspace_epoch: self.workspace_epoch,
-            generation: self.generation,
-            digest: self.digest.clone(),
-        }
-    }
-}
-
-impl ResolvedBuildInfo {
-    pub fn provenance(&self) -> BuildProvenance {
-        BuildProvenance {
-            workspace_epoch: self.workspace_epoch,
-            generation: self.generation,
-            digest: self.digest.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -696,6 +691,7 @@ impl FoundryController {
         Ok(view)
     }
 
+    #[cfg(test)]
     /// Resolves by opaque artifact ID, never by a caller-supplied path. Each
     /// lookup rechecks the reviewed workspace and the retained build generation.
     pub async fn resolve_artifact(
@@ -736,6 +732,7 @@ impl FoundryController {
         })
     }
 
+    #[cfg(test)]
     /// The returned content is a copy. The path does not keep temporary output alive.
     pub async fn resolve_build_info(
         &self,
@@ -1020,6 +1017,7 @@ fn actionable_error(error: String) -> String {
     }
 }
 
+#[cfg(test)]
 fn checked_artifact<'a>(
     settings_verified: bool,
     sources_verified: bool,

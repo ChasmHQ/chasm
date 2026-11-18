@@ -28,21 +28,26 @@ pub enum AdapterError {
 pub struct AdapterPlan {
     pub plan: runner::ExecutionPlan,
     ids: Vec<model::StepId>,
+    #[cfg_attr(not(test), allow(dead_code))]
     numeric_ids: HashMap<model::StepId, runner::StepId>,
+    #[cfg_attr(not(test), allow(dead_code))]
     disabled_ids: Vec<model::StepId>,
 }
 
 impl AdapterPlan {
+    #[cfg(test)]
     pub fn model_id(&self, id: runner::StepId) -> Option<&model::StepId> {
         id.0.checked_sub(1)
             .and_then(|index| usize::try_from(index).ok())
             .and_then(|index| self.ids.get(index))
     }
 
+    #[cfg(test)]
     pub fn runner_id(&self, id: &model::StepId) -> Option<runner::StepId> {
         self.numeric_ids.get(id).copied()
     }
 
+    #[cfg(test)]
     pub fn disabled_ids(&self) -> &[model::StepId] {
         &self.disabled_ids
     }

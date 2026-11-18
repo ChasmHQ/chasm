@@ -46,6 +46,7 @@ pub struct ContractItem {
     pub kind: String,
     pub functions: Vec<FunctionInfo>,
     pub bytecode: String,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub constructor_sig: String,
     pub constructor: Option<ConstructorSpec>,
     pub constructor_error: Option<String>,
@@ -87,6 +88,7 @@ impl Document {
 
 #[derive(Clone, Debug)]
 pub struct MacroNote {
+    #[allow(dead_code)]
     pub name: String,
     pub body: String,
 }
@@ -1315,6 +1317,7 @@ impl DesktopState {
         self.sidebar_width = width.clamp(180.0, 460.0);
     }
 
+    #[cfg(test)]
     pub fn open_trace_doc(&mut self) {
         if let Some(existing) = self.documents.iter().position(|doc| doc.kind == 3) {
             self.active_document = existing as i32;
@@ -1455,14 +1458,6 @@ impl DesktopState {
         }
     }
 
-    pub fn selected_function_sig(&self) -> Vec<String> {
-        let functions = self.selected_contract_functions();
-        functions
-            .get(self.selected_function as usize)
-            .map(|item| item.params.iter().map(|(_, kind)| kind.clone()).collect())
-            .unwrap_or_default()
-    }
-
     pub fn document_body(&self) -> String {
         if self.current_doc_kind() == 3 {
             return self.trace_output.clone();
@@ -1483,6 +1478,7 @@ impl DesktopState {
             })
     }
 
+    #[cfg(test)]
     pub fn new_macro(&mut self) {
         let name = format!("Macro {}", self.macros.len() + 1);
         self.macros.push(MacroNote {
@@ -1729,41 +1725,6 @@ impl DesktopState {
         if let Some(name) = self.keystores.get(index as usize) {
             self.selected_keystore = name.clone();
         }
-    }
-
-    pub fn load_macros(&mut self) {
-        let path = self.workspace.join(".chasm").join("desktop-macros.json");
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return;
-        };
-        let Ok(values) = serde_json::from_str::<Vec<Value>>(&text) else {
-            return;
-        };
-        self.macros = values
-            .into_iter()
-            .filter_map(|value| {
-                Some(MacroNote {
-                    name: value.get("name")?.as_str()?.to_string(),
-                    body: value.get("body")?.as_str()?.to_string(),
-                })
-            })
-            .collect();
-    }
-
-    pub fn save_macros(&self) {
-        let dir = self.workspace.join(".chasm");
-        if std::fs::create_dir_all(&dir).is_err() {
-            return;
-        }
-        let values: Vec<_> = self
-            .macros
-            .iter()
-            .map(|item| json!({"name": item.name, "body": item.body}))
-            .collect();
-        let _ = std::fs::write(
-            dir.join("desktop-macros.json"),
-            serde_json::to_string_pretty(&values).unwrap_or_else(|_| "[]".into()),
-        );
     }
 
     pub fn clear_logs(&mut self) {
@@ -2202,6 +2163,7 @@ pub fn contracts_from_compile_report(raw: &str) -> Result<CompileReport, String>
     Ok(CompileReport { contracts, skipped, layouts, runtimes })
 }
 
+#[cfg(test)]
 pub fn contracts_from_compile(raw: &str) -> Result<Vec<ContractItem>, String> {
     let report = contracts_from_compile_report(raw)?;
     if let Some(warning) = report.warning() {
@@ -2230,17 +2192,6 @@ pub fn compile_workspace_report(
         other => other?,
     };
     contracts_from_compile_report(&raw)
-}
-
-pub fn compile_workspace(
-    root: &Path,
-    remappings: Vec<String>,
-) -> Result<Vec<ContractItem>, String> {
-    let report = compile_workspace_report(root, remappings)?;
-    if let Some(warning) = report.warning() {
-        return Err(warning);
-    }
-    Ok(report.contracts)
 }
 
 // ── Foundry workspace client ────────────────────────────────────────────────
@@ -2318,17 +2269,6 @@ pub fn split_args(raw: &str) -> Vec<String> {
     out
 }
 
-fn extract_address(line: &str) -> Option<String> {
-    line.split(|c: char| c.is_whitespace() || c == ':' || c == ',' || c == '"')
-        .map(str::trim)
-        .find(|token| {
-            token.len() == 42
-                && token.starts_with("0x")
-                && token[2..].chars().all(|c| c.is_ascii_hexdigit())
-        })
-        .map(str::to_string)
-}
-
 fn extract_key(line: &str) -> Option<String> {
     line.split(|c: char| c.is_whitespace() || c == ':' || c == '"')
         .map(str::trim)
@@ -2338,13 +2278,6 @@ fn extract_key(line: &str) -> Option<String> {
                 && token[2..].chars().all(|c| c.is_ascii_hexdigit())
         })
         .map(str::to_string)
-}
-
-pub fn parse_field(text: &str, field: &str) -> Option<String> {
-    let field = field.to_ascii_lowercase();
-    text.lines()
-        .find(|line| line.to_ascii_lowercase().contains(&field))
-        .and_then(|line| extract_address(line).or_else(|| extract_key(line)))
 }
 
 pub fn cast_block_number(rpc: &str) -> Result<u64, String> {
@@ -2508,21 +2441,6 @@ pub async fn establish_debugger(client: &reqwest::Client) -> Result<String, Stri
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| "debugger did not return an owner token".into())
-}
-
-pub async fn start_withdrawal_lab(client: &reqwest::Client, csrf: &str) -> Result<Value, String> {
-    debugger_post(
-        client,
-        csrf,
-        "/api/debugger/sessions",
-        json!({
-            "requestId": request_id(),
-            "mode": "offline",
-            "captureId": "source-demo",
-            "buildInfoId": "source-demo-build"
-        }),
-    )
-    .await
 }
 
 pub async fn debugger_command(
@@ -4212,20 +4130,11 @@ mod tests {
     }
 
     #[test]
-    fn args_and_cast_output_parsing() {
+    fn args_parsing() {
         assert_eq!(split_args("1 0xabc"), vec!["1", "0xabc"]);
         assert_eq!(
             split_args("[1,2,3] 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
             vec!["[1,2,3]", "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"]
-        );
-        let output = "transactionHash 0x1111111111111111111111111111111111111111111111111111111111111111\ncontractAddress 0x2222222222222222222222222222222222222222\n";
-        assert_eq!(
-            parse_field(output, "contractAddress").as_deref(),
-            Some("0x2222222222222222222222222222222222222222")
-        );
-        assert_eq!(
-            parse_field(output, "transactionHash").map(|v| v.len()),
-            Some(66)
         );
     }
 }

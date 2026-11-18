@@ -29,7 +29,6 @@ pub enum TraceState {
     Loading,
     Ready(String),
     Unavailable(String),
-    Failed(String),
 }
 
 #[derive(Clone, Debug)]
@@ -69,14 +68,6 @@ impl CallResult {
         }
     }
 
-    pub fn pretty_raw(&self) -> String {
-        pretty_raw(&self.raw)
-    }
-}
-
-/// Serializes the supplied JSON value, not the formatted Simple view.
-pub fn pretty_raw(raw: &Value) -> String {
-    serde_json::to_string_pretty(raw).unwrap_or_else(|_| "null".to_owned())
 }
 
 /// Accepts either an eth_call result/error or its JSON-RPC envelope.

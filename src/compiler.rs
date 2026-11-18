@@ -28,7 +28,7 @@ impl Compiler {
         Self::new_impl(root, remappings, false)
     }
 
-    /// Like new_for_storage_layout() with an exact solc version ("0.8.24"),
+    /// Requests storageLayout from solc, and compiles with an exact solc version ("0.8.24"),
     /// installed into the svm folder when missing. Empty means Auto.
     pub fn new_for_storage_layout_with_solc(root: PathBuf, remappings: Vec<String>, solc: &str) -> Result<Self> {
         let mut compiler = Self::new_impl(root, remappings, true)?;
@@ -42,13 +42,6 @@ impl Compiler {
             compiler.project.compiler = foundry_compilers::multi::MultiCompiler::new(Some(foundry_compilers::solc::SolcCompiler::Specific(binary)), None)?;
         }
         Ok(compiler)
-    }
-
-    /// Like new() but requests storageLayout from solc.
-    /// Used on-demand by the storage inspector so the overhead only hits
-    /// when the user actually opens that tab, not on every recompile.
-    pub fn new_for_storage_layout(root: PathBuf, remappings: Vec<String>) -> Result<Self> {
-        Self::new_impl(root, remappings, true)
     }
 
     fn new_impl(root: PathBuf, remappings: Vec<String>, with_storage_layout: bool) -> Result<Self> {
@@ -211,34 +204,6 @@ impl Compiler {
                 let path = normalize_path(&id.source.to_string_lossy());
                 let source_type = if src_set.contains(&path) { "src" } else { "lib" }.to_string();
                 (id.name, source_type, path, artifact)
-            })
-            .collect())
-    }
-
-    pub fn compile(&self) -> Result<Vec<(String, String, ConfigurableContractArtifact)>> {
-        let output = self.project.compile_files(self.src_files.clone())?;
-        if output.has_compiler_errors() {
-            return Err(anyhow::anyhow!("{}", strip_ansi(&output.to_string())));
-        }
-
-        // Build a set of normalized src file paths for O(1) lookup.
-        // Normalization strips the Windows UNC prefix (\\?\) and converts backslashes to
-        // forward slashes so paths from WalkDir (which may carry \\?\) and paths from
-        // foundry-compilers ArtifactId.source (which use the remapping path, already
-        // stripped of \\?\) compare equal.
-        let src_set: std::collections::HashSet<String> = self.src_files
-            .iter()
-            .map(|p| normalize_path(&p.to_string_lossy()))
-            .collect();
-
-        Ok(output.into_artifacts()
-            .map(|(id, artifact)| {
-                let source_type = if src_set.contains(&normalize_path(&id.source.to_string_lossy())) {
-                    "src".to_string()
-                } else {
-                    "lib".to_string()
-                };
-                (id.name, source_type, artifact)
             })
             .collect())
     }

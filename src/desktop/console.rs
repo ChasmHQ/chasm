@@ -379,6 +379,7 @@ impl Default for ConsoleState {
 }
 
 impl ConsoleState {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -436,6 +437,7 @@ impl ConsoleState {
         id
     }
 
+    #[cfg(test)]
     pub fn set_operation_key(&mut self, id: u64, key: u64) -> bool {
         if let Some(entry) = self
             .entries
@@ -489,6 +491,7 @@ impl ConsoleState {
         true
     }
 
+    #[cfg(test)]
     pub fn record_local(&mut self, command: &str, result: Result<String, String>) -> u64 {
         let id = self.submit(command);
         self.finish(id, result);
