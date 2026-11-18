@@ -270,7 +270,8 @@ def fork():
         raise SystemExit("project did not reopen")
 
     # The first transaction of a block: replaying one call on the parent state
-    # is exact only when nothing else in the block ran before it.
+    # is exact only when nothing else in the block ran before it. The replay
+    # node keeps mainnet's chain id, so EIP-712 and chain-id checks pass.
     head = int(rpc("eth_blockNumber", url=url), 16)
     tx = None
     for number in range(head - 3, head - 120, -1):
@@ -288,23 +289,14 @@ def fork():
     network = query("toolchain.state")["network"]
     check("fork names the real chain", network["forkChain"] == "Ethereum (1)", str(network))
     check("USDC code readable on the fork", len(rpc("eth_getCode", [usdc, "latest"])) > 1000)
+    head_before = rpc("eth_blockNumber")
     command("debugger.trace", hash=tx["hash"])
-    for _ in range(120):
+    for _ in range(400):
         t = trace()
-        if not t["busy"] and t["status"]:
+        if not t["busy"] and (t["loaded"] or t["status"]) and t["status"] != "Recording the execution…":
             break
         time.sleep(1)
-    check("asks to re-fork at the parent block", t["status"].startswith(f"Re-fork needed at block {int(tx['blockNumber'], 16) - 1}"), t["status"])
-    command("debugger.trace.refork")
-    time.sleep(5)
-    for _ in range(400):
-        try:
-            t = trace()
-            if t["loaded"] and not t["busy"]:
-                break
-        except Exception:
-            pass
-        time.sleep(1)
+    check("replayed without reopening the project", t["loaded"] and rpc("eth_blockNumber") == head_before, t["status"])
     check("replay outcome matches mainnet", ("REVERTED" in t["summary"]) == (receipt["status"] == "0x0"), t["summary"])
     check("replay gas matches the receipt", f"gas used {int(receipt['gasUsed'], 16)}" in t["summary"], f"{t['summary']} vs {int(receipt['gasUsed'], 16)}")
     command("toolchain.action", action="network", fork_url="")

@@ -258,9 +258,10 @@ export component MacroWorkspace inherits Rectangle {
                         padding: Theme.pad; spacing: 0.625rem; alignment: start;
                         if !root.has-selection: Text { text: "Create or choose a macro on the left."; color: Theme.muted; font-size: 0.875rem; }
                         if root.has-selection && MacroData.selected-step < 0: Text { text: "Choose a step, or use Add step to build the macro."; color: Theme.muted; font-size: 0.875rem; wrap: word-wrap; }
-                        if MacroData.selected-step >= 0: HorizontalLayout {
-                            spacing: 0.375rem;
-                            Text { text: MacroData.step-kind; color: Theme.text; font-size: 1rem; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                        if MacroData.selected-step >= 0: Text { text: MacroData.step-kind; color: Theme.text; font-size: 1rem; font-weight: 600; wrap: word-wrap; }
+                        // Wraps at high zoom instead of pushing buttons out of the pane.
+                        if MacroData.selected-step >= 0: FlexboxLayout {
+                            spacing: 0.25rem;
                             IconButton { icon: @image-url("icons/chevron-right.svg"); label: "Move up"; clicked => { MacroLogic.move-step(MacroData.selected-step, -1); } }
                             IconButton { icon: @image-url("icons/chevron-down.svg"); label: "Move down"; clicked => { MacroLogic.move-step(MacroData.selected-step, 1); } }
                             IconButton { icon: @image-url("icons/refresh.svg"); label: MacroData.selected-step < MacroData.steps.length && MacroData.steps[MacroData.selected-step].enabled ? "Disable" : "Enable"; clicked => { MacroLogic.toggle-step(MacroData.selected-step); } }

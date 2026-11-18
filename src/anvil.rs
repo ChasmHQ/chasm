@@ -46,6 +46,18 @@ impl AnvilNode {
         Ok(())
     }
 
+    /// A throwaway fork for replaying one transaction in the debugger. Unlike
+    /// `start_fork` it keeps the forked chain's own id, so contracts that read
+    /// `block.chainid` (EIP-712 domains, signature checks) run as they did on
+    /// chain. Chasm never signs on this node; it only traces calls on it.
+    pub fn start_replay(&mut self, fork_url: &str, block: u64) -> anyhow::Result<()> {
+        self.ensure_not_running()?;
+        let mut cmd = self.base_command();
+        cmd.arg("--fork-url").arg(fork_url).arg("--fork-block-number").arg(block.to_string());
+        let child = cmd.spawn()?;
+        self.adopt(child)
+    }
+
     /// Contain the child before keeping it. A node that cannot be contained
     /// is killed rather than left able to outlive Chasm on the shared port.
     fn adopt(&mut self, mut child: Child) -> anyhow::Result<()> {

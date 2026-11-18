@@ -29,7 +29,8 @@ the `ui/` folder and the npm build are gone.
 - Project History (`.chasm/history.jsonl`) of every Send and Simulate, with Repeat, Debug and To macro.
 - Timeline: a snapshot before every Send, Deploy and cheat, with *Revert to here*.
 - Local chain cheats: time, blocks, balance, nonce, storage slot and code.
-- Fork a live chain at the latest or a chosen block (chain id stays 31337), from public RPC presets or any URL. The status bar names the forked chain. Forked transactions replay in their block's context.
+- Fork a live chain at the latest or a chosen block (chain id stays 31337), from public RPC presets or any URL. The status bar names the forked chain.
+- A real transaction from the forked chain replays on a separate node at its parent block, with its block context and the real chain id, without reopening the project.
 
 ### Project
 - Compiler: auto per-file pragma, or one solc version locked in `.chasm/chasm.toml`.
@@ -50,4 +51,4 @@ the `ui/` folder and the npm build are gone.
 - `CLAUDE.md` rewritten for the native app. Finished plans moved to `docs/archive/`.
 - `[profile.dev] debug = "line-tables-only"` lowers the peak build memory.
 - Builds and tests have no warnings.
-- End-to-end flows in `tests/live/` (`python tests/live/run.py`).
+- End-to-end flows in `tests/live/` (`python tests/live/run.py`), and a stress flow (`run.py stress`) with timing budgets.

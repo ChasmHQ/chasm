@@ -37,7 +37,8 @@ with opcodes only.
 
 With the project forked (Workspace > Compiler and libraries > Network), paste a hash from the real chain.
 
-- Chasm asks to **Re-fork there and debug**. It forks at the block before the transaction, then replays the transaction as a call on that state.
+- Chasm starts a separate replay node forked at the block before the transaction and replays the transaction there as a call. The project node and its deployments are not touched.
+- The replay node keeps the real chain id, so contracts that check `block.chainid` (EIP-712 signatures, permits) behave as on chain. Chasm never signs on it.
 - The replay runs with the mined block's context (number, timestamp, base fee, coinbase, gas limit, prevrandao) and the transaction's own fees.
 - It is exact for the first transaction of a block. For a later one, the transactions before it in the same block did not run first, and the status line says so.
 - Some MEV bot transactions check their position in the block or the builder's balance. Replayed alone they can revert even though they succeeded on chain.

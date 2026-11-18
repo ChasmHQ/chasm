@@ -474,7 +474,6 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
         Command::TraceSeek { step } => ui.global::<super::TraceLogic>().invoke_seek(*step as i32),
         Command::TraceBreakpoint { line } => ui.global::<super::TraceLogic>().invoke_toggle_breakpoint(*line as i32),
         Command::TraceOpenSaved { name } => ui.global::<super::TraceLogic>().invoke_open_saved(name.as_str().into()),
-        Command::TraceRefork {} => ui.global::<super::TraceLogic>().invoke_refork(),
         Command::TraceConsole { line } => ui.global::<super::TraceLogic>().invoke_console_run(line.as_str().into()),
         Command::TimelineRevert { index } => ui.global::<super::ChainLogic>().invoke_revert_to(*index as i32),
         Command::Cheat { action, address, value, slot } => {

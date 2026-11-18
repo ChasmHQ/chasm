@@ -1758,8 +1758,13 @@ fn short_errors(errors: &[ValidationError]) -> String {
     lines.join("\n")
 }
 
-fn runner_step_evidence(run: &StoredRun, index: usize) -> String {
-    let evidence = macro_runner::export_evidence(&run.report);
+/// Exported once per paint: building it per step made a 128-step result
+/// quadratic and froze the window for seconds.
+fn runner_evidence(run: &StoredRun) -> serde_json::Value {
+    macro_runner::export_evidence(&run.report)
+}
+
+fn runner_step_evidence(evidence: &serde_json::Value, index: usize) -> String {
     evidence
         .get("evidence")
         .and_then(|value| value.get("steps"))
@@ -1942,6 +1947,7 @@ fn project(
 
     let current_result =
         selected_result.filter(|run| record.is_some_and(|record| record.draft == run.json));
+    let evidence = current_result.map(runner_evidence);
     let draft_definition = record.and_then(|record| macro_model::decode_macro(record.draft.as_bytes()).ok());
     let steps = draft_definition.as_ref().or(definition)
         .map(|definition| {
@@ -1972,7 +1978,7 @@ fn project(
                         status: status.into(),
                         duration: "Not reported".into(),
                         public_result: matching
-                            .map(|(run, index)| runner_step_evidence(run, index))
+                            .and_then(|(_, index)| evidence.as_ref().map(|evidence| runner_step_evidence(evidence, index)))
                             .unwrap_or_default()
                             .into(),
                         action_hint: action.into(),
@@ -2024,7 +2030,7 @@ fn project(
                 let id = draft_steps.get(index)?["id"].as_str()?.to_string();
                 let run = current_result?;
                 let position = run.step_ids.iter().position(|step| step.as_str() == id)?;
-                let evidence = runner_step_evidence(run, position);
+                let evidence = runner_step_evidence(evidence.as_ref()?, position);
                 let pretty = serde_json::from_str::<serde_json::Value>(&evidence).ok().and_then(|value| serde_json::to_string_pretty(&value).ok()).unwrap_or(evidence);
                 Some(format!("Status  {}\n\n{pretty}", step_status(run.report.steps[position].status)))
             })

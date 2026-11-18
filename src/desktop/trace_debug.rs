@@ -94,6 +94,11 @@ pub struct Session {
     pub writes: Vec<StorageWrite>,
     /// Calldata of the outermost call, for decoding arguments.
     pub calldata: Vec<u8>,
+    /// Per program: byte offset where each source line starts, so a step's
+    /// line is a binary search instead of a scan.
+    line_starts: Vec<Vec<usize>>,
+    /// Per program: how many steps ran each source line (index = line).
+    line_hits: Vec<Vec<i32>>,
 }
 
 impl Session {
@@ -114,8 +119,16 @@ impl Session {
         if start > source.len() {
             return None;
         }
-        let line = source[..start].bytes().filter(|byte| *byte == b'\n').count() + 1;
-        let line_start = source[..start].rfind('\n').map(|at| at + 1).unwrap_or(0);
+        let (line, line_start) = match self.line_starts.get(program) {
+            Some(starts) => {
+                let line = starts.partition_point(|at| *at <= start);
+                (line, starts[line - 1])
+            }
+            None => (
+                source[..start].bytes().filter(|byte| *byte == b'\n').count() + 1,
+                source[..start].rfind('\n').map(|at| at + 1).unwrap_or(0),
+            ),
+        };
         Some(Location {
             contract: self.programs[program].name.clone(),
             file: self.programs[program].source_path.rsplit('/').next().unwrap_or_default().to_string(),
@@ -328,10 +341,41 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
     session.steps = steps;
     session.assign_nesting();
     session.collect_storage(logs);
+    session.index_lines();
     Ok(session)
 }
 
 impl Session {
+    /// Line offsets and per-line hit counts, computed once per trace: the
+    /// listing shows hit counts on every repaint.
+    fn index_lines(&mut self) {
+        self.line_starts = self
+            .programs
+            .iter()
+            .map(|program| std::iter::once(0).chain(program.source.match_indices('\n').map(|(at, _)| at + 1)).collect())
+            .collect();
+        let mut hits: Vec<Vec<i32>> = self.programs.iter().map(|program| vec![0; program.source.lines().count() + 2]).collect();
+        for index in 0..self.steps.len() {
+            let Some(program) = self.mapped.get(&self.steps[index].address).copied() else { continue };
+            if let Some(location) = self.location(index) {
+                if let Some(hit) = hits[program].get_mut(location.line) {
+                    *hit += 1;
+                }
+            }
+        }
+        self.line_hits = hits;
+    }
+
+    /// Steps that ran `line` (1-based) of the program at `address`.
+    pub fn line_hits(&self, address: &str, line: usize) -> i32 {
+        self.mapped
+            .get(address)
+            .and_then(|program| self.line_hits.get(*program))
+            .and_then(|hits| hits.get(line))
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// keccak preimages (from memory at each KECCAK256 and the hash on the
     /// next step's stack) and SSTOREs with their previous value. The value
     /// before a write is the last one this trace saw for the slot, from an

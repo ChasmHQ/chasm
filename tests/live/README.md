@@ -8,6 +8,7 @@ port 8545 free and, for `fork`, network access.
 cargo build
 python tests/live/run.py                 # every flow
 python tests/live/run.py revert history  # bank always runs first
+python tests/live/run.py stress           # large fixtures and timing budgets; slow
 CHASM_SKIP_FORK=1 python tests/live/run.py
 ```
 

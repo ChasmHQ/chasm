@@ -30,11 +30,17 @@ def call(path, body=None, timeout=60):
     request.add_header("Authorization", "Bearer " + token)
     if body is not None:
         request.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read())
-    except urllib.error.HTTPError as error:
-        return json.loads(error.read() or b"{}")
+    # The Full tier allows 600 requests a minute; long flows wait it out.
+    for _ in range(30):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            out = json.loads(error.read() or b"{}")
+            if out.get("error", {}).get("code") != "rate_limited":
+                return out
+        time.sleep(3)
+    return out
 
 
 def query(name):

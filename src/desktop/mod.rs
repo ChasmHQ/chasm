@@ -195,17 +195,6 @@ fn run(mut cli: Cli, explicit_path: bool) -> anyhow::Result<()> {
         let control_timer = native_control::wire(&ui, &state, &control_hub, &control_host, control_runtime.handle().clone());
         native_investigation::wire(&ui, &state, &investigation, control_runtime.handle().clone());
         panels::bind(&ui, &state, runtime.handle().clone(), investigation.clone());
-        // A re-fork for the debugger leaves the transaction to open next.
-        let pending = state.lock().unwrap().workspace.join(".chasm").join("pending-debug.txt");
-        if let Ok(hash) = std::fs::read_to_string(&pending) {
-            let _ = std::fs::remove_file(&pending);
-            let hash = hash.trim().to_string();
-            if hash.len() == 66 && hash.starts_with("0x") {
-                ui.global::<AppData>().set_debugger_mode(0);
-                ui.global::<TraceData>().set_input(hash.clone().into());
-                native_trace::load(ui.as_weak(), state.clone(), runtime.handle().clone(), hash);
-            }
-        }
         let ui_result = ui.show().and_then(|_| slint::run_event_loop_until_quit());
         control_timer.stop();
         panels::shutdown();

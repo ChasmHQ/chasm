@@ -12,6 +12,9 @@ export struct TraceValue { label: string, value: string, changed: bool }
 export struct TraceTarget { label: string, detail: string, query: string }
 
 export global TraceData {
+    // Logical window width, set by the host; caps the side panes so the source stays visible.
+    in property <length> window-width: 100000px;
+    in property <length> window-height: 100000px;
     in property <bool> loaded;
     in property <bool> busy;
     in property <string> status;
@@ -50,7 +53,6 @@ export global TraceData {
     in-out property <bool> compact;
     // Console transcript and prompt.
     in property <string> console-text;
-    in property <bool> can-refork;
     in property <[string]> console-lines;
     in-out property <string> console-input;
 }
@@ -67,8 +69,6 @@ export global TraceLogic {
     callback reveal-saved(string);
     callback delete-saved(string);
     callback console-run(string);
-    // Re-fork at the block named in the status, then debug the same hash.
-    callback refork();
     callback console-history(int);
 }
 
@@ -210,7 +210,7 @@ export component TraceDebugger inherits Rectangle {
                     LineEdit {
                         horizontal-stretch: 1; min-width: 0px;
                         font-size: 0.8125rem;
-                        placeholder-text: "Transaction hash, or leave empty to debug the last transaction or call";
+                        placeholder-text: "Transaction hash, or empty for the last one";
                         text <=> TraceData.input;
                         accepted => { TraceLogic.load(self.text); }
                     }
@@ -223,10 +223,6 @@ export component TraceDebugger inherits Rectangle {
                 VerticalLayout {
                     padding: Theme.pad * 2; spacing: 0.5rem; alignment: start;
                     SelectableText { text: TraceData.busy ? "Recording the execution…" : TraceData.status != "" ? TraceData.status : "Nothing loaded"; font-size: 1rem; font-weight: 600; wrap: word-wrap; }
-                    if TraceData.can-refork: HorizontalLayout {
-                        alignment: start;
-                        IconButton { icon: @image-url("icons/refresh.svg"); label: "Re-fork there and debug"; primary: true; clicked => { TraceLogic.refork(); } }
-                    }
                     SelectableText { text: "Pick a recent transaction below, paste a hash above, or use Debug in a contract's Response pane after a Send or Simulate. Every opcode is recorded once, so you can step forwards and backwards freely."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
                     if TraceData.saved.length > 0: SideHeader { title: "Saved traces"; trailing: "reopen without the node"; }
                     if TraceData.saved.length > 0: SelectableText { text: TraceData.saved-folder; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; wrap: word-wrap; }
@@ -290,6 +286,11 @@ export component TraceDebugger inherits Rectangle {
                 Rectangle {
                     height: max(summary-row.preferred-height, Theme.control-height + 0.25rem);
                     background: Theme.panel;
+                    // Scrolls sideways when the window is too narrow for every control.
+                    ScrollView {
+                    vertical-scrollbar-policy: always-off;
+                    content-width: max(self.visible-width, summary-row.min-width);
+                    content-height: self.visible-height;
                     summary-row := HorizontalLayout {
                         padding-left: Theme.pad; padding-right: 0.375rem; spacing: 1rem;
                         Text { text: TraceData.title; font-weight: 600; font-size: 0.8125rem; color: Theme.text; horizontal-stretch: 0; min-width: 0px; max-width: 16rem; overflow: elide; vertical-alignment: center; }
@@ -311,11 +312,12 @@ export component TraceDebugger inherits Rectangle {
                             Text { text: "Step \{TraceData.cursor + 1} of \{TraceData.total}"; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.75rem; vertical-alignment: center; }
                         }
                     }
+                    }
                 }
                 HorizontalLayout {
                     vertical-stretch: 1;
                     spacing: 0px;
-                    // Source listing.
+                    // Source listing; the side panes give way so it keeps a third of the width.
                     Rectangle {
                         horizontal-stretch: 5; min-width: 0px;
                         background: Theme.inset;
@@ -361,7 +363,7 @@ export component TraceDebugger inherits Rectangle {
                     if TraceData.show-opcodes: PaneSplitter { extent: TraceData.opcodes-width; sign: -1; minimum: 220; maximum: 700; resized(value) => { TraceData.opcodes-width = value; } }
                     // Opcode listing around the cursor.
                     if TraceData.show-opcodes: Rectangle {
-                        horizontal-stretch: 0; width: TraceData.opcodes-width * Theme.unit;
+                        horizontal-stretch: 0; width: min(TraceData.opcodes-width * Theme.unit, TraceData.window-width * (TraceData.show-state ? 0.2 : 0.3));
                         background: Theme.inset;
                         VerticalLayout {
                             SideHeader { title: "Executed opcodes"; trailing: "pc  op  gas"; }
@@ -398,7 +400,7 @@ export component TraceDebugger inherits Rectangle {
                     if TraceData.show-state: PaneSplitter { extent: TraceData.state-width; sign: -1; minimum: 200; maximum: 900; resized(value) => { TraceData.state-width = value; } }
                     // Machine state.
                     if TraceData.show-state: Rectangle {
-                        horizontal-stretch: 0; width: TraceData.state-width * Theme.unit;
+                        horizontal-stretch: 0; width: min(TraceData.state-width * Theme.unit, TraceData.window-width * (TraceData.show-opcodes ? 0.28 : 0.4));
                         background: Theme.panel;
                         VerticalLayout {
                             HorizontalLayout {
@@ -415,14 +417,15 @@ export component TraceDebugger inherits Rectangle {
                             if TraceData.state-tab == 3: StateList { items: TraceData.frames; empty: "No call frames."; vertical-stretch: 1; }
                             if TraceData.state-tab == 4: StateList { stacked: true; items: TraceData.variables; empty: "No arguments decoded and no storage written. Variables need the contract's ABI and storage layout from this workspace."; vertical-stretch: 1; }
                             SideHeader { title: "This step"; }
-                            StateList { items: TraceData.step-info; empty: ""; height: TraceData.compact ? 7rem : 8.5rem; }
+                            // Shrinks before the tab's list when the window is short.
+                            StateList { items: TraceData.step-info; empty: ""; min-height: 0px; preferred-height: TraceData.compact ? 7rem : 8.5rem; max-height: TraceData.compact ? 7rem : 8.5rem; vertical-stretch: 0.4; }
                         }
                     }
                 }
                 if TraceData.show-console: PaneSplitter { horizontal: true; extent: TraceData.console-height; sign: -1; minimum: 70; maximum: 600; resized(value) => { TraceData.console-height = value; } }
                 // sevm-style command line over the recorded steps.
                 if TraceData.show-console: Rectangle {
-                    height: TraceData.console-height * Theme.unit;
+                    height: min(TraceData.console-height * Theme.unit, TraceData.window-height * 0.22);
                     background: Theme.inset;
                     VerticalLayout {
                         console-log := ListView {

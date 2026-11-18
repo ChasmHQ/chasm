@@ -3,6 +3,7 @@
 Usage:
   python tests/live/run.py                  # builds nothing; uses target/debug/chasm.exe
   python tests/live/run.py bank revert      # only these flows (bank always runs first)
+  python tests/live/run.py stress           # large forms, traces, tabs, History, macros
   CHASM_SKIP_FORK=1 python tests/live/run.py   # no network access
 
 Starts Chasm on a temporary copy of contracts/ with --control-token-file, so
@@ -34,7 +35,10 @@ def main():
     sys.path.insert(0, HERE)
     import flows
     wanted = sys.argv[1:]
-    chosen = [flow for flow in flows.FLOWS if not wanted or flow.__name__ in wanted or flow.__name__ == "bank"]
+    import stress
+    # The stress flow is slow; it runs only when named.
+    available = flows.FLOWS + [stress.stress]
+    chosen = [flow for flow in available if (not wanted and flow is not stress.stress) or flow.__name__ in wanted or flow.__name__ == "bank"]
     process = subprocess.Popen([EXE, workspace, "--control-token-file", token_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     results = []
     try:

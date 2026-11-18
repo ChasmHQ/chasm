@@ -67,36 +67,6 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     });
     let weak = ui.as_weak();
     let held = state.clone();
-    ui.global::<TraceLogic>().on_refork(move || {
-        let mut state = held.lock().unwrap();
-        let Some(block) = state.trace_status.strip_prefix(FORK_REPLAY).and_then(|rest| rest.split(':').next()).and_then(|text| text.parse::<u64>().ok()) else { return };
-        if !state.can_change_workspace() || state.network.is_local() {
-            return;
-        }
-        let url = state.network.fork_url.clone();
-        let hash = state.trace_input.clone();
-        match super::toolchain::save_network(&state.workspace, &url, &block.to_string()) {
-            Ok(_) => {
-                // Debug the same hash once the reopened project is ready.
-                let _ = std::fs::write(state.workspace.join(".chasm").join("pending-debug.txt"), &hash);
-                let path = state.workspace.clone();
-                state.next_workspace = Some(path);
-                state.workspace_busy = true;
-                state.wallet_generation = state.wallet_generation.wrapping_add(1);
-                state.status_left = format!("Re-forking at block {block}…");
-                state.active = false;
-                drop(state);
-                let _ = slint::quit_event_loop();
-            }
-            Err(error) => {
-                state.trace_status = error;
-                drop(state);
-                super::paint(&weak, &held);
-            }
-        }
-    });
-    let weak = ui.as_weak();
-    let held = state.clone();
     ui.global::<TraceLogic>().on_console_run(move |line| {
         let line = line.trim().to_string();
         if line.is_empty() || line.len() > 200 {
@@ -227,9 +197,6 @@ fn with_session(weak: &Weak<MainWindow>, held: &State, edit: impl FnOnce(&mut Se
     }
     super::paint(weak, held);
 }
-
-/// Start of the error asking to re-fork at a block (the number follows).
-pub const FORK_REPLAY: &str = "Re-fork needed at block ";
 
 /// What to trace: a mined transaction hash, or (empty input) the newest
 /// transaction or simulated call captured by the active contract tab.
@@ -496,6 +463,10 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>, fork_url: &st
     };
     let input;
     let mut replay_note = String::new();
+    // A forked-chain transaction runs on a replay node; code is read there too.
+    let mut replay_node: Option<crate::anvil::AnvilNode> = None;
+    let mut code_rpc = rpc.to_string();
+    let mut code_block = String::new();
     // The mined block of a forked-chain transaction, read from the remote chain.
     let fork_block = |tx: &Value| {
         let number = tx["blockNumber"].clone();
@@ -518,14 +489,16 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>, fork_url: &st
             let trace = match call("debug_traceTransaction", json!([hash, trace_debug::trace_options()])).await {
                 Ok(trace) => trace,
                 // A transaction from the forked chain, not mined on this node:
-                // replay it as a call. Only exact when the fork sits at its parent.
-                Err(error) if error.contains("does not exist") || error.contains("not available") || error.contains("not found") => {
+                // replay it as a call on a fork of its parent block.
+                Err(error) if !fork_url.is_empty() && (error.contains("does not exist") || error.contains("not available") || error.contains("not found")) => {
                     let number = u64::from_str_radix(block.trim_start_matches("0x"), 16).unwrap_or(0);
-                    let head = call("eth_blockNumber", json!([])).await?;
-                    let head = u64::from_str_radix(head.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).unwrap_or(0);
-                    if number == 0 || head + 1 != number {
-                        return Err(format!("{FORK_REPLAY}{}: this transaction is from block {number} of the forked chain. Re-fork at block {} (Workspace > Compiler and libraries > Network) to replay it exactly, then debug it again.", number.saturating_sub(1), number.saturating_sub(1)));
+                    if number == 0 {
+                        return Err("This transaction has no block number yet; debug it once it is mined.".into());
                     }
+                    let (node, url) = start_replay_node(fork_url, number - 1).await?;
+                    replay_node = Some(node);
+                    code_rpc = url;
+                    code_block = "latest".into();
                     // Run it in its own block's context: contracts read block.timestamp,
                     // block.number, basefee and coinbase, and the parent's values send them
                     // down another path.
@@ -541,9 +514,11 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>, fork_url: &st
                         options["blockOverrides"] = json!({"number": mined["number"], "time": mined["timestamp"], "coinbase": mined["miner"], "baseFee": mined["baseFeePerGas"], "gasLimit": mined["gasLimit"], "random": mined["mixHash"]});
                     }
                     let position = tx["transactionIndex"].as_str().and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
-                    let trace = call("debug_traceCall", json!([request, "latest", options])).await?;
+                    let trace = rpc_call(&client, &code_rpc, "debug_traceCall", json!([request, "latest", options])).await?;
                     if position > 0 {
                         replay_note = format!("Replayed on the state before block {number}. It was transaction {} of that block, so the {position} before it did not run first; storage they changed may differ.", position + 1);
+                    } else {
+                        replay_note = format!("Replayed on a fork of block {} with the chain's own id.", number - 1);
                     }
                     trace
                 }
@@ -576,8 +551,9 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>, fork_url: &st
         }
     }
     let mut code_at = HashMap::new();
+    let code_block = if code_block.is_empty() { block.clone() } else { code_block };
     for address in addresses.into_iter().filter(|address| address.len() == 42) {
-        if let Ok(code) = call("eth_getCode", json!([address, block])).await {
+        if let Ok(code) = rpc_call(&client, &code_rpc, "eth_getCode", json!([address, code_block])).await {
             if let Some(bytes) = code.as_str().and_then(|text| ethers::utils::hex::decode(text.trim_start_matches("0x")).ok()) {
                 code_at.insert(address, bytes);
             }
@@ -592,8 +568,43 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>, fork_url: &st
         code: code_at.iter().map(|(address, code)| (address.clone(), format!("0x{}", ethers::utils::hex::encode(code)))).collect(),
         input,
     };
+    drop(replay_node);
     let session = saved.session(programs)?;
     Ok((session, saved, hash, replay_note))
+}
+
+async fn rpc_call(client: &reqwest::Client, url: &str, method: &str, params: Value) -> Result<Value, String> {
+    let value: Value = client
+        .post(url)
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}))
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach the node: {error}"))?
+        .json()
+        .await
+        .map_err(|error| format!("The node returned invalid JSON: {error}"))?;
+    if let Some(error) = value.get("error") {
+        return Err(format!("The node refused {method}: {}", error["message"].as_str().unwrap_or("unknown error")));
+    }
+    Ok(value["result"].clone())
+}
+
+/// Starts a replay fork at `block` on a free local port and waits until it
+/// answers. The node stops when the returned handle is dropped.
+async fn start_replay_node(fork_url: &str, block: u64) -> Result<(crate::anvil::AnvilNode, String), String> {
+    let port = std::net::TcpListener::bind("127.0.0.1:0").and_then(|listener| listener.local_addr()).map_err(|error| error.to_string())?.port();
+    let mut node = crate::anvil::AnvilNode::new_silent(port);
+    node.start_replay(fork_url, block).map_err(|error| format!("Could not start a replay fork: {error}"))?;
+    let url = format!("http://127.0.0.1:{port}");
+    let probe = reqwest::Client::builder().timeout(std::time::Duration::from_millis(800)).no_proxy().build().map_err(|error| error.to_string())?;
+    for _ in 0..600 {
+        node.check_process().map_err(|error| format!("The replay fork stopped: {error}"))?;
+        if rpc_call(&probe, &url, "eth_chainId", json!([])).await.is_ok() {
+            return Ok((node, url));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err(format!("The replay fork of block {block} did not start within a minute. Check the fork RPC."))
 }
 
 fn recent_targets(state: &DesktopState) -> Vec<TraceTarget> {
@@ -609,7 +620,6 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     let data = ui.global::<TraceData>();
     data.set_busy(state.trace_busy);
     data.set_status(state.trace_status.clone().into());
-    data.set_can_refork(state.trace_status.starts_with(FORK_REPLAY) && !state.network.is_local());
     if data.get_console_text().as_str() != state.trace_console {
         data.set_console_text(state.trace_console.clone().into());
         data.set_console_lines(super::model(state.trace_console.lines().map(Into::into).collect()));
@@ -648,17 +658,6 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     // Source listing with per-line hit counts.
     match session.source_lines(session.cursor) {
         Some((file, lines)) => {
-            let program = session.mapped.get(&step.address).copied();
-            let mut hits = vec![0i32; lines.len() + 1];
-            for index in 0..session.steps.len() {
-                if session.steps[index].address == step.address || program.is_some_and(|program| session.mapped.get(&session.steps[index].address) == Some(&program)) {
-                    if let Some(location) = session.location(index) {
-                        if let Some(hit) = hits.get_mut(location.line) {
-                            *hit += 1;
-                        }
-                    }
-                }
-            }
             let current = location.as_ref().map(|location| location.line).unwrap_or(0);
             data.set_file(file.into());
             data.set_source_current(current as i32 - 1);
@@ -671,7 +670,7 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
                         text: text.replace('\t', "    ").into(),
                         current: index + 1 == current,
                         breakpoint: session.breakpoints.contains(&(index + 1)),
-                        hits: hits.get(index + 1).copied().unwrap_or(0),
+                        hits: session.line_hits(&step.address, index + 1),
                     })
                     .collect(),
             ));

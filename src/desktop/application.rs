@@ -79,8 +79,6 @@ pub enum Command {
     TraceBreakpoint { line: u32 },
     #[serde(rename = "debugger.trace.open_saved")]
     TraceOpenSaved { name: String },
-    #[serde(rename = "debugger.trace.refork")]
-    TraceRefork {},
     #[serde(rename = "debugger.trace.console")]
     TraceConsole { line: String },
     #[serde(rename = "chain.timeline.revert")]
@@ -259,7 +257,7 @@ impl Command {
         match self {
             Self::Send {} | Self::Deploy {} | Self::Compile {} | Self::UseDevAccount { .. }
             | Self::Snapshot {} | Self::Revert {} | Self::Mine {} | Self::Warp {}
-            | Self::RunMacro { .. } | Self::TimelineRevert { .. } | Self::Cheat { .. } | Self::Toolchain { .. } | Self::TraceRefork {} | Self::Template { .. } => "act",
+            | Self::RunMacro { .. } | Self::TimelineRevert { .. } | Self::Cheat { .. } | Self::Toolchain { .. } | Self::Template { .. } => "act",
             Self::DebugLaunch { .. } | Self::DebugStart {} | Self::DebugNavigate { .. }
             | Self::DebugEvaluate { .. } | Self::DebugConsole { .. } | Self::DebugCancel {}
             | Self::TraceLoad { .. } | Self::TraceStep { .. } | Self::TraceSeek { .. } | Self::TraceBreakpoint { .. } | Self::TraceOpenSaved { .. } | Self::TraceConsole { .. } => "debug",
@@ -307,7 +305,6 @@ impl Command {
             Self::TraceBreakpoint { .. } => "debugger.trace.breakpoint",
             Self::TraceOpenSaved { .. } => "debugger.trace.open_saved",
             Self::TraceConsole { .. } => "debugger.trace.console",
-            Self::TraceRefork {} => "debugger.trace.refork",
             Self::TraceView { .. } => "debugger.trace.view",
             Self::HistoryAction { .. } => "history.action",
             Self::NoticeAction {} => "ui.notice.action",
@@ -1040,7 +1037,6 @@ pub fn command_schema() -> Value {
         ("contracts.template", object(json!({"kind":{"enum":["erc20","erc721","ownable"]},"name":{"type":"string","maxLength":64,"description":"Solidity contract name; also the file name"}}), vec!["kind", "name"])),
         ("history.action", object(json!({"action":{"enum":["repeat","debug","to_macro","show"],"description":"repeat refills the request tab; debug opens the step debugger; to_macro adds a step to the selected macro; show opens the History tab (index ignored)"},"index":{"type":"integer","minimum":0,"description":"Row in history.list, newest first"}}), vec!["action","index"])),
         ("debugger.trace.view", object(json!({"opcodes":{"type":"boolean"},"state":{"type":"boolean"},"console":{"type":"boolean"},"compact":{"type":"boolean","description":"Smaller rows and fonts for small windows"},"tab":{"type":"integer","minimum":0,"maximum":4,"description":"State pane tab: 0 Stack, 1 Memory, 2 Storage, 3 Calls, 4 Variables"},"opcodes_width":{"type":"number","minimum":220,"maximum":700},"state_width":{"type":"number","minimum":200,"maximum":900},"console_height":{"type":"number","minimum":70,"maximum":600}}), vec![])),
-        ("debugger.trace.refork", object(json!({}), vec![])),
         ("debugger.trace.console", object(json!({"line":{"type":"string","maxLength":200,"description":"Trace console command, e.g. n, si, b 28, p stack[0], x 0x40 64, sload 0, find SSTORE, goto 120, help. Output is in debugger.state trace.console."}}), vec!["line"])),
         ("debugger.trace.open_saved", object(json!({"name":{"type":"string","maxLength":128,"description":"File name from debugger.state trace.saved, in .chasm/traces"}}), vec!["name"])),
         ("explorer.lookup", object(json!({"query":{"type":"string","maxLength":200,"description":"Address, transaction hash, block hash or block number"}}), vec!["query"])),
