@@ -68,6 +68,8 @@ export global AppData {
     in property <string> status-left;
     in property <string> heading;
     in property <string> notice;
+    in property <string> notice-action;
+    in property <string> notice-action-label;
     in property <string> workspace-path;
     in property <bool> workspace-ready: true;
     in property <bool> startup-screen: false;
@@ -183,6 +185,8 @@ export global Logic {
     callback debug-cancel();
     callback read-fee();
     callback dismiss-notice();
+    // Runs the notice's suggested next step (see notice_action.rs).
+    callback notice-action(string);
     callback select-zoom(int);
     callback warp();
     callback roll();
@@ -413,7 +417,7 @@ component JobsView inherits ScrollView {
     horizontal-scrollbar-policy: always-off;
     VerticalLayout {
         padding: Theme.pad; spacing: 0.375rem; alignment: start;
-        if AppData.jobs.length == 0: SelectableText { text: "No jobs in this session."; color: Theme.faint; font-size: 0.75rem; }
+        if AppData.jobs.length == 0: SelectableText { text: "No jobs in this session. Compiles, deploys, sends and chain reads show up here while they run."; color: Theme.faint; font-size: 0.75rem; }
         for job in AppData.jobs: SideRow { icon: @image-url("icons/play.svg"); label: job.name; trailing: job.status; clicked => { Logic.select-job(job.id); } }
         OutputPane { text: AppData.job-output; height: 8rem; }
     }
@@ -623,8 +627,8 @@ export component ExplorerWorkspace inherits Rectangle {
             HorizontalLayout {
                 spacing: 1px;
                 vertical-stretch: 1;
-                ChainList { title: "Blocks"; items: AppData.recent-blocks; empty: "No blocks loaded. Refresh."; selected: AppData.explorer-input; width: 30%; }
-                ChainList { title: "Transactions"; items: AppData.recent-transactions; empty: "No transactions yet."; selected: AppData.explorer-input; width: 35%; }
+                ChainList { title: "Blocks"; items: AppData.recent-blocks; empty: "No blocks loaded. Press Refresh, or open a project to start its node."; selected: AppData.explorer-input; width: 30%; }
+                ChainList { title: "Transactions"; items: AppData.recent-transactions; empty: "No transactions yet. Deploy a contract or Send a function from the Contracts view."; selected: AppData.explorer-input; width: 35%; }
                 OutputPane { text: AppData.explorer-result; horizontal-stretch: 1; }
             }
         }
@@ -660,6 +664,17 @@ component WorkspacePane inherits Rectangle {
     in property <DeploymentView> deployment-view;
     min-width: 0px; min-height: 0px; background: Theme.canvas;
     if root.kind == 0: NavigationView { }
+    // No tab open: say what to do instead of showing a blank pane.
+    if root.kind == 1 && root.document-kind < 0: VerticalLayout {
+        padding: Theme.pad * 2; spacing: 0.5rem; alignment: start;
+        SelectableText { text: "No tab open"; font-size: 1rem; font-weight: 600; }
+        SelectableText { text: AppData.compile-label == "Compile failed" ? "The workspace did not compile. Fix the error in the notice below, then Recompile (Ctrl+B)." : AppData.contracts.length == 0 ? "This folder has no Solidity contracts yet. Add a .sol file, then Recompile (Ctrl+B)." : "Pick a contract in the sidebar to open it, or a deployed function to call it. Ctrl+K finds anything by name."; color: Theme.muted; wrap: word-wrap; }
+        HorizontalLayout {
+            alignment: start; spacing: 0.375rem;
+            IconButton { icon: @image-url("icons/search.svg"); label: "Go to… (Ctrl+K)"; clicked => { PaletteData.query = ""; PaletteData.selected = 0; PaletteData.open = true; PaletteLogic.query-edited(""); } }
+            IconButton { icon: @image-url("icons/refresh.svg"); label: "Recompile"; clicked => { Logic.recompile(); } }
+        }
+    }
     if root.kind == 1 && root.document-kind == 0: ContractWorkspace { view: root.contract-view; owner: root.owner; }
     if root.kind == 1 && root.document-kind == 1 && root.owner != "": DeployWorkspace { view: root.deployment-view; owner: root.owner; title: root.document-title; }
     if root.kind == 1 && root.document-kind == 1 && root.owner == "": VerticalLayout {
@@ -1174,6 +1189,13 @@ export component MainWindow inherits Window {
                             content-width: self.visible-width;
                             horizontal-scrollbar-policy: always-off;
                             SelectableText { text: AppData.notice; color: Theme.danger; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }
+                        }
+                        if AppData.notice-action != "": IconButton {
+                            y: (parent.height - self.height) / 2;
+                            icon: @image-url("icons/play.svg");
+                            label: AppData.notice-action-label;
+                            primary: true;
+                            clicked => { Logic.notice-action(AppData.notice-action); }
                         }
                         CloseButton { y: (parent.height - self.height) / 2; label: "Dismiss notice"; clicked => { Logic.dismiss-notice(); } }
                     }

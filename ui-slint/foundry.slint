@@ -94,7 +94,7 @@ export component FoundryWorkspace inherits ScrollView {
             if FoundryData.warnings != "": TextEdit { text: FoundryData.warnings; read-only: true; font-family: "Cascadia Mono"; font-size: 0.75rem; wrap: word-wrap; height: 8rem; min-width: 0px; }
             SelectableText { text: "Artifacts"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
             TextEdit { text: FoundryData.artifact-json; read-only: true; accessible-label: "Foundry artifact identities"; font-family: "Cascadia Mono"; font-size: 0.7rem; wrap: word-wrap; height: 7rem; min-width: 0px; }
-            if FoundryData.artifacts.length == 0: SelectableText { text: "No artifacts reported."; color: Theme.muted; font-size: 0.75rem; }
+            if FoundryData.artifacts.length == 0: SelectableText { text: "No artifacts reported. Run a trusted Foundry build above to list them."; color: Theme.muted; font-size: 0.75rem; }
             if FoundryData.artifacts.length > 0: Rectangle {
                 height: min(max(Theme.row-height, FoundryData.artifacts.length * Theme.row-height), 12rem);
                 min-width: 0px;

@@ -345,7 +345,7 @@ export component MacroWorkspace inherits Rectangle {
                             spacing: 0.375rem;
                             Rectangle { height: 1px; background: Theme.line; }
                             Text { text: "Encode call from a workspace contract"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
-                            if MacroData.contracts.length == 0: Text { text: "No compiled workspace contracts."; color: Theme.faint; font-size: 0.75rem; }
+                            if MacroData.contracts.length == 0: Text { text: "No compiled workspace contracts. Recompile (Ctrl+B), or fix the compile notice."; color: Theme.faint; font-size: 0.75rem; }
                             FlexboxLayout {
                                 spacing: 0.25rem;
                                 for contract[i] in MacroData.contracts: DockTab { label: contract.label; selected: MacroData.call-contract == i; clicked => { MacroLogic.choose-call(i, -1); } }

@@ -25,6 +25,7 @@ mod request_form;
 mod storage_layout;
 mod trace_debug;
 mod address_book;
+mod notice_action;
 mod native_palette;
 mod toolchain;
 mod native_toolchain;
@@ -622,6 +623,44 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
         state.notice = "Chasm desktop 0.1.0. Rust binary, local only. Debugger: sibling chasm_debugger worker.".into();
     });
     on_void!(ui, state, on_dismiss_notice, |state: &mut DesktopState| state.notice.clear());
+    {
+        let weak = ui.as_weak();
+        let held = state.clone();
+        ui.global::<Logic>().on_notice_action(move |action| {
+            let Some(ui) = weak.upgrade() else { return };
+            let logic = ui.global::<Logic>();
+            let app = ui.global::<AppData>();
+            match action.as_str() {
+                "toolchain" => logic.invoke_open_toolchain(),
+                "recompile" => logic.invoke_recompile(),
+                "timeline" => {
+                    app.set_explorer_tab(3);
+                    logic.invoke_open_activity(1);
+                }
+                "dev_account" => logic.invoke_use_anvil_key(0),
+                "debugger" => logic.invoke_open_activity(4),
+                "contracts" => logic.invoke_open_activity(0),
+                "refresh" => logic.invoke_fetch_block(),
+                "jobs" => ui.global::<PanelLogic>().invoke_dock("jobs".into(), -1),
+                "reopen" => {
+                    let mut state = held.lock().unwrap();
+                    if state.can_change_workspace() {
+                        let path = state.workspace.clone();
+                        state.next_workspace = Some(path);
+                        state.workspace_busy = true;
+                        state.status_left = "Reopening the project…".into();
+                        state.active = false;
+                        drop(state);
+                        let _ = slint::quit_event_loop();
+                        return;
+                    }
+                }
+                _ => return,
+            }
+            held.lock().unwrap().notice.clear();
+            paint(&weak, &held);
+        });
+    }
 
     {
         let weak = ui.as_weak();
@@ -1544,6 +1583,9 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_status_left(state.status_left.clone().into());
     data.set_heading(state.heading().into());
     data.set_notice(state.notice.clone().into());
+    let (label, action) = notice_action::suggest(&state.notice).unwrap_or(("", ""));
+    data.set_notice_action_label(label.into());
+    data.set_notice_action(action.into());
     data.set_show_logs(state.show_logs);
     data.set_dock_tab(state.dock_tab);
     data.set_doc_kind(state.current_doc_kind());

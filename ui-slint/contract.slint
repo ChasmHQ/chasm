@@ -276,7 +276,7 @@ component CompactFunctionPicker inherits VerticalLayout {
         height: min(120 * Theme.unit, max(Theme.row-height, root.view.functions.length * Theme.row-height));
         min-width: 0px;
         background: Theme.panel;
-        if root.view.functions.length == 0: SelectableText { text: "No functions available."; color: Theme.muted; font-size: 0.75rem; }
+        if root.view.functions.length == 0: SelectableText { text: "No functions in this ABI. Recompile (Ctrl+B) after adding functions, or check the compile notice."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
         ListView {
             min-width: 0px;
             min-height: 0px;
@@ -454,7 +454,7 @@ export component ContractResult inherits Rectangle {
         }
         result-output := ContractOutput {
             text: root.active-output;
-            placeholder-text: root.view.result-view == 2 ? "No trace loaded." : "No call result yet.";
+            placeholder-text: root.view.result-view == 2 ? "No trace loaded. Run Read / Simulate or Send, then Load trace." : "No call result yet. Pick a function, fill its arguments, then Read / Simulate (Ctrl+Shift+E) or Send (Ctrl+Enter).";
             content-y: min(0, root.view.result-scroll-y) * Theme.unit;
             changed content-y => {
                 if self.content-y != min(0, root.view.result-scroll-y) * Theme.unit {
