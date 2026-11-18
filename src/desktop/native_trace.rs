@@ -309,7 +309,7 @@ pub fn load(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle
                 };
                 state.trace_busy = true;
                 state.trace_status = "Recording the execution…".into();
-                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch))
+                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch, state.network.fork_url.clone()))
             }
             Err(error) => {
                 state.trace_status = error;
@@ -318,12 +318,12 @@ pub fn load(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle
         }
     };
     super::paint(&weak, &held);
-    let Some((target, rpc, programs, epoch)) = prepared else { return };
+    let Some((target, rpc, programs, epoch, fork_url)) = prepared else { return };
     let workspace = held.lock().unwrap().workspace.clone();
     runtime.spawn(async move {
-        let result = record(&rpc, target, programs).await.map(|(session, saved, hash)| {
+        let result = record(&rpc, target, programs, &fork_url).await.map(|(session, saved, hash, note)| {
             let path = save_trace(&workspace, &saved, hash.as_deref());
-            (session, path)
+            (session, path, note)
         });
         let _ = slint::invoke_from_event_loop(move || {
             let mut state = held.lock().unwrap();
@@ -332,11 +332,14 @@ pub fn load(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle
             }
             state.trace_busy = false;
             match result {
-                Ok((session, path)) => {
+                Ok((session, path, note)) => {
                     state.trace_status = match path {
                         Ok(path) => format!("Saved to {}", shown_path(&path)),
                         Err(error) => format!("Not saved: {error}"),
                     };
+                    if !note.is_empty() {
+                        state.trace_status = format!("{note} {}", state.trace_status);
+                    }
                     state.trace = Some(session);
                     state.open_activity(4);
                 }
@@ -461,7 +464,9 @@ fn saved_path(workspace: &std::path::Path, name: &str) -> Result<std::path::Path
     Ok(traces_dir(workspace).join(name))
 }
 
-async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Session, SavedTrace, Option<String>), String> {
+/// Records a trace. Returns the session, its saved form, the transaction
+/// hash (for the file name) and a note to show when the replay is approximate.
+async fn record(rpc: &str, target: Target, programs: Vec<Program>, fork_url: &str) -> Result<(Session, SavedTrace, Option<String>, String), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .no_proxy()
@@ -490,6 +495,17 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Se
         Target::Call { .. } => None,
     };
     let input;
+    let mut replay_note = String::new();
+    // The mined block of a forked-chain transaction, read from the remote chain.
+    let fork_block = |tx: &Value| {
+        let number = tx["blockNumber"].clone();
+        let url = fork_url.to_string();
+        async move {
+            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().map_err(|error| error.to_string())?;
+            let value: Value = client.post(&url).json(&json!({"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":[number, false]})).send().await.map_err(|error| error.to_string())?.json().await.map_err(|error| error.to_string())?;
+            Ok::<Value, String>(value["result"].clone())
+        }
+    };
     let (title, trace, target_address, block) = match target {
         Target::Transaction(hash) => {
             let tx = call("eth_getTransactionByHash", json!([hash])).await?;
@@ -510,8 +526,26 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Se
                     if number == 0 || head + 1 != number {
                         return Err(format!("{FORK_REPLAY}{}: this transaction is from block {number} of the forked chain. Re-fork at block {} (Workspace > Compiler and libraries > Network) to replay it exactly, then debug it again.", number.saturating_sub(1), number.saturating_sub(1)));
                     }
-                    let request = json!({"from": tx["from"], "to": tx["to"], "data": tx["input"], "value": tx["value"], "gas": tx["gas"]});
-                    call("debug_traceCall", json!([request, "latest", trace_debug::trace_options()])).await?
+                    // Run it in its own block's context: contracts read block.timestamp,
+                    // block.number, basefee and coinbase, and the parent's values send them
+                    // down another path.
+                    let mined = fork_block(&tx).await.unwrap_or(Value::Null);
+                    let mut request = json!({"from": tx["from"], "to": tx["to"], "data": tx["input"], "value": tx["value"], "gas": tx["gas"]});
+                    for key in ["maxFeePerGas", "maxPriorityFeePerGas", "gasPrice", "accessList"] {
+                        if !tx[key].is_null() {
+                            request[key] = tx[key].clone();
+                        }
+                    }
+                    let mut options = trace_debug::trace_options();
+                    if mined.is_object() {
+                        options["blockOverrides"] = json!({"number": mined["number"], "time": mined["timestamp"], "coinbase": mined["miner"], "baseFee": mined["baseFeePerGas"], "gasLimit": mined["gasLimit"], "random": mined["mixHash"]});
+                    }
+                    let position = tx["transactionIndex"].as_str().and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
+                    let trace = call("debug_traceCall", json!([request, "latest", options])).await?;
+                    if position > 0 {
+                        replay_note = format!("Replayed on the state before block {number}. It was transaction {} of that block, so the {position} before it did not run first; storage they changed may differ.", position + 1);
+                    }
+                    trace
                 }
                 Err(error) => return Err(error),
             };
@@ -559,7 +593,7 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Se
         input,
     };
     let session = saved.session(programs)?;
-    Ok((session, saved, hash))
+    Ok((session, saved, hash, replay_note))
 }
 
 fn recent_targets(state: &DesktopState) -> Vec<TraceTarget> {

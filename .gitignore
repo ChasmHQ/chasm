@@ -10,3 +10,4 @@ dist/
 .zcode/
 *.rs.tmp.*
 contracts/chasm-macro-evidence.json
+__pycache__/
