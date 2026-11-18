@@ -11,7 +11,7 @@ export { MacroData, MacroLogic, MacroRow, MacroStep, MacroResult, MacroFormField
 import { FoundryWorkspace } from "foundry.slint";
 export { FoundryData, FoundryLogic, FoundryArtifactRow } from "foundry.slint";
 import { DebugData, DebugLogic, DebugToolbar, DebugCodePane, DebugInspectorPane, DebugInspectionPane, DebugSessionPane } from "debugger.slint";
-import { TraceData, TraceLogic, TraceDebugger } from "trace.slint";
+import { TraceData, TraceLogic, TraceDebugger, TraceOpsPane, TraceStatePane, TraceConsolePane } from "trace.slint";
 import { HistoryData, HistoryLogic, HistoryView } from "history.slint";
 import { ChainData, ChainLogic, TimelineView } from "chain.slint";
 import { ToolchainData, ToolchainLogic, ToolchainWorkspace } from "toolchain.slint";
@@ -721,6 +721,9 @@ component WorkspacePane inherits Rectangle {
     if root.kind == 9: LogsView { }
     if root.kind == 10: JobsView { }
     if root.kind == 11: InvestigationPanel { }
+    if root.kind == 12: TraceOpsPane { }
+    if root.kind == 13: TraceStatePane { }
+    if root.kind == 14: TraceConsolePane { }
 }
 
 component PanelZone inherits Rectangle {
@@ -1362,6 +1365,7 @@ export component MainWindow inherits Window {
                             MenuRow { label: "Contracts layout"; clicked => { PanelLogic.preset(0); Logic.close-menu(); } }
                             MenuRow { label: "Debugging layout"; clicked => { PanelLogic.preset(1); Logic.close-menu(); } }
                             MenuRow { label: "Investigation layout"; clicked => { PanelLogic.preset(2); Logic.close-menu(); } }
+                            MenuRow { label: "Trace debugger layout (sevm)"; clicked => { PanelLogic.preset(3); Logic.close-menu(); } }
                             MenuRow { label: "Reset layout / Bring panels back"; clicked => { PanelLogic.reset(); Logic.close-menu(); } }
                             MenuRow { label: "Show Navigation"; clicked => { PanelLogic.dock("navigation", -1); Logic.close-menu(); } }
                             MenuRow { label: "Show Document"; clicked => { PanelLogic.dock("document", -1); Logic.close-menu(); } }

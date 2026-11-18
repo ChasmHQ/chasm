@@ -373,4 +373,35 @@ def template():
     check("an existing file is not overwritten", "already exists" in query("app.state")["notice"], str(duplicate)[:200])
 
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, fork]
+
+def panes():
+    """Trace panes float, dock in a zone and come back with the sevm preset."""
+    def placement(key):
+        for pane in query("app.state")["layout"]["panes"]:
+            if pane["pane"] == key:
+                return pane["placement"]
+        return None
+    command("debugger.trace", hash=None)
+    for _ in range(60):
+        t = trace()
+        if t["loaded"] and not t["busy"]:
+            break
+        time.sleep(0.5)
+    check("trace loaded in the integrated view", t["loaded"] and placement("trace_ops") is None, str(placement("trace_ops")))
+    command("ui.panel", pane="trace_console", action="dock", zone=3)
+    time.sleep(0.5)
+    check("console docks at the bottom", placement("trace_console") == {"mode": "docked", "zone": "bottom"}, str(placement("trace_console")))
+    command("ui.panel", pane="trace_state", action="float")
+    time.sleep(1)
+    check("state floats in its own window", (placement("trace_state") or {}).get("mode") == "floating", str(placement("trace_state")))
+    command("debugger.trace.step", action="op")
+    check("stepping still works with panes moved", trace()["step"] >= 1)
+    command("ui.panel", pane="trace_state", action="dock", zone=2)
+    time.sleep(0.5)
+    check("state docks on the right", placement("trace_state") == {"mode": "docked", "zone": "right"}, str(placement("trace_state")))
+    command("ui.panel", pane="trace_state", action="hide")
+    command("ui.panel", pane="trace_console", action="hide")
+    time.sleep(0.5)
+    check("hidden panes return to the integrated view", (placement("trace_state") or {}).get("mode") == "hidden", str(placement("trace_state")))
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, fork]

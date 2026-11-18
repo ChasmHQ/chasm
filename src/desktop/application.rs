@@ -174,6 +174,8 @@ pub enum PanelAction {
     Hide,
     Maximize,
     Reset,
+    /// Apply a layout preset; `pane` names it (contracts, debugging, investigation, tracing).
+    Preset,
 }
 
 pub const DEBUG_ACTIONS: [&str; 6] = ["continue", "step_opcode", "step_line", "next_line", "finish", "restart"];
@@ -855,7 +857,8 @@ pub fn query(state: &DesktopState, query: &Query) -> Value {
             "schemaVersion":1, "context":context(state), "workspaceReady":state.workspace_ready,
             "opening":state.project_opening, "activity":state.activity,
             "wallet":{"address":state.wallet_address,"unlocked":state.wallet_key.is_some()},
-            "layout":{"sidebarWidth":state.sidebar_width,"collapsed":state.sidebar_collapsed,"zoomPercent":(state.zoom*100.0).round() as u16},
+            "layout":{"sidebarWidth":state.sidebar_width,"collapsed":state.sidebar_collapsed,"zoomPercent":(state.zoom*100.0).round() as u16,
+                "panes":state.layout.panes.iter().map(|pane| json!({"pane":pane.id.stable_key(),"placement":pane.placement})).collect::<Vec<_>>()},
             "documents":state.documents.iter().enumerate().map(|(i, doc)| json!({"id":document_id(state,i),"title":doc.title,"kind":doc.kind,"active":state.active_document==i as i32})).collect::<Vec<_>>(),
             "deployments":state.deployments.iter().enumerate().map(|(i,d)| json!({"id":deployment_id(state,i),"name":d.name,"address":d.address})).collect::<Vec<_>>(),
             "selectedContract":state.selected_contract,
@@ -1076,7 +1079,7 @@ pub fn command_schema() -> Value {
         (
             "ui.panel",
             object(
-                json!({"pane":{"type":"string","maxLength":200,"description":"Pane key, e.g. navigation, document, console, logs, jobs, debug_code"},"action":{"enum":["dock","float","hide","maximize","reset"]},"zone":{"type":["integer","null"],"minimum":0,"maximum":3}}),
+                json!({"pane":{"type":"string","maxLength":200,"description":"Pane key, e.g. navigation, document, console, logs, jobs, debug_code, trace_ops, trace_state, trace_console; for preset: contracts, debugging, investigation or tracing"},"action":{"enum":["dock","float","hide","maximize","reset","preset"]},"zone":{"type":["integer","null"],"minimum":0,"maximum":3}}),
                 vec!["pane","action"],
             ),
         ),

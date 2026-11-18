@@ -200,9 +200,15 @@ pub fn set_security_confirmation(value: bool) {
 
 /// Open or restore a named non-document pane in its remembered zone.
 pub fn open(key: &str) {
+    dock(key, -1);
+}
+
+/// Dock a pane in a zone (-1: its remembered zone), closing its floating
+/// window if it has one. Used by the control API, which acts for every window.
+pub fn dock(key: &str, zone: i32) {
     HOSTS.with(|hosts| {
         if let Some(registry) = hosts.borrow().clone() {
-            dock_panel(&registry, key, -1);
+            dock_panel(&registry, key, zone);
         }
     });
 }
@@ -312,6 +318,22 @@ fn wire_host(ui: &MainWindow, registry: &Hosts, host: Option<PaneId>) {
             }
         }
     });
+    // Trace panes start inside the integrated Debugger view; these move them
+    // into the layout like any other pane.
+    if host.is_none() {
+        let weak = Rc::downgrade(registry);
+        ui.global::<super::TraceLogic>().on_pane_float(move |key| {
+            if let Some(registry) = weak.upgrade() {
+                float_panel(&registry, key.as_str());
+            }
+        });
+        let weak = Rc::downgrade(registry);
+        ui.global::<super::TraceLogic>().on_pane_dock(move |key, zone| {
+            if let Some(registry) = weak.upgrade() {
+                dock_panel(&registry, key.as_str(), zone);
+            }
+        });
+    }
     let weak = Rc::downgrade(registry);
     let host_id = host.clone();
     ui.global::<PanelLogic>().on_dock(move |key, zone| {
@@ -472,6 +494,7 @@ fn wire_host(ui: &MainWindow, registry: &Hosts, host: Option<PaneId>) {
                 match preset {
                     1 => Preset::Debugging,
                     2 => Preset::Investigation,
+                    3 => Preset::Tracing,
                     _ => Preset::Contracts,
                 },
             );
@@ -839,6 +862,9 @@ fn resolve(state: &DesktopState, key: &str) -> Option<PaneId> {
             "logs" => PaneKind::Logs,
             "jobs" => PaneKind::Jobs,
             "investigation" => PaneKind::Investigation,
+            "trace_ops" => PaneKind::TraceOps,
+            "trace_state" => PaneKind::TraceState,
+            "trace_console" => PaneKind::TraceConsole,
             _ => return None,
         };
         let owner = if matches!(kind, PaneKind::CallResult | PaneKind::Storage) {
@@ -863,8 +889,9 @@ fn zone_from(zone: i32) -> Option<Zone> {
 }
 fn default_zone(kind: PaneKind) -> Zone {
     match kind {
-        PaneKind::Navigation => Zone::Left,
-        PaneKind::Console | PaneKind::Logs | PaneKind::Jobs => Zone::Bottom,
+        PaneKind::Navigation | PaneKind::TraceOps => Zone::Left,
+        PaneKind::Console | PaneKind::Logs | PaneKind::Jobs | PaneKind::TraceConsole => Zone::Bottom,
+        PaneKind::TraceState => Zone::Right,
         PaneKind::DebugInspector
         | PaneKind::DebugInspection
         | PaneKind::DebugSession
@@ -1323,6 +1350,9 @@ fn kind_index(kind: PaneKind) -> i32 {
         PaneKind::Logs => 9,
         PaneKind::Jobs => 10,
         PaneKind::Investigation => 11,
+        PaneKind::TraceOps => 12,
+        PaneKind::TraceState => 13,
+        PaneKind::TraceConsole => 14,
     }
 }
 fn document_for<'a>(state: &'a DesktopState, id: &PaneId) -> Option<&'a Document> {
@@ -1361,6 +1391,11 @@ fn displayed(state: &DesktopState, id: &PaneId) -> bool {
     }
     // Investigation lives in the Explorer tab once a project is open.
     if id.kind == PaneKind::Investigation && state.workspace_ready {
+        return false;
+    }
+    // Docked trace panes belong to the Debugger; elsewhere they would
+    // show an empty trace next to unrelated work.
+    if matches!(id.kind, PaneKind::TraceOps | PaneKind::TraceState | PaneKind::TraceConsole) && state.activity != 4 {
         return false;
     }
     if id.kind == PaneKind::CallResult && id.owner.is_none() {
@@ -1536,6 +1571,13 @@ fn render_host(ui: &MainWindow, state: &DesktopState, pane: Option<&PaneId>) {
         .cloned()
         .unwrap_or_default();
     data.set_maximized(maximized.into());
+    {
+        let trace = ui.global::<super::TraceData>();
+        let moved = |kind| matches!(state.layout.placement(&PaneId::new(kind, None)), Some(Placement::Docked { .. } | Placement::Floating { .. }));
+        trace.set_ops_docked(moved(PaneKind::TraceOps));
+        trace.set_state_docked(moved(PaneKind::TraceState));
+        trace.set_console_docked(moved(PaneKind::TraceConsole));
+    }
     if let Some(id) = pane {
         if id.kind == PaneKind::Document {
             if let Some(doc) = document_for(state, id) {

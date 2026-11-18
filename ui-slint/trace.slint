@@ -15,6 +15,11 @@ export global TraceData {
     // Logical window width, set by the host; caps the side panes so the source stays visible.
     in property <length> window-width: 100000px;
     in property <length> window-height: 100000px;
+    // Set by the host when the pane is docked in a zone or floating, so the
+    // integrated view leaves it out.
+    in property <bool> ops-docked;
+    in property <bool> state-docked;
+    in property <bool> console-docked;
     in property <bool> loaded;
     in property <bool> busy;
     in property <string> status;
@@ -70,6 +75,10 @@ export global TraceLogic {
     callback delete-saved(string);
     callback console-run(string);
     callback console-history(int);
+    // Move a pane out of the integrated view: float it, or dock it in a zone
+    // (0 left, 1 center, 2 right, 3 bottom). Keys: trace_ops, trace_state, trace_console.
+    callback pane-float(string);
+    callback pane-dock(string, int);
 }
 
 // Drag handle between two trace panes. `extent` is the size of the pane on
@@ -171,6 +180,151 @@ component StateList inherits Rectangle {
     }
     if root.stacked: ListView {
         for item in root.items: StackedRow { item: item; }
+    }
+}
+
+// Header of a movable trace pane: its title, and Float / Dock while it sits
+// in the integrated view.
+component TracePaneHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> trailing;
+    in property <string> key;
+    in property <int> dock-zone: 2;
+    in property <bool> embedded: true;
+    height: 1.75rem;
+    HorizontalLayout {
+        SideHeader { title: root.title; trailing: root.trailing; horizontal-stretch: 1; }
+        if root.embedded: ToolButton { text: "Float"; tip: "Open this pane in its own window."; clicked => { TraceLogic.pane-float(root.key); } }
+        if root.embedded: ToolButton { text: "Dock"; tip: "Move this pane to a dock zone. Panels > Reset layout brings it back."; clicked => { TraceLogic.pane-dock(root.key, root.dock-zone); } }
+    }
+}
+
+component NoTrace inherits Rectangle {
+    background: Theme.inset;
+    Text { x: Theme.pad; y: Theme.pad; width: parent.width - 2 * Theme.pad; text: "No trace loaded. Open the Debugger and pick a transaction or call."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+}
+
+// Opcodes executed around the cursor.
+export component TraceOpsPane inherits Rectangle {
+    in property <bool> embedded;
+    private property <length> step-row: TraceData.compact ? 1.125rem : 1.375rem;
+    private property <length> mono: TraceData.compact ? 0.6875rem : 0.75rem;
+    min-width: 0px; min-height: 0px;
+    background: Theme.inset;
+    VerticalLayout {
+        // Docked, the panel header names the pane; the column legend stays.
+        if root.embedded: TracePaneHeader { title: "Executed opcodes"; key: "trace_ops"; dock-zone: 0; }
+        if !root.embedded: SideHeader { title: "pc  op  gas"; }
+        if !TraceData.loaded: NoTrace { vertical-stretch: 1; }
+        if TraceData.loaded: VerticalLayout {
+            vertical-stretch: 1;
+            ListView {
+                property <int> current: TraceData.ops-current;
+                changed current => {
+                    if self.current >= 0 {
+                        let top = self.current * root.step-row;
+                        if top + self.content-y < 2rem || top + self.content-y > self.visible-height - 3rem {
+                            self.content-y = min(0px, max(self.visible-height - self.content-height, self.visible-height / 2 - top));
+                        }
+                    }
+                }
+                init => {
+                    self.content-y = min(0px, max(self.visible-height - self.content-height, self.visible-height / 2 - self.current * root.step-row));
+                }
+                for op in TraceData.ops: ActionControl {
+                    label: "\{op.pc} \{op.op}";
+                    height: root.step-row;
+                    selected: op.current;
+                    transparent-background: !op.current && !self.hovered;
+                    clicked => { TraceLogic.seek(op.index); }
+                    HorizontalLayout {
+                        padding-left: 0.5rem; spacing: 0.5rem;
+                        Text { text: op.depth > 1 ? "\{op.depth}" : " "; width: 1rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: center; }
+                        Text { text: op.pc; width: 3.5rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: root.mono; vertical-alignment: center; }
+                        Text { text: op.op; color: op.current ? Theme.accent : op.op == "SSTORE" || op.op == "SLOAD" ? Theme.warn : op.op == "CALL" || op.op == "DELEGATECALL" || op.op == "STATICCALL" || op.op == "REVERT" ? Theme.danger : Theme.text; font-family: "Cascadia Mono"; font-size: root.mono; vertical-alignment: center; horizontal-stretch: 1; }
+                        Text { text: op.gas; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Stack, memory, storage, calls and variables at the cursor.
+export component TraceStatePane inherits Rectangle {
+    in property <bool> embedded;
+    min-width: 0px; min-height: 0px;
+    background: Theme.panel;
+    VerticalLayout {
+        if !TraceData.loaded: NoTrace { vertical-stretch: 1; }
+        if TraceData.loaded: VerticalLayout {
+            vertical-stretch: 1;
+            HorizontalLayout {
+                height: Theme.tab-height;
+                if root.embedded: ToolButton { text: "Float"; tip: "Open this pane in its own window."; clicked => { TraceLogic.pane-float("trace_state"); } }
+                if root.embedded: ToolButton { text: "Dock"; tip: "Move this pane to the right dock zone."; clicked => { TraceLogic.pane-dock("trace_state", 2); } }
+                DockTab { label: "Stack"; selected: TraceData.state-tab == 0; clicked => { TraceData.state-tab = 0; } }
+                DockTab { label: "Memory"; selected: TraceData.state-tab == 1; clicked => { TraceData.state-tab = 1; } }
+                DockTab { label: "Storage"; selected: TraceData.state-tab == 2; clicked => { TraceData.state-tab = 2; } }
+                DockTab { label: "Calls"; selected: TraceData.state-tab == 3; clicked => { TraceData.state-tab = 3; } }
+                DockTab { label: "Variables"; selected: TraceData.state-tab == 4; clicked => { TraceData.state-tab = 4; } }
+            }
+            if TraceData.state-tab == 0: StateList { items: TraceData.stack; empty: "Stack is empty."; vertical-stretch: 1; }
+            if TraceData.state-tab == 1: StateList { items: TraceData.memory; empty: "No memory used yet."; vertical-stretch: 1; }
+            if TraceData.state-tab == 2: StateList { items: TraceData.storage; empty: "No storage touched yet in this frame."; vertical-stretch: 1; }
+            if TraceData.state-tab == 3: StateList { items: TraceData.frames; empty: "No call frames."; vertical-stretch: 1; }
+            if TraceData.state-tab == 4: StateList { stacked: true; items: TraceData.variables; empty: "No arguments decoded and no storage written. Variables need the contract's ABI and storage layout from this workspace."; vertical-stretch: 1; }
+            SideHeader { title: "This step"; }
+            // Shrinks before the tab's list when the window is short.
+            StateList { items: TraceData.step-info; empty: ""; min-height: 0px; preferred-height: TraceData.compact ? 7rem : 8.5rem; max-height: TraceData.compact ? 7rem : 8.5rem; vertical-stretch: 0.4; }
+        }
+    }
+}
+
+// sevm-style command line over the recorded steps.
+export component TraceConsolePane inherits Rectangle {
+    in property <bool> embedded;
+    private property <length> step-row: TraceData.compact ? 1.125rem : 1.375rem;
+    private property <length> mono: TraceData.compact ? 0.6875rem : 0.75rem;
+    min-width: 0px; min-height: 0px;
+    background: Theme.inset;
+    VerticalLayout {
+        if root.embedded: TracePaneHeader { title: "Trace console"; key: "trace_console"; dock-zone: 3; }
+        console-log := ListView {
+                vertical-stretch: 1; min-height: 0px;
+                // Follow new output to the last line.
+                property <int> count: TraceData.console-lines.length;
+                changed count => { self.content-y = min(0px, self.visible-height - self.content-height); }
+                changed content-height => { self.content-y = min(0px, self.visible-height - self.content-height); }
+                for item in TraceData.console-lines: SelectableText {
+                    height: root.step-row;
+                    x: 0.5rem;
+                    text: item;
+                    wrap: no-wrap;
+                    // Echoed commands are dimmed so the output stands out.
+                    color: item.starts-with("(trace) ") ? Theme.muted : Theme.text;
+                    font-family: "Cascadia Mono";
+                    font-size: root.mono;
+                    vertical-alignment: center;
+                }
+            }
+            FocusScope {
+                height: Theme.control-height;
+                forward-focus: console-prompt;
+                capture-key-pressed(event) => {
+                    if event.text == Key.UpArrow { TraceLogic.console-history(-1); return accept; }
+                    if event.text == Key.DownArrow { TraceLogic.console-history(1); return accept; }
+                    return reject;
+                }
+                console-prompt := LineEdit {
+                    width: parent.width; height: parent.height;
+                    font-family: "Cascadia Mono"; font-size: 0.8125rem;
+                    placeholder-text: "(trace) s, n, si, fin, c, rc, b 28, p stack[0], x 0x40, sload 0, find SSTORE, help";
+                    accessible-label: "Trace console command";
+                    text <=> TraceData.console-input;
+                    accepted => { TraceLogic.console-run(self.text); }
+                }
+            }
     }
 }
 
@@ -360,110 +514,21 @@ export component TraceDebugger inherits Rectangle {
                             }
                         }
                     }
-                    if TraceData.show-opcodes: PaneSplitter { extent: TraceData.opcodes-width; sign: -1; minimum: 220; maximum: 700; resized(value) => { TraceData.opcodes-width = value; } }
-                    // Opcode listing around the cursor.
-                    if TraceData.show-opcodes: Rectangle {
+                    if TraceData.show-opcodes && !TraceData.ops-docked: PaneSplitter { extent: TraceData.opcodes-width; sign: -1; minimum: 220; maximum: 700; resized(value) => { TraceData.opcodes-width = value; } }
+                    if TraceData.show-opcodes && !TraceData.ops-docked: TraceOpsPane {
+                        embedded: true;
                         horizontal-stretch: 0; width: min(TraceData.opcodes-width * Theme.unit, TraceData.window-width * (TraceData.show-state ? 0.2 : 0.3));
-                        background: Theme.inset;
-                        VerticalLayout {
-                            SideHeader { title: "Executed opcodes"; trailing: "pc  op  gas"; }
-                            ListView {
-                                property <int> current: TraceData.ops-current;
-                                changed current => {
-                                    if self.current >= 0 {
-                                        let top = self.current * root.step-row;
-                                        if top + self.content-y < 2rem || top + self.content-y > self.visible-height - 3rem {
-                                            self.content-y = min(0px, max(self.visible-height - self.content-height, self.visible-height / 2 - top));
-                                        }
-                                    }
-                                }
-                                init => {
-                                    self.content-y = min(0px, max(self.visible-height - self.content-height, self.visible-height / 2 - self.current * root.step-row));
-                                }
-                                for op in TraceData.ops: ActionControl {
-                                    label: "\{op.pc} \{op.op}";
-                                    height: root.step-row;
-                                    selected: op.current;
-                                    transparent-background: !op.current && !self.hovered;
-                                    clicked => { TraceLogic.seek(op.index); }
-                                    HorizontalLayout {
-                                        padding-left: 0.5rem; spacing: 0.5rem;
-                                        Text { text: op.depth > 1 ? "\{op.depth}" : " "; width: 1rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: center; }
-                                        Text { text: op.pc; width: 3.5rem; color: Theme.faint; font-family: "Cascadia Mono"; font-size: root.mono; vertical-alignment: center; }
-                                        Text { text: op.op; color: op.current ? Theme.accent : op.op == "SSTORE" || op.op == "SLOAD" ? Theme.warn : op.op == "CALL" || op.op == "DELEGATECALL" || op.op == "STATICCALL" || op.op == "REVERT" ? Theme.danger : Theme.text; font-family: "Cascadia Mono"; font-size: root.mono; vertical-alignment: center; horizontal-stretch: 1; }
-                                        Text { text: op.gas; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; vertical-alignment: center; }
-                                    }
-                                }
-                            }
-                        }
                     }
-                    if TraceData.show-state: PaneSplitter { extent: TraceData.state-width; sign: -1; minimum: 200; maximum: 900; resized(value) => { TraceData.state-width = value; } }
-                    // Machine state.
-                    if TraceData.show-state: Rectangle {
+                    if TraceData.show-state && !TraceData.state-docked: PaneSplitter { extent: TraceData.state-width; sign: -1; minimum: 200; maximum: 900; resized(value) => { TraceData.state-width = value; } }
+                    if TraceData.show-state && !TraceData.state-docked: TraceStatePane {
+                        embedded: true;
                         horizontal-stretch: 0; width: min(TraceData.state-width * Theme.unit, TraceData.window-width * (TraceData.show-opcodes ? 0.28 : 0.4));
-                        background: Theme.panel;
-                        VerticalLayout {
-                            HorizontalLayout {
-                                height: Theme.tab-height;
-                                DockTab { label: "Stack"; selected: TraceData.state-tab == 0; clicked => { TraceData.state-tab = 0; } }
-                                DockTab { label: "Memory"; selected: TraceData.state-tab == 1; clicked => { TraceData.state-tab = 1; } }
-                                DockTab { label: "Storage"; selected: TraceData.state-tab == 2; clicked => { TraceData.state-tab = 2; } }
-                                DockTab { label: "Calls"; selected: TraceData.state-tab == 3; clicked => { TraceData.state-tab = 3; } }
-                                DockTab { label: "Variables"; selected: TraceData.state-tab == 4; clicked => { TraceData.state-tab = 4; } }
-                            }
-                            if TraceData.state-tab == 0: StateList { items: TraceData.stack; empty: "Stack is empty."; vertical-stretch: 1; }
-                            if TraceData.state-tab == 1: StateList { items: TraceData.memory; empty: "No memory used yet."; vertical-stretch: 1; }
-                            if TraceData.state-tab == 2: StateList { items: TraceData.storage; empty: "No storage touched yet in this frame."; vertical-stretch: 1; }
-                            if TraceData.state-tab == 3: StateList { items: TraceData.frames; empty: "No call frames."; vertical-stretch: 1; }
-                            if TraceData.state-tab == 4: StateList { stacked: true; items: TraceData.variables; empty: "No arguments decoded and no storage written. Variables need the contract's ABI and storage layout from this workspace."; vertical-stretch: 1; }
-                            SideHeader { title: "This step"; }
-                            // Shrinks before the tab's list when the window is short.
-                            StateList { items: TraceData.step-info; empty: ""; min-height: 0px; preferred-height: TraceData.compact ? 7rem : 8.5rem; max-height: TraceData.compact ? 7rem : 8.5rem; vertical-stretch: 0.4; }
-                        }
                     }
                 }
-                if TraceData.show-console: PaneSplitter { horizontal: true; extent: TraceData.console-height; sign: -1; minimum: 70; maximum: 600; resized(value) => { TraceData.console-height = value; } }
-                // sevm-style command line over the recorded steps.
-                if TraceData.show-console: Rectangle {
+                if TraceData.show-console && !TraceData.console-docked: PaneSplitter { horizontal: true; extent: TraceData.console-height; sign: -1; minimum: 70; maximum: 600; resized(value) => { TraceData.console-height = value; } }
+                if TraceData.show-console && !TraceData.console-docked: TraceConsolePane {
+                    embedded: true;
                     height: min(TraceData.console-height * Theme.unit, TraceData.window-height * 0.22);
-                    background: Theme.inset;
-                    VerticalLayout {
-                        console-log := ListView {
-                            vertical-stretch: 1; min-height: 0px;
-                            // Follow new output to the last line.
-                            property <int> count: TraceData.console-lines.length;
-                            changed count => { self.content-y = min(0px, self.visible-height - self.content-height); }
-                            changed content-height => { self.content-y = min(0px, self.visible-height - self.content-height); }
-                            for item in TraceData.console-lines: SelectableText {
-                                height: root.step-row;
-                                x: 0.5rem;
-                                text: item;
-                                wrap: no-wrap;
-                                // Echoed commands are dimmed so the output stands out.
-                                color: item.starts-with("(trace) ") ? Theme.muted : Theme.text;
-                                font-family: "Cascadia Mono";
-                                font-size: root.mono;
-                                vertical-alignment: center;
-                            }
-                        }
-                        FocusScope {
-                            height: Theme.control-height;
-                            forward-focus: console-prompt;
-                            capture-key-pressed(event) => {
-                                if event.text == Key.UpArrow { TraceLogic.console-history(-1); return accept; }
-                                if event.text == Key.DownArrow { TraceLogic.console-history(1); return accept; }
-                                return reject;
-                            }
-                            console-prompt := LineEdit {
-                                width: parent.width; height: parent.height;
-                                font-family: "Cascadia Mono"; font-size: 0.8125rem;
-                                placeholder-text: "(trace) s, n, si, fin, c, rc, b 28, p stack[0], x 0x40, sload 0, find SSTORE, help";
-                                accessible-label: "Trace console command";
-                                text <=> TraceData.console-input;
-                                accepted => { TraceLogic.console-run(self.text); }
-                            }
-                        }
-                    }
                 }
                 // Timeline: click anywhere to jump to that step.
                 Rectangle {

@@ -299,3 +299,20 @@ fn request_fields_keep_their_model_while_typing() {
     assert!(next != fields);
     assert_eq!(next.row_data(0).unwrap().value, "");
 }
+
+#[test]
+fn tracing_preset_docks_trace_panes_like_the_sevm_tui() {
+    let layout = Layout::preset(Preset::Tracing);
+    layout.validate().unwrap();
+    let zone = |kind| match layout.placement(&PaneId::new(kind, None)) {
+        Some(Placement::Docked { zone }) => Some(*zone),
+        _ => None,
+    };
+    assert_eq!(zone(PaneKind::TraceOps), Some(Zone::Left));
+    assert_eq!(zone(PaneKind::TraceState), Some(Zone::Right));
+    assert_eq!(zone(PaneKind::TraceConsole), Some(Zone::Bottom));
+    assert_eq!(layout.active[&Zone::Left], PaneId::new(PaneKind::TraceOps, None).stable_key());
+    let json = layout.to_json().unwrap();
+    assert_eq!(Layout::from_json(&json).unwrap(), layout);
+    assert_eq!(default_zone(PaneKind::TraceConsole), Zone::Bottom);
+}

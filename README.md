@@ -13,6 +13,7 @@ macros, and fork a live chain to debug real transactions.
 ![A reverted call shows its reason, and Debug this call opens the failing line](screenshots/native/request-revert.png)
 ![The step debugger with named storage writes](screenshots/native/debugger-variables.png)
 ![An undeployed tab deploys in place](screenshots/native/inline-deploy.png)
+![The sevm-style layout: opcodes, source, machine state and console as docked panes](screenshots/native/debugger-sevm-layout.png)
 ![Saved call history with Repeat, Debug and To macro](screenshots/native/history.png)
 ![Snapshot timeline and local chain cheats](screenshots/native/timeline-cheats.png)
 ![Fork a public chain from a preset; the status bar names it](screenshots/native/fork-network.png)

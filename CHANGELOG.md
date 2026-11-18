@@ -21,7 +21,7 @@ the `ui/` folder and the npm build are gone.
 - Step debugger for any transaction or call on the project node, mapped to source through solc source maps.
 - Step into, over and out, and single instructions, each with a reverse step; internal function calls nest correctly.
 - Breakpoints, opcode search, and a Variables tab with decoded arguments and named storage writes.
-- Resizable, hideable and compact panes, and a sevm-style console (`s`, `n`, `si`, `fin`, `c`, `rc`, `b`, `p`, `x`, `sload`, `find`, `args`, `writes`).
+- Resizable, hideable and compact panes that also float or dock like any other pane, a sevm-style layout preset, and a sevm-style console (`s`, `n`, `si`, `fin`, `c`, `rc`, `b`, `p`, `x`, `sload`, `find`, `args`, `writes`).
 - Traces are saved under `.chasm/traces/` and reopen without the node.
 
 ### Chain

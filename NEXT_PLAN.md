@@ -1,6 +1,6 @@
 # Next plan, after goals G1–G7 (2026-11-18)
 
-Status: P1, P2.1, P2.4, P2.5 and P3 done; next P2.2. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
+Status: P1, P2.1, P2.2, P2.4, P2.5 and P3 done; next P4.2. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
 finished. This plan covers what is left, ordered by what blocks real use
 first.
 
@@ -109,7 +109,7 @@ its own commit, and is recorded in this file's progress table.
 | P1.3 live tests in repo | done, 9 flows pass (ddb3448) |
 | P1.4 merge review | done: README, CHANGELOG, docs/archive; no debug prints or stubs; `.agents/` stays untracked. Merge waits for the user |
 | P2.1 deploy in request editor | done: constructor form inside the unbound tab, Deploy beside Send; `inline_deploy` live flow measures 5 clicks |
-| P2.2 docking debugger panes | not started |
+| P2.2 docking debugger panes | done: `PaneKind::TraceOps/TraceState/TraceConsole`, Float/Dock in the view, `Preset::Tracing` (sevm), `ui.panel` dock/float/hide/preset; `panes` live flow |
 | P2.3 offline captures | not started |
 | P2.4 templates | done: `templates.rs`, sidebar form, `contracts.template`; `template` live flow installs OpenZeppelin when missing and deploys the token |
 | P2.5 fork usability | done: public RPC presets, forked chain named in the status bar and `toolchain.state`; address lookups already read the remote chain through Anvil |

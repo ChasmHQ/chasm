@@ -619,11 +619,17 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
         Command::Panel { pane, action, zone } => {
             let panels = ui.global::<PanelLogic>();
             match action {
-                PanelAction::Dock => panels.invoke_dock(pane.as_str().into(), zone.map(i32::from).unwrap_or(-1)),
+                PanelAction::Dock => super::panels::dock(pane, zone.map(i32::from).unwrap_or(-1)),
                 PanelAction::Float => panels.invoke_float(pane.as_str().into()),
-                PanelAction::Hide => panels.invoke_hide(pane.as_str().into()),
+                PanelAction::Hide => super::panels::hide(pane),
                 PanelAction::Maximize => panels.invoke_maximize(pane.as_str().into()),
                 PanelAction::Reset => panels.invoke_reset(),
+                PanelAction::Preset => panels.invoke_preset(match pane.as_str() {
+                    "debugging" => 1,
+                    "investigation" => 2,
+                    "tracing" => 3,
+                    _ => 0,
+                }),
             }
         }
         _ => {}

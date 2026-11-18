@@ -95,6 +95,8 @@ trace ends there.
 - Drag the bars between Source, Opcodes and State, and above the Console, to resize them. With a bar focused, the arrow keys move it in 20 px steps.
 - **Panes** in the second toolbar row hides or shows Opcodes, State and Console.
 - **Compact** uses smaller rows and fonts for small windows.
+- **Float** and **Dock** on the Opcodes, State and Console headers move a pane out of the view: into its own window, or into a dock zone next to the source. It then moves, stacks and maximizes like any other pane, and the place is saved with the layout. Hiding it (or Panels > Reset layout) puts it back in the view.
+- **Panels > Trace debugger layout (sevm)** arranges them like the sevm TUI: opcodes left, source in the middle, machine state right, console below.
 
 ## Console
 
@@ -143,6 +145,7 @@ AI clients with the `debug` scope use the same commands:
 - `debugger.trace.seek` with `{"step": n}`.
 - `debugger.trace.breakpoint` with `{"line": n}`.
 - `debugger.trace.console` with `{"line": "n"}`; output is in `debugger.state` `trace.console`.
+- `ui.panel` with `pane` = `trace_ops`, `trace_state` or `trace_console` and `action` = `dock` (with `zone`), `float` or `hide`; `action` = `preset` with `pane` = `tracing` applies the sevm layout. `app.state` lists each pane's placement under `layout.panes`.
 - `debugger.trace.view` with any of `opcodes`, `state`, `console`, `compact` (booleans) and `opcodes_width`, `state_width`, `console_height` (px).
 - `debugger.trace.open_saved` with `{"name": "<file>.json"}`, a name from `debugger.state` `trace.saved`.
 - The `debugger.state` query returns the trace position under `debugger.trace`.

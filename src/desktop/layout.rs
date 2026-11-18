@@ -23,6 +23,11 @@ pub enum PaneKind {
     Logs,
     Jobs,
     Investigation,
+    /// Panes of the step debugger. While absent from the layout (or hidden)
+    /// they stay inside the integrated Debugger view.
+    TraceOps,
+    TraceState,
+    TraceConsole,
 }
 
 impl PaneKind {
@@ -40,6 +45,9 @@ impl PaneKind {
             Self::Logs => "logs",
             Self::Jobs => "jobs",
             Self::Investigation => "investigation",
+            Self::TraceOps => "trace_ops",
+            Self::TraceState => "trace_state",
+            Self::TraceConsole => "trace_console",
         }
     }
 
@@ -58,6 +66,9 @@ impl PaneKind {
             Self::Logs => "Logs",
             Self::Jobs => "Jobs",
             Self::Investigation => "Investigation",
+            Self::TraceOps => "Opcodes",
+            Self::TraceState => "Machine state",
+            Self::TraceConsole => "Trace console",
         }
     }
 }
@@ -156,6 +167,9 @@ pub enum Preset {
     Contracts,
     Debugging,
     Investigation,
+    /// The sevm TUI arrangement: opcodes left, source center, machine state
+    /// right, console below.
+    Tracing,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -205,6 +219,15 @@ impl Layout {
                 (PaneKind::Logs, Zone::Bottom),
                 (PaneKind::Jobs, Zone::Bottom),
             ],
+            Preset::Tracing => &[
+                (PaneKind::Navigation, Zone::Left),
+                (PaneKind::TraceOps, Zone::Left),
+                (PaneKind::Document, Zone::Center),
+                (PaneKind::TraceState, Zone::Right),
+                (PaneKind::TraceConsole, Zone::Bottom),
+                (PaneKind::Logs, Zone::Bottom),
+                (PaneKind::Jobs, Zone::Bottom),
+            ],
             Preset::Investigation => &[
                 (PaneKind::Navigation, Zone::Left),
                 (PaneKind::Investigation, Zone::Center),
@@ -218,6 +241,15 @@ impl Layout {
             layout.panes.push(PanePlacement { id: PaneId::new(kind, None), placement: Placement::Docked { zone } });
         }
         layout.repair_active();
+        if preset == Preset::Tracing {
+            layout.left_width = 300.0;
+            layout.bottom_height = 170.0;
+            for kind in [PaneKind::Logs, PaneKind::Jobs] {
+                let _ = layout.hide(&PaneId::new(kind, None));
+            }
+            let _ = layout.select(Zone::Left, &PaneId::new(PaneKind::TraceOps, None));
+            let _ = layout.select(Zone::Bottom, &PaneId::new(PaneKind::TraceConsole, None));
+        }
         if preset == Preset::Contracts {
             for kind in [PaneKind::Console, PaneKind::Logs, PaneKind::Jobs] {
                 let _ = layout.hide(&PaneId::new(kind, None));
@@ -448,7 +480,7 @@ mod tests {
 
     #[test]
     fn presets_and_owned_float_round_trip() {
-        for preset in [Preset::Contracts, Preset::Debugging, Preset::Investigation] {
+        for preset in [Preset::Contracts, Preset::Debugging, Preset::Investigation, Preset::Tracing] {
             let mut layout = Layout::preset(preset);
             layout.validate().unwrap();
             let owned = PaneId::new(PaneKind::CallResult, Some("document-123".into()));
