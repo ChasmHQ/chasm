@@ -36,6 +36,21 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
             .collect(),
     ));
     data.set_missing_count(missing.len() as i32);
+    let describe = |network: &crate::config::NetworkConfig| {
+        if network.is_local() {
+            "a fresh local chain".to_string()
+        } else {
+            format!("a fork of {} at {}", super::fork_host(&network.fork_url), network.fork_block.map(|block| format!("block {block}")).unwrap_or_else(|| "the latest block".into()))
+        }
+    };
+    let saved = crate::config::ChasmConfig::load(workspace).map(|config| config.network).unwrap_or_default();
+    data.set_fork_running(describe(&state.network).into());
+    data.set_fork_saved(describe(&saved).into());
+    // Fill the form once from the saved setting; afterwards it is the user's text.
+    if data.get_fork_url().is_empty() && data.get_fork_block().is_empty() && !saved.is_local() {
+        data.set_fork_url(saved.fork_url.clone().into());
+        data.set_fork_block(saved.fork_block.map(|block| block.to_string()).unwrap_or_default().into());
+    }
     data.set_lib_folder(crate::config::global_lib_dir().display().to_string().into());
 }
 
@@ -111,6 +126,32 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
             Err(error) => status(&weak, error, false),
         }
         super::paint(&weak, &held);
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
+    ui.global::<ToolchainLogic>().on_save_network(move |url, block| {
+        let mut state = held.lock().unwrap();
+        if !state.can_change_workspace() {
+            drop(state);
+            return status(&weak, "Wait for the current operation to finish, then save again.".into(), false);
+        }
+        match toolchain::save_network(&state.workspace, url.as_str(), block.as_str()) {
+            Ok(network) => {
+                // Reopen the same project: boot reads [network] and starts the node.
+                let path = state.workspace.clone();
+                state.next_workspace = Some(path);
+                state.workspace_busy = true;
+                state.wallet_generation = state.wallet_generation.wrapping_add(1);
+                state.status_left = if network.is_local() { "Reopening with a local chain…".into() } else { format!("Reopening as a fork of {}…", super::fork_host(&network.fork_url)) };
+                state.active = false;
+                drop(state);
+                let _ = slint::quit_event_loop();
+            }
+            Err(error) => {
+                drop(state);
+                status(&weak, error, false);
+            }
+        }
     });
     let weak = ui.as_weak();
     let held = state.clone();

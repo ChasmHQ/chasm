@@ -11,6 +11,9 @@ pub struct ChasmConfig {
     /// `[compiler]`: a locked solc version, or none to pick one per pragma.
     #[serde(default, skip_serializing_if = "CompilerConfig::is_auto")]
     pub compiler: CompilerConfig,
+    /// `[network]`: fork a remote chain into the local node when set.
+    #[serde(default, skip_serializing_if = "NetworkConfig::is_local")]
+    pub network: NetworkConfig,
     /// Keys Chasm does not manage (for example foundry.toml settings) are
     /// kept verbatim so saving remappings never drops the user's settings.
     #[serde(flatten)]
@@ -24,6 +27,22 @@ pub struct CompilerConfig {
     /// when none fits.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub solc: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
+pub struct NetworkConfig {
+    /// HTTPS RPC of the chain to fork; empty runs a fresh local chain.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fork_url: String,
+    /// Block to fork at; none forks the latest block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_block: Option<u64>,
+}
+
+impl NetworkConfig {
+    pub fn is_local(&self) -> bool {
+        self.fork_url.is_empty()
+    }
 }
 
 impl CompilerConfig {

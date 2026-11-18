@@ -170,6 +170,25 @@ pub fn lock_solc(workspace: &Path, version: &str) -> Result<(), String> {
     ChasmConfig::update(workspace, |config| config.compiler.solc = version.to_string()).map_err(|error| error.to_string())
 }
 
+/// Validate and save the fork setting. Only HTTP(S) URLs without spaces are
+/// accepted; an empty URL switches back to a local chain.
+pub fn save_network(workspace: &Path, url: &str, block: &str) -> Result<crate::config::NetworkConfig, String> {
+    let url = url.trim();
+    let block = block.trim();
+    let network = if url.is_empty() {
+        crate::config::NetworkConfig::default()
+    } else {
+        let parsed = reqwest::Url::parse(url).map_err(|_| "Enter an RPC URL such as https://ethereum-rpc.publicnode.com.".to_string())?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return Err("The fork RPC must be an http(s) URL.".into());
+        }
+        let fork_block = if block.is_empty() { None } else { Some(block.parse::<u64>().map_err(|_| "Enter the fork block as a whole number, or leave it empty for the latest block.".to_string())?) };
+        crate::config::NetworkConfig { fork_url: url.to_string(), fork_block }
+    };
+    ChasmConfig::update(workspace, |config| config.network = network.clone()).map_err(|error| error.to_string())?;
+    Ok(network)
+}
+
 /// The `pragma solidity` line of each workspace source, for the compiler view.
 pub fn pragmas(workspace: &Path) -> Vec<(String, String)> {
     let mut rows = Vec::new();
@@ -228,5 +247,12 @@ mod tests {
         assert_eq!(missing, vec!["openzeppelin-contracts"]);
         remove_from_project(workspace.path(), "solady").unwrap();
         assert_eq!(used_version(workspace.path(), "solady"), None);
+        assert!(save_network(workspace.path(), "ftp://x", "").is_err());
+        assert!(save_network(workspace.path(), "https://rpc.example", "latest").is_err());
+        let network = save_network(workspace.path(), "https://rpc.example/key", "21000000").unwrap();
+        assert_eq!(network.fork_block, Some(21_000_000));
+        assert_eq!(ChasmConfig::load(workspace.path()).unwrap().network, network);
+        save_network(workspace.path(), "", "").unwrap();
+        assert!(!std::fs::read_to_string(workspace.path().join(".chasm/chasm.toml")).unwrap().contains("[network]"));
     }
 }

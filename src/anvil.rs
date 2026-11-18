@@ -190,6 +190,9 @@ impl AnvilNode {
 
 fn apply_fork_args(cmd: &mut Command, fork_url: &str, fork_block: Option<u64>) {
     cmd.arg("--fork-url").arg(fork_url);
+    // Keep the local chain id: signing is restricted to 31337, so a fork can
+    // never produce a transaction that is valid on the real network.
+    cmd.arg("--chain-id").arg("31337");
     if let Some(block) = fork_block {
         cmd.arg("--fork-block-number").arg(block.to_string());
     }
@@ -279,6 +282,8 @@ mod tests {
             [
                 "--fork-url",
                 "https://example.test/rpc",
+                "--chain-id",
+                "31337",
                 "--fork-block-number",
                 "42"
             ]
@@ -286,6 +291,6 @@ mod tests {
 
         let mut cmd = Command::new("anvil");
         apply_fork_args(&mut cmd, "https://example.test/rpc", None);
-        assert_eq!(args(&cmd), ["--fork-url", "https://example.test/rpc"]);
+        assert_eq!(args(&cmd), ["--fork-url", "https://example.test/rpc", "--chain-id", "31337"]);
     }
 }

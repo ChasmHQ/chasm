@@ -474,6 +474,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
         Command::TraceSeek { step } => ui.global::<super::TraceLogic>().invoke_seek(*step as i32),
         Command::TraceBreakpoint { line } => ui.global::<super::TraceLogic>().invoke_toggle_breakpoint(*line as i32),
         Command::TraceOpenSaved { name } => ui.global::<super::TraceLogic>().invoke_open_saved(name.as_str().into()),
+        Command::TraceRefork {} => ui.global::<super::TraceLogic>().invoke_refork(),
         Command::TraceConsole { line } => ui.global::<super::TraceLogic>().invoke_console_run(line.as_str().into()),
         Command::TimelineRevert { index } => ui.global::<super::ChainLogic>().invoke_revert_to(*index as i32),
         Command::Cheat { action, address, value, slot } => {
@@ -484,7 +485,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             data.set_slot(slot.clone().unwrap_or_default().into());
             ui.global::<super::ChainLogic>().invoke_apply_cheat();
         }
-        Command::Toolchain { action, library, version } => {
+        Command::Toolchain { action, library, version, fork_url, fork_block } => {
             let logic = ui.global::<super::ToolchainLogic>();
             let library = library.clone().unwrap_or_default();
             let version = version.clone().unwrap_or_default();
@@ -494,6 +495,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
                 "install" => logic.invoke_install(library.into(), version.into()),
                 "use" => logic.invoke_use_version(library.into(), version.into()),
                 "remove" => logic.invoke_remove(library.into()),
+                "network" => logic.invoke_save_network(fork_url.clone().unwrap_or_default().into(), fork_block.clone().unwrap_or_default().into()),
                 _ => {}
             }
         }

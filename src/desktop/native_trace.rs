@@ -67,6 +67,36 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     });
     let weak = ui.as_weak();
     let held = state.clone();
+    ui.global::<TraceLogic>().on_refork(move || {
+        let mut state = held.lock().unwrap();
+        let Some(block) = state.trace_status.strip_prefix(FORK_REPLAY).and_then(|rest| rest.split(':').next()).and_then(|text| text.parse::<u64>().ok()) else { return };
+        if !state.can_change_workspace() || state.network.is_local() {
+            return;
+        }
+        let url = state.network.fork_url.clone();
+        let hash = state.trace_input.clone();
+        match super::toolchain::save_network(&state.workspace, &url, &block.to_string()) {
+            Ok(_) => {
+                // Debug the same hash once the reopened project is ready.
+                let _ = std::fs::write(state.workspace.join(".chasm").join("pending-debug.txt"), &hash);
+                let path = state.workspace.clone();
+                state.next_workspace = Some(path);
+                state.workspace_busy = true;
+                state.wallet_generation = state.wallet_generation.wrapping_add(1);
+                state.status_left = format!("Re-forking at block {block}…");
+                state.active = false;
+                drop(state);
+                let _ = slint::quit_event_loop();
+            }
+            Err(error) => {
+                state.trace_status = error;
+                drop(state);
+                super::paint(&weak, &held);
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
     ui.global::<TraceLogic>().on_console_run(move |line| {
         let line = line.trim().to_string();
         if line.is_empty() || line.len() > 200 {
@@ -198,6 +228,9 @@ fn with_session(weak: &Weak<MainWindow>, held: &State, edit: impl FnOnce(&mut Se
     super::paint(weak, held);
 }
 
+/// Start of the error asking to re-fork at a block (the number follows).
+pub const FORK_REPLAY: &str = "Re-fork needed at block ";
+
 /// What to trace: a mined transaction hash, or (empty input) the newest
 /// transaction or simulated call captured by the active contract tab.
 enum Target {
@@ -269,6 +302,11 @@ pub fn load(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle
         }
         match pick_target(&state, &input) {
             Ok(target) => {
+                // Remembered so a re-fork can debug the same transaction again.
+                state.trace_input = match &target {
+                    Target::Transaction(hash) => hash.clone(),
+                    Target::Call { .. } => String::new(),
+                };
                 state.trace_busy = true;
                 state.trace_status = "Recording the execution…".into();
                 Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch))
@@ -460,8 +498,23 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>) -> Result<(Se
             }
             let receipt = call("eth_getTransactionReceipt", json!([hash])).await?;
             let to = tx["to"].as_str().map(str::to_string).or_else(|| receipt["contractAddress"].as_str().map(str::to_string)).unwrap_or_default();
-            let trace = call("debug_traceTransaction", json!([hash, trace_debug::trace_options()])).await?;
             let block = tx["blockNumber"].as_str().unwrap_or("latest").to_string();
+            let trace = match call("debug_traceTransaction", json!([hash, trace_debug::trace_options()])).await {
+                Ok(trace) => trace,
+                // A transaction from the forked chain, not mined on this node:
+                // replay it as a call. Only exact when the fork sits at its parent.
+                Err(error) if error.contains("does not exist") || error.contains("not available") || error.contains("not found") => {
+                    let number = u64::from_str_radix(block.trim_start_matches("0x"), 16).unwrap_or(0);
+                    let head = call("eth_blockNumber", json!([])).await?;
+                    let head = u64::from_str_radix(head.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).unwrap_or(0);
+                    if number == 0 || head + 1 != number {
+                        return Err(format!("{FORK_REPLAY}{}: this transaction is from block {number} of the forked chain. Re-fork at block {} (Workspace > Compiler and libraries > Network) to replay it exactly, then debug it again.", number.saturating_sub(1), number.saturating_sub(1)));
+                    }
+                    let request = json!({"from": tx["from"], "to": tx["to"], "data": tx["input"], "value": tx["value"], "gas": tx["gas"]});
+                    call("debug_traceCall", json!([request, "latest", trace_debug::trace_options()])).await?
+                }
+                Err(error) => return Err(error),
+            };
             input = tx["input"].as_str().unwrap_or("").to_string();
             let short = format!("{}…{}", &hash[..10], &hash[hash.len() - 6..]);
             (format!("Transaction {short}"), trace, to, block)
@@ -522,6 +575,7 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     let data = ui.global::<TraceData>();
     data.set_busy(state.trace_busy);
     data.set_status(state.trace_status.clone().into());
+    data.set_can_refork(state.trace_status.starts_with(FORK_REPLAY) && !state.network.is_local());
     if data.get_console_text().as_str() != state.trace_console {
         data.set_console_text(state.trace_console.clone().into());
         data.set_console_lines(super::model(state.trace_console.lines().map(Into::into).collect()));

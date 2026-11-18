@@ -18,6 +18,11 @@ export global ToolchainData {
     in property <string> lib-folder;
     in property <int> missing-count;
     in-out property <string> solc-input;
+    // Fork setting as saved, what the node runs now, and the form.
+    in property <string> fork-saved;
+    in property <string> fork-running;
+    in-out property <string> fork-url;
+    in-out property <string> fork-block;
     in-out property <string> tag-input;
 }
 
@@ -26,6 +31,7 @@ export global ToolchainLogic {
     callback install(string, string);
     callback use-version(string, string);
     callback remove(string);
+    callback save-network(string, string);
 }
 
 component Small inherits ActionControl {
@@ -59,6 +65,18 @@ export component ToolchainWorkspace inherits ScrollView {
                 color: Theme.warn; font-size: 0.8125rem; wrap: word-wrap;
             }
         }
+        SelectableText { text: "Network"; font-weight: 600; font-size: 0.9375rem; }
+        SelectableText { text: "The project node is \{ToolchainData.fork-running}. Fork a live chain to call and debug real contracts locally: the node copies state on demand from the RPC, keeps chain id 31337, and nothing is ever sent to the real network."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 0.375rem;
+            LineEdit { text <=> ToolchainData.fork-url; placeholder-text: "https://… RPC to fork, empty for a local chain"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 3; }
+            LineEdit { text <=> ToolchainData.fork-block; placeholder-text: "block (latest)"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 1; }
+            IconButton { icon: @image-url("icons/refresh.svg"); label: "Save and reopen project"; primary: true; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.save-network(ToolchainData.fork-url, ToolchainData.fork-block); } }
+        }
+        if ToolchainData.fork-saved != ToolchainData.fork-running: SelectableText { text: "Saved setting: \{ToolchainData.fork-saved}. It applies when the project reopens."; color: Theme.warn; font-size: 0.75rem; wrap: word-wrap; }
+        SelectableText { text: "Public RPCs rate-limit heavy use; a provider URL with a key is kept in .chasm/chasm.toml, which git ignores. Reopening resets the local chain."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        Rectangle { height: 1px; background: Theme.line; }
+
         SelectableText { text: "Solidity compiler"; font-weight: 600; font-size: 0.9375rem; }
         SelectableText {
             text: ToolchainData.locked == ""

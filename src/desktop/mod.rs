@@ -192,6 +192,17 @@ fn run(mut cli: Cli, explicit_path: bool) -> anyhow::Result<()> {
         let control_timer = native_control::wire(&ui, &state, &control_hub, &control_host, control_runtime.handle().clone());
         native_investigation::wire(&ui, &state, &investigation, control_runtime.handle().clone());
         panels::bind(&ui, &state, runtime.handle().clone(), investigation.clone());
+        // A re-fork for the debugger leaves the transaction to open next.
+        let pending = state.lock().unwrap().workspace.join(".chasm").join("pending-debug.txt");
+        if let Ok(hash) = std::fs::read_to_string(&pending) {
+            let _ = std::fs::remove_file(&pending);
+            let hash = hash.trim().to_string();
+            if hash.len() == 66 && hash.starts_with("0x") {
+                ui.global::<AppData>().set_debugger_mode(0);
+                ui.global::<TraceData>().set_input(hash.clone().into());
+                native_trace::load(ui.as_weak(), state.clone(), runtime.handle().clone(), hash);
+            }
+        }
         let ui_result = ui.show().and_then(|_| slint::run_event_loop_until_quit());
         control_timer.stop();
         panels::shutdown();
@@ -295,6 +306,7 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
             }
         }
     }
+    let network = config.as_ref().map(|config| config.network.clone()).unwrap_or_default();
     let remappings = config.map(|config| config.remappings).unwrap_or_default();
 
     let mut listener = None;
@@ -313,10 +325,16 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
         .map_err(|_| anyhow::anyhow!("Local Anvil port 8545 is already in use. Close the owning application before opening this project."))?;
     drop(reservation);
     let mut anvil = AnvilNode::new_silent(8545);
-    anvil.start()?;
+    if network.is_local() {
+        anvil.start()?;
+    } else {
+        anvil.start_fork(network.fork_url.clone(), network.fork_block)?;
+    }
     let probe = reqwest::Client::builder().timeout(std::time::Duration::from_millis(400)).build()?;
     let mut ready = false;
-    for _ in 0..40 {
+    // A fork fetches the remote head first, so it gets longer to come up.
+    let attempts = if network.is_local() { 40 } else { 600 };
+    for _ in 0..attempts {
         anvil.check_process()?;
         if let Ok(response) = probe.post("http://127.0.0.1:8545")
             .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]})).send().await {
@@ -326,7 +344,12 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    if !ready { anyhow::bail!("Local Anvil did not become ready. Check Foundry and try opening the project again."); }
+    if !ready {
+        if network.is_local() {
+            anyhow::bail!("Local Anvil did not become ready. Check Foundry and try opening the project again.");
+        }
+        anyhow::bail!("The fork of {} did not become ready within a minute. Check the RPC URL in Workspace > Network, or clear it to run a local chain.", network.fork_url);
+    }
     let mut debugger_config = debugger::Config::new(root.clone(), cli.debugger_python, None, cli.debugger_example);
     let build_root = root.clone();
     let build_remappings = remappings.clone();
@@ -343,6 +366,7 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
     let services = Services { anvil, manager, gateway_shutdown: Some(gateway_shutdown), gateway };
 
     let mut state = DesktopState::new(root.clone(), zoom);
+    state.network = network;
     state.owned_node = services.anvil.duplicate_process_handle().ok()
         .map(|handle| owned_node::OwnedNode::from_child_handle(handle, services.anvil.port()));
     (state.sidebar_width, state.sidebar_collapsed) = load_sidebar(&root);
@@ -1457,6 +1481,11 @@ fn search_chain(weak: Weak<MainWindow>, state: Arc<Mutex<DesktopState>>, runtime
     });
 }
 
+/// Host part of an RPC URL, without credentials or path (keys often sit in the path).
+pub(super) fn fork_host(url: &str) -> String {
+    reqwest::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_else(|| "remote".into())
+}
+
 fn paint(weak: &Weak<MainWindow>, state: &Arc<Mutex<DesktopState>>) {
     {
         let state = state.lock().unwrap();
@@ -1498,7 +1527,7 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_converter_error(state.converter_error.clone().into());
     data.set_menu_open(state.menu_open);
     data.set_deployment_menu(state.deployment_menu);
-    data.set_mode_label("Local".into());
+    data.set_mode_label(if state.network.is_local() { "Local".into() } else { format!("Fork {}", fork_host(&state.network.fork_url)).into() });
     data.set_chain_label("31337".into());
     data.set_block_label(format!("block {}", state.block_number).into());
     data.set_compile_label(state.compile_label.clone().into());

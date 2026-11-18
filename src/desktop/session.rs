@@ -257,6 +257,8 @@ pub struct DesktopState {
     snapshot_deployments: HashSet<(String, String)>,
     /// Snapshots taken before each Send, Deploy and cheat, oldest first.
     pub timeline: Vec<TimelinePoint>,
+    /// The fork the node was started with (empty URL: local chain).
+    pub network: crate::config::NetworkConfig,
     pub menu_open: i32,
     pub deployment_menu: i32,
     pub dock_tab: i32,
@@ -408,6 +410,7 @@ impl DesktopState {
             snapshot_id: String::new(),
             snapshot_deployments: HashSet::new(),
             timeline: Vec::new(),
+            network: Default::default(),
             menu_open: -1,
             deployment_menu: -1,
             dock_tab: 0,

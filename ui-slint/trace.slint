@@ -50,6 +50,7 @@ export global TraceData {
     in-out property <bool> compact;
     // Console transcript and prompt.
     in property <string> console-text;
+    in property <bool> can-refork;
     in property <[string]> console-lines;
     in-out property <string> console-input;
 }
@@ -66,6 +67,8 @@ export global TraceLogic {
     callback reveal-saved(string);
     callback delete-saved(string);
     callback console-run(string);
+    // Re-fork at the block named in the status, then debug the same hash.
+    callback refork();
     callback console-history(int);
 }
 
@@ -220,6 +223,10 @@ export component TraceDebugger inherits Rectangle {
                 VerticalLayout {
                     padding: Theme.pad * 2; spacing: 0.5rem; alignment: start;
                     SelectableText { text: TraceData.busy ? "Recording the execution…" : TraceData.status != "" ? TraceData.status : "Nothing loaded"; font-size: 1rem; font-weight: 600; wrap: word-wrap; }
+                    if TraceData.can-refork: HorizontalLayout {
+                        alignment: start;
+                        IconButton { icon: @image-url("icons/refresh.svg"); label: "Re-fork there and debug"; primary: true; clicked => { TraceLogic.refork(); } }
+                    }
                     SelectableText { text: "Pick a recent transaction below, paste a hash above, or use Debug in a contract's Response pane after a Send or Simulate. Every opcode is recorded once, so you can step forwards and backwards freely."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
                     if TraceData.saved.length > 0: SideHeader { title: "Saved traces"; trailing: "reopen without the node"; }
                     if TraceData.saved.length > 0: SelectableText { text: TraceData.saved-folder; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; wrap: word-wrap; }
