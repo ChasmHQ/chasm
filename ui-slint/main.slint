@@ -15,6 +15,8 @@ import { TraceData, TraceLogic, TraceDebugger } from "trace.slint";
 import { HistoryData, HistoryLogic, HistoryView } from "history.slint";
 import { ChainData, ChainLogic, TimelineView } from "chain.slint";
 import { ToolchainData, ToolchainLogic, ToolchainWorkspace } from "toolchain.slint";
+import { PaletteData, PaletteLogic, CommandPalette } from "palette.slint";
+export { PaletteData, PaletteLogic, PaletteItem } from "palette.slint";
 export { ToolchainData, ToolchainLogic, LibraryRow, PragmaRow } from "toolchain.slint";
 export { ChainData, ChainLogic, TimelineRow } from "chain.slint";
 export { HistoryData, HistoryLogic, HistoryRow } from "history.slint";
@@ -878,6 +880,13 @@ export component MainWindow inherits Window {
                 Logic.recompile();
                 return accept;
             }
+            if event.modifiers.control && !event.modifiers.alt && (event.text == "k" || event.text == "K" || (event.modifiers.shift && (event.text == "p" || event.text == "P"))) {
+                PaletteData.query = "";
+                PaletteData.selected = 0;
+                PaletteData.open = true;
+                PaletteLogic.query-edited("");
+                return accept;
+            }
             // Tab and activity shortcuts. Ctrl+Enter sends from the request form.
             if event.modifiers.control && !event.modifiers.alt {
                 if (event.text == "w" || event.text == "W") && AppData.active-document >= 0 {
@@ -1292,6 +1301,7 @@ export component MainWindow inherits Window {
                         }
                         if AppData.menu-open == 5: VerticalLayout {
                             MenuRow { label: "Keyboard shortcuts"; enabled: false; }
+                            MenuRow { label: "Command palette: go to anything"; shortcut: "Ctrl+K"; enabled: false; }
                             MenuRow { label: "Close tab"; shortcut: "Ctrl+W"; enabled: false; }
                             MenuRow { label: "Next / previous tab"; shortcut: "Ctrl+Tab"; enabled: false; }
                             MenuRow { label: "Send transaction"; shortcut: "Ctrl+Enter"; enabled: false; }
@@ -1444,6 +1454,7 @@ export component MainWindow inherits Window {
         cancelled => { Logic.cancel-delete-keystore(); }
         confirmed => { Logic.confirm-delete-keystore(); }
     }
+    if !root.panel-host && PaletteData.open: CommandPalette { }
     if PanelData.blocked && DebugData.can-cancel: IconButton {
         x: root.width - self.width - 4px;
         y: 0px;

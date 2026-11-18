@@ -89,6 +89,9 @@ pub enum Command {
     Cheat { action: String, address: Option<String>, value: String, slot: Option<String> },
     #[serde(rename = "toolchain.action")]
     Toolchain { action: String, library: Option<String>, version: Option<String>, fork_url: Option<String>, fork_block: Option<String> },
+    #[serde(rename = "ui.palette")]
+    /// Without `index` the palette stays open showing the matches.
+    Palette { query: String, index: Option<u32> },
     #[serde(rename = "history.action")]
     HistoryAction { action: String, index: u32 },
     #[serde(rename = "debugger.trace.view")]
@@ -302,6 +305,7 @@ impl Command {
             Self::TraceRefork {} => "debugger.trace.refork",
             Self::TraceView { .. } => "debugger.trace.view",
             Self::HistoryAction { .. } => "history.action",
+            Self::Palette { .. } => "ui.palette",
             Self::Toolchain { .. } => "toolchain.action",
             Self::TimelineRevert { .. } => "chain.timeline.revert",
             Self::Cheat { .. } => "chain.cheat",
@@ -1018,6 +1022,7 @@ pub fn command_schema() -> Value {
         ("chain.timeline.revert", object(json!({"index":{"type":"integer","minimum":0,"description":"Row of app.state timeline, newest first"}}), vec!["index"])),
         ("chain.cheat", object(json!({"action":{"enum":["time","timestamp","mine","deal","nonce","storage","code"]},"address":{"type":"string","maxLength":42},"value":{"type":"string","maxLength":100000,"description":"seconds, timestamp, blocks, ether, nonce, slot value or 0x bytecode"},"slot":{"type":"string","maxLength":80}}), vec!["action","value"])),
         ("toolchain.action", object(json!({"action":{"enum":["open","lock_solc","install","use","remove","network"],"description":"lock_solc takes version (empty for Auto); install/use/remove take library and optional version tag; network takes fork_url (empty for local) and fork_block, saves them and reopens the project"},"fork_url":{"type":"string","maxLength":512},"fork_block":{"type":"string","maxLength":20},"library":{"enum":["openzeppelin-contracts","openzeppelin-contracts-upgradeable","forge-std","solmate","solady"]},"version":{"type":"string","maxLength":40}}), vec!["action"])),
+        ("ui.palette", object(json!({"query":{"type":"string","maxLength":200},"index":{"type":"integer","minimum":0,"description":"Row of the filtered list, as the Ctrl+K palette shows it"}}), vec!["query"])),
         ("history.action", object(json!({"action":{"enum":["repeat","debug","to_macro","show"],"description":"repeat refills the request tab; debug opens the step debugger; to_macro adds a step to the selected macro; show opens the History tab (index ignored)"},"index":{"type":"integer","minimum":0,"description":"Row in history.list, newest first"}}), vec!["action","index"])),
         ("debugger.trace.view", object(json!({"opcodes":{"type":"boolean"},"state":{"type":"boolean"},"console":{"type":"boolean"},"compact":{"type":"boolean","description":"Smaller rows and fonts for small windows"},"tab":{"type":"integer","minimum":0,"maximum":4,"description":"State pane tab: 0 Stack, 1 Memory, 2 Storage, 3 Calls, 4 Variables"},"opcodes_width":{"type":"number","minimum":220,"maximum":700},"state_width":{"type":"number","minimum":200,"maximum":900},"console_height":{"type":"number","minimum":70,"maximum":600}}), vec![])),
         ("debugger.trace.refork", object(json!({}), vec![])),

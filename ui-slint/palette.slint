@@ -1,0 +1,77 @@
+// Ctrl+K command palette: jump to a deployed function, contract, recent
+// transaction, view or action by typing part of its name.
+import { LineEdit } from "std-widgets.slint";
+import { ListView } from "scroll.slint";
+import { ActionControl, Theme } from "theme.slint";
+
+export struct PaletteItem { title: string, detail: string, kind: string }
+
+export global PaletteData {
+    in-out property <bool> open;
+    in-out property <string> query;
+    in property <[PaletteItem]> items;
+    in-out property <int> selected;
+}
+
+export global PaletteLogic {
+    callback query-edited(string);
+    callback run(int);
+}
+
+export component CommandPalette inherits Rectangle {
+    background: #00000066;
+    forward-focus: input;
+    init => { input.focus(); }
+    TouchArea { clicked => { PaletteData.open = false; } scroll-event(event) => { return accept; } }
+    FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { PaletteData.open = false; return accept; }
+            if event.text == Key.DownArrow { PaletteData.selected = Math.min(PaletteData.selected + 1, PaletteData.items.length - 1); return accept; }
+            if event.text == Key.UpArrow { PaletteData.selected = Math.max(PaletteData.selected - 1, 0); return accept; }
+            if event.text == Key.Return { PaletteLogic.run(PaletteData.selected); return accept; }
+            return reject;
+        }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: parent.height * 0.12;
+            width: min(40rem, parent.width - 2 * Theme.pad);
+            height: min(28rem, parent.height * 0.76);
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.edge;
+            border-radius: Theme.radius;
+            TouchArea { }
+            VerticalLayout {
+                padding: 0.5rem; spacing: 0.375rem;
+                input := LineEdit {
+                    font-size: 0.9375rem;
+                    placeholder-text: "Go to a function, contract, transaction or action…";
+                    accessible-label: "Command palette";
+                    text <=> PaletteData.query;
+                    edited => { PaletteData.selected = 0; PaletteLogic.query-edited(self.text); }
+                }
+                if PaletteData.items.length == 0: Text { text: "Nothing matches. Try a function name, a contract, “deploy”, “fork” or a 0x hash."; color: Theme.faint; font-size: 0.8125rem; wrap: word-wrap; }
+                list := ListView {
+                    vertical-stretch: 1;
+                    for item[index] in PaletteData.items: ActionControl {
+                        label: "\{item.kind} \{item.title}";
+                        height: 2.5rem;
+                        selected: index == PaletteData.selected;
+                        transparent-background: index != PaletteData.selected && !self.hovered;
+                        clicked => { PaletteLogic.run(index); }
+                        HorizontalLayout {
+                            padding-left: 0.5rem; padding-right: 0.5rem; spacing: 0.5rem;
+                            Text { text: item.kind; width: 5rem; color: Theme.faint; font-size: 0.6875rem; vertical-alignment: center; }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 1;
+                                Text { text: item.title; color: Theme.text; font-size: 0.8125rem; overflow: elide; min-width: 0px; }
+                                if item.detail != "": Text { text: item.detail; color: Theme.muted; font-family: "Cascadia Mono"; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
+                            }
+                        }
+                    }
+                }
+                Text { text: "↑ ↓ to choose · Enter to open · Esc to close"; color: Theme.faint; font-size: 0.6875rem; horizontal-alignment: right; }
+            }
+        }
+    }
+}

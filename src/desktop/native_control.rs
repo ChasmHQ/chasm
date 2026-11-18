@@ -499,6 +499,15 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
                 _ => {}
             }
         }
+        Command::Palette { query, index } => {
+            let data = ui.global::<super::PaletteData>();
+            data.set_open(true);
+            data.set_query(query.as_str().into());
+            match index {
+                Some(index) => ui.global::<super::PaletteLogic>().invoke_run(*index as i32),
+                None => ui.global::<super::PaletteLogic>().invoke_query_edited(query.as_str().into()),
+            }
+        }
         Command::HistoryAction { action, index } => {
             let logic = ui.global::<super::HistoryLogic>();
             ui.global::<super::HistoryData>().set_filter(0);
