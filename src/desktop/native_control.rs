@@ -508,6 +508,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
                 None => ui.global::<super::PaletteLogic>().invoke_query_edited(query.as_str().into()),
             }
         }
+        Command::Template { kind, name } => logic.invoke_new_from_template(kind.as_str().into(), name.as_str().into()),
         Command::NoticeAction {} => {
             let action = ui.global::<AppData>().get_notice_action();
             ui.global::<Logic>().invoke_notice_action(action);

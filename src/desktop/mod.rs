@@ -28,6 +28,7 @@ mod address_book;
 mod notice_action;
 mod native_palette;
 mod toolchain;
+mod templates;
 mod native_toolchain;
 mod chain_tools;
 mod native_chain;
@@ -751,6 +752,40 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
         ui.global::<Logic>().on_address_edited(move |address| {
             let mut state = held.lock().unwrap();
             state.set_contract_address(address.to_string());
+        });
+    }
+
+    // New contract from a template, then recompile so it shows in the sidebar.
+    {
+        let weak = ui.as_weak();
+        let held = state.clone();
+        ui.global::<Logic>().on_new_from_template(move |kind, name| {
+            let mut state = held.lock().unwrap();
+            if state.transition_pending() || !state.workspace_ready { return; }
+            match templates::create(&state.workspace, kind.as_str(), name.as_str()) {
+                Ok(path) => {
+                    let shown = path.strip_prefix(&state.workspace).unwrap_or(&path).display().to_string();
+                    let openzeppelin = toolchain::used_version(&state.workspace, "openzeppelin-contracts").is_some()
+                        || state.workspace.join("lib/openzeppelin-contracts").is_dir()
+                        || state.workspace.join("node_modules/@openzeppelin/contracts").is_dir();
+                    state.notice = if openzeppelin {
+                        String::new()
+                    } else {
+                        format!("Created {shown}. It imports OpenZeppelin, which is not mapped in this project: missing libraries. Install and Use it in Compiler and libraries.")
+                    };
+                    state.status_left = format!("Created {shown}. Recompiling…");
+                    drop(state);
+                    if let Some(ui) = weak.upgrade() {
+                        ui.global::<AppData>().set_template_name("".into());
+                        ui.global::<Logic>().invoke_recompile();
+                    }
+                }
+                Err(error) => {
+                    state.notice = error;
+                    drop(state);
+                    paint(&weak, &held);
+                }
+            }
         });
     }
 

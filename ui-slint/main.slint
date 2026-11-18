@@ -101,6 +101,8 @@ export global AppData {
     in property <string> wallet-address;
     in-out property <string> wallet-password;
     in-out property <string> keystore-name;
+    in-out property <string> template-name;
+    in-out property <bool> template-open;
     in-out property <string> keystore-password;
     in-out property <string> keystore-confirm;
     in-out property <string> keystore-import;
@@ -134,6 +136,8 @@ export global AppData {
 export global Logic {
     callback open-activity(int);
     callback open-toolchain();
+    // Template id and contract name.
+    callback new-from-template(string, string);
     callback toggle-menu(int);
     callback close-menu();
     callback quit();
@@ -507,6 +511,20 @@ component NavigationView inherits Rectangle {
                             }
                         }
                     }
+                }
+                SideRow { icon: @image-url("icons/contracts.svg"); label: AppData.template-open ? "Cancel new contract" : "New contract from template"; selected: AppData.template-open; clicked => { AppData.template-open = !AppData.template-open; } }
+                if AppData.template-open: VerticalLayout {
+                    padding-left: Theme.pad; padding-right: Theme.pad; padding-bottom: 0.375rem; spacing: 0.25rem;
+                    LineEdit { text <=> AppData.template-name; placeholder-text: "Contract name, e.g. MyToken"; font-size: 0.8125rem; min-width: 0px; }
+                    HorizontalLayout {
+                        spacing: 0.25rem;
+                        for template in [{ id: "erc20", label: "ERC20" }, { id: "erc721", label: "ERC721" }, { id: "ownable", label: "Ownable" }]: DockTab {
+                            label: template.label; horizontal-stretch: 1;
+                            enabled: AppData.template-name != "";
+                            clicked => { Logic.new-from-template(template.id, AppData.template-name); }
+                        }
+                    }
+                    SideNote { text: "Writes <name>.sol with OpenZeppelin v5, then recompiles."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
                 }
                 SideHeader { title: "Deployed"; trailing: AppData.deployments.length > 0 ? "\{AppData.deployments.length}" : ""; }
                 if AppData.deployments.length == 0: SideNote { text: "Deploy a contract to call its functions here."; color: Theme.faint; font-size: 0.75rem; }

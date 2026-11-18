@@ -94,6 +94,9 @@ pub enum Command {
     Palette { query: String, index: Option<u32> },
     #[serde(rename = "ui.notice.action")]
     NoticeAction {},
+    /// Write a starter contract (erc20, erc721, ownable) into the workspace.
+    #[serde(rename = "contracts.template")]
+    Template { kind: String, name: String },
     #[serde(rename = "history.action")]
     HistoryAction { action: String, index: u32 },
     #[serde(rename = "debugger.trace.view")]
@@ -256,7 +259,7 @@ impl Command {
         match self {
             Self::Send {} | Self::Deploy {} | Self::Compile {} | Self::UseDevAccount { .. }
             | Self::Snapshot {} | Self::Revert {} | Self::Mine {} | Self::Warp {}
-            | Self::RunMacro { .. } | Self::TimelineRevert { .. } | Self::Cheat { .. } | Self::Toolchain { .. } | Self::TraceRefork {} => "act",
+            | Self::RunMacro { .. } | Self::TimelineRevert { .. } | Self::Cheat { .. } | Self::Toolchain { .. } | Self::TraceRefork {} | Self::Template { .. } => "act",
             Self::DebugLaunch { .. } | Self::DebugStart {} | Self::DebugNavigate { .. }
             | Self::DebugEvaluate { .. } | Self::DebugConsole { .. } | Self::DebugCancel {}
             | Self::TraceLoad { .. } | Self::TraceStep { .. } | Self::TraceSeek { .. } | Self::TraceBreakpoint { .. } | Self::TraceOpenSaved { .. } | Self::TraceConsole { .. } => "debug",
@@ -308,6 +311,7 @@ impl Command {
             Self::TraceView { .. } => "debugger.trace.view",
             Self::HistoryAction { .. } => "history.action",
             Self::NoticeAction {} => "ui.notice.action",
+            Self::Template { .. } => "contracts.template",
             Self::Palette { .. } => "ui.palette",
             Self::Toolchain { .. } => "toolchain.action",
             Self::TimelineRevert { .. } => "chain.timeline.revert",
@@ -1033,6 +1037,7 @@ pub fn command_schema() -> Value {
         ("toolchain.action", object(json!({"action":{"enum":["open","lock_solc","install","use","remove","network"],"description":"lock_solc takes version (empty for Auto); install/use/remove take library and optional version tag; network takes fork_url (empty for local) and fork_block, saves them and reopens the project"},"fork_url":{"type":"string","maxLength":512},"fork_block":{"type":"string","maxLength":20},"library":{"enum":["openzeppelin-contracts","openzeppelin-contracts-upgradeable","forge-std","solmate","solady"]},"version":{"type":"string","maxLength":40}}), vec!["action"])),
         ("ui.palette", object(json!({"query":{"type":"string","maxLength":200},"index":{"type":"integer","minimum":0,"description":"Row of the filtered list, as the Ctrl+K palette shows it"}}), vec!["query"])),
         ("ui.notice.action", object(json!({}), vec![])),
+        ("contracts.template", object(json!({"kind":{"enum":["erc20","erc721","ownable"]},"name":{"type":"string","maxLength":64,"description":"Solidity contract name; also the file name"}}), vec!["kind", "name"])),
         ("history.action", object(json!({"action":{"enum":["repeat","debug","to_macro","show"],"description":"repeat refills the request tab; debug opens the step debugger; to_macro adds a step to the selected macro; show opens the History tab (index ignored)"},"index":{"type":"integer","minimum":0,"description":"Row in history.list, newest first"}}), vec!["action","index"])),
         ("debugger.trace.view", object(json!({"opcodes":{"type":"boolean"},"state":{"type":"boolean"},"console":{"type":"boolean"},"compact":{"type":"boolean","description":"Smaller rows and fonts for small windows"},"tab":{"type":"integer","minimum":0,"maximum":4,"description":"State pane tab: 0 Stack, 1 Memory, 2 Storage, 3 Calls, 4 Variables"},"opcodes_width":{"type":"number","minimum":220,"maximum":700},"state_width":{"type":"number","minimum":200,"maximum":900},"console_height":{"type":"number","minimum":70,"maximum":600}}), vec![])),
         ("debugger.trace.refork", object(json!({}), vec![])),

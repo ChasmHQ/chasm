@@ -348,4 +348,37 @@ def inline_deploy():
     check(f"five clicks or fewer ({clicks})", clicks <= 5)
 
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, fork]
+def template():
+    """New ERC20 from a template; install OpenZeppelin when missing; deploy it."""
+    command("contracts.template", kind="erc20", name="LiveToken")
+    time.sleep(1)
+    compiled()
+    if "missing libraries" in query("app.state")["notice"].lower():
+        command("toolchain.action", action="install", library="openzeppelin-contracts")
+        for _ in range(300):
+            status = query("toolchain.state")["status"]
+            if status.startswith(("Installed", "Could not")):
+                break
+            time.sleep(1)
+        check("openzeppelin installed", status.startswith("Installed"), status)
+        command("toolchain.action", action="use", library="openzeppelin-contracts")
+    label = compiled()
+    artifacts = query("workspace.artifacts")["artifacts"]
+    token = next((a for a in artifacts if a["name"] == "LiveToken"), None)
+    check("template compiles", token is not None, label)
+    command("contracts.select", id=token["id"])
+    command("contracts.constructor.edit", index=0, value=OWNER)
+    command("contracts.deploy")
+    settle()
+    view = query("contracts.view")
+    check("template deployed in place", view["address"] != "", query("app.state")["notice"])
+    command("contracts.function.select", id=function_id("totalSupply"))
+    command("contracts.simulate")
+    time.sleep(1)
+    check("initial supply minted", query("contracts.view")["simple"].strip().endswith("1000000000000000000000000"), query("contracts.view")["simple"][-200:])
+    duplicate = command_raw("contracts.template", kind="erc20", name="LiveToken")
+    time.sleep(0.5)
+    check("an existing file is not overwritten", "already exists" in query("app.state")["notice"], str(duplicate)[:200])
+
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, fork]

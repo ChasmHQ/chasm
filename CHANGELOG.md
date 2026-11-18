@@ -34,6 +34,7 @@ the `ui/` folder and the npm build are gone.
 ### Project
 - Compiler: auto per-file pragma, or one solc version locked in `.chasm/chasm.toml`.
 - Library manager for OpenZeppelin, OpenZeppelin Upgradeable, forge-std, Solmate and Solady, installed once into `~/.chasm/lib`. Missing imports are flagged.
+- New contract from an ERC20, ERC721 or Ownable template (OpenZeppelin v5).
 - Macros can be built from a form as well as JSON.
 
 ### AI control
