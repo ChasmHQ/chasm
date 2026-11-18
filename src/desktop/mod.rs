@@ -352,6 +352,17 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
         }
         anyhow::bail!("The fork of {} did not become ready within a minute. Check the RPC URL in Workspace > Network, or clear it to run a local chain.", network.fork_url);
     }
+    // The node reports 31337; the forked chain's own id names it in the UI.
+    let fork_chain_id = if network.is_local() {
+        None
+    } else {
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build()?;
+        let body = client.post(&network.fork_url)
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}))
+            .send().await.ok();
+        let body = match body { Some(response) => response.json::<serde_json::Value>().await.ok(), None => None };
+        body.and_then(|body| body["result"].as_str().and_then(|id| u64::from_str_radix(id.trim_start_matches("0x"), 16).ok()))
+    };
     let mut debugger_config = debugger::Config::new(root.clone(), cli.debugger_python, None, cli.debugger_example);
     let build_root = root.clone();
     let build_remappings = remappings.clone();
@@ -369,6 +380,7 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
 
     let mut state = DesktopState::new(root.clone(), zoom);
     state.network = network;
+    state.fork_chain_id = fork_chain_id;
     state.owned_node = services.anvil.duplicate_process_handle().ok()
         .map(|handle| owned_node::OwnedNode::from_child_handle(handle, services.anvil.port()));
     (state.sidebar_width, state.sidebar_collapsed) = load_sidebar(&root);
@@ -1573,8 +1585,15 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_converter_error(state.converter_error.clone().into());
     data.set_menu_open(state.menu_open);
     data.set_deployment_menu(state.deployment_menu);
-    data.set_mode_label(if state.network.is_local() { "Local".into() } else { format!("Fork {}", fork_host(&state.network.fork_url)).into() });
-    data.set_chain_label("31337".into());
+    data.set_mode_label(if state.network.is_local() {
+        "Local".into()
+    } else {
+        let chain = state.fork_chain_id.map(toolchain::chain_name).unwrap_or_else(|| fork_host(&state.network.fork_url));
+        let block = state.network.fork_block.map(|block| format!(" @ {block}")).unwrap_or_default();
+        format!("Fork of {chain}{block}").into()
+    });
+    // Signing always uses the local id, so nothing is valid on the real chain.
+    data.set_chain_label(if state.network.is_local() { "31337" } else { "signs as 31337" }.into());
     data.set_block_label(format!("block {}", state.block_number).into());
     data.set_compile_label(state.compile_label.clone().into());
     data.set_debugger_label(state.debugger_label.clone().into());

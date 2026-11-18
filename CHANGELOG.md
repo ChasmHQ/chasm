@@ -29,7 +29,7 @@ the `ui/` folder and the npm build are gone.
 - Project History (`.chasm/history.jsonl`) of every Send and Simulate, with Repeat, Debug and To macro.
 - Timeline: a snapshot before every Send, Deploy and cheat, with *Revert to here*.
 - Local chain cheats: time, blocks, balance, nonce, storage slot and code.
-- Fork a live chain at the latest or a chosen block (chain id stays 31337). Forked transactions replay in their block's context.
+- Fork a live chain at the latest or a chosen block (chain id stays 31337), from public RPC presets or any URL. The status bar names the forked chain. Forked transactions replay in their block's context.
 
 ### Project
 - Compiler: auto per-file pragma, or one solc version locked in `.chasm/chasm.toml`.

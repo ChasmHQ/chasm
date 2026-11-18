@@ -285,6 +285,8 @@ def fork():
     command("toolchain.action", action="network", fork_url=url)
     reopened("ethereum-rpc.publicnode.com")
     check("chain id stays 31337", rpc("eth_chainId") == "0x7a69")
+    network = query("toolchain.state")["network"]
+    check("fork names the real chain", network["forkChain"] == "Ethereum (1)", str(network))
     check("USDC code readable on the fork", len(rpc("eth_getCode", [usdc, "latest"])) > 1000)
     command("debugger.trace", hash=tx["hash"])
     for _ in range(120):

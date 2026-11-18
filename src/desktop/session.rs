@@ -261,6 +261,8 @@ pub struct DesktopState {
     pub timeline: Vec<TimelinePoint>,
     /// The fork the node was started with (empty URL: local chain).
     pub network: crate::config::NetworkConfig,
+    /// Chain id of the forked network, read from its RPC at boot.
+    pub fork_chain_id: Option<u64>,
     pub menu_open: i32,
     pub deployment_menu: i32,
     pub dock_tab: i32,
@@ -413,6 +415,7 @@ impl DesktopState {
             snapshot_deployments: HashSet::new(),
             timeline: Vec::new(),
             network: Default::default(),
+            fork_chain_id: None,
             menu_open: -1,
             deployment_menu: -1,
             dock_tab: 0,

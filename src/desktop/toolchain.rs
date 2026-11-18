@@ -170,6 +170,29 @@ pub fn lock_solc(workspace: &Path, version: &str) -> Result<(), String> {
     ChasmConfig::update(workspace, |config| config.compiler.solc = version.to_string()).map_err(|error| error.to_string())
 }
 
+/// Public RPCs to fork without an account: (chain, URL, chain id). They
+/// rate-limit heavy use; a provider URL with a key works the same way.
+pub const PUBLIC_RPCS: [(&str, &str, u64); 6] = [
+    ("Ethereum", "https://ethereum-rpc.publicnode.com", 1),
+    ("Base", "https://base-rpc.publicnode.com", 8453),
+    ("Arbitrum", "https://arbitrum-one-rpc.publicnode.com", 42161),
+    ("Optimism", "https://optimism-rpc.publicnode.com", 10),
+    ("Polygon", "https://polygon-bor-rpc.publicnode.com", 137),
+    ("Sepolia", "https://ethereum-sepolia-rpc.publicnode.com", 11155111),
+];
+
+/// A readable name for a chain id, e.g. "Ethereum (1)".
+pub fn chain_name(id: u64) -> String {
+    let known = [(56, "BNB Chain"), (43114, "Avalanche"), (17000, "Holesky"), (84532, "Base Sepolia")];
+    PUBLIC_RPCS
+        .iter()
+        .map(|(name, _, chain)| (*chain, *name))
+        .chain(known)
+        .find(|(chain, _)| *chain == id)
+        .map(|(_, name)| format!("{name} ({id})"))
+        .unwrap_or_else(|| format!("chain {id}"))
+}
+
 /// Validate and save the fork setting. Only HTTP(S) URLs without spaces are
 /// accepted; an empty URL switches back to a local chain.
 pub fn save_network(workspace: &Path, url: &str, block: &str) -> Result<crate::config::NetworkConfig, String> {
@@ -254,5 +277,17 @@ mod tests {
         assert_eq!(ChasmConfig::load(workspace.path()).unwrap().network, network);
         save_network(workspace.path(), "", "").unwrap();
         assert!(!std::fs::read_to_string(workspace.path().join(".chasm/chasm.toml")).unwrap().contains("[network]"));
+    }
+
+    #[test]
+    fn public_rpcs_are_https_and_chains_are_named() {
+        for (_, url, _) in PUBLIC_RPCS {
+            assert!(save_network(tempfile::tempdir().unwrap().path(), url, "").is_ok(), "{url}");
+            assert!(url.starts_with("https://"));
+        }
+        assert_eq!(chain_name(1), "Ethereum (1)");
+        assert_eq!(chain_name(8453), "Base (8453)");
+        assert_eq!(chain_name(56), "BNB Chain (56)");
+        assert_eq!(chain_name(999_999), "chain 999999");
     }
 }

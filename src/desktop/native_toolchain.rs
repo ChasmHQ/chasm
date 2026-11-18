@@ -40,11 +40,19 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
         if network.is_local() {
             "a fresh local chain".to_string()
         } else {
-            format!("a fork of {} at {}", super::fork_host(&network.fork_url), network.fork_block.map(|block| format!("block {block}")).unwrap_or_else(|| "the latest block".into()))
+            // The running fork knows its chain id; a saved one is named by its preset.
+            let chain = Some(network)
+                .filter(|network| *network == &state.network)
+                .and(state.fork_chain_id)
+                .map(toolchain::chain_name)
+                .or_else(|| toolchain::PUBLIC_RPCS.iter().find(|(_, url, _)| *url == network.fork_url).map(|(name, _, _)| name.to_string()))
+                .unwrap_or_else(|| super::fork_host(&network.fork_url));
+            format!("a fork of {chain} at {}", network.fork_block.map(|block| format!("block {block}")).unwrap_or_else(|| "the latest block".into()))
         }
     };
     let saved = crate::config::ChasmConfig::load(workspace).map(|config| config.network).unwrap_or_default();
     data.set_fork_running(describe(&state.network).into());
+    data.set_presets(super::model(toolchain::PUBLIC_RPCS.iter().map(|(name, _, _)| slint::SharedString::from(*name)).collect()));
     data.set_fork_saved(describe(&saved).into());
     // Fill the form once from the saved setting; afterwards it is the user's text.
     if data.get_fork_url().is_empty() && data.get_fork_block().is_empty() && !saved.is_local() {
@@ -151,6 +159,15 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                 drop(state);
                 status(&weak, error, false);
             }
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<ToolchainLogic>().on_preset(move |index| {
+        let Some((name, url, _)) = usize::try_from(index).ok().and_then(|index| toolchain::PUBLIC_RPCS.get(index)) else { return };
+        if let Some(ui) = weak.upgrade() {
+            let data = ui.global::<ToolchainData>();
+            data.set_fork_url((*url).into());
+            data.set_status(format!("{name} public RPC filled in. Save and reopen to fork it.").into());
         }
     });
     let weak = ui.as_weak();

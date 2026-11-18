@@ -1,6 +1,6 @@
 # Next plan, after goals G1–G7 (2026-11-18)
 
-Status: P1 and P2.1 done; P2 in progress. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
+Status: P1, P2.1 and P2.5 done; P2 in progress. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
 finished. This plan covers what is left, ordered by what blocks real use
 first.
 
@@ -112,7 +112,7 @@ its own commit, and is recorded in this file's progress table.
 | P2.2 docking debugger panes | not started |
 | P2.3 offline captures | not started |
 | P2.4 templates | not started |
-| P2.5 fork usability | not started |
+| P2.5 fork usability | done: public RPC presets, forked chain named in the status bar and `toolchain.state`; address lookups already read the remote chain through Anvil |
 | P3 robustness | not started |
 | P4.1 locals | not started |
 | P4.2 Sourcify source | not started |

@@ -23,6 +23,8 @@ export global ToolchainData {
     in property <string> fork-running;
     in-out property <string> fork-url;
     in-out property <string> fork-block;
+    // Names of the public RPCs; picking one fills the URL.
+    in property <[string]> presets;
     in-out property <string> tag-input;
 }
 
@@ -32,6 +34,7 @@ export global ToolchainLogic {
     callback use-version(string, string);
     callback remove(string);
     callback save-network(string, string);
+    callback preset(int);
 }
 
 component Small inherits ActionControl {
@@ -67,6 +70,13 @@ export component ToolchainWorkspace inherits ScrollView {
         }
         SelectableText { text: "Network"; font-weight: 600; font-size: 0.9375rem; }
         SelectableText { text: "The project node is \{ToolchainData.fork-running}. Fork a live chain to call and debug real contracts locally: the node copies state on demand from the RPC, keeps chain id 31337, and nothing is ever sent to the real network."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 0.25rem;
+            Text { text: "Public RPC"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+            for name[index] in ToolchainData.presets: Small { text: name; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.preset(index); } }
+            Small { text: "Local"; enabled: !ToolchainData.busy; clicked => { ToolchainData.fork-url = ""; ToolchainData.fork-block = ""; } }
+            Rectangle { horizontal-stretch: 1; }
+        }
         HorizontalLayout {
             spacing: 0.375rem;
             LineEdit { text <=> ToolchainData.fork-url; placeholder-text: "https://… RPC to fork, empty for a local chain"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 3; }
