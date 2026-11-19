@@ -1124,7 +1124,9 @@ export component MainWindow inherits Window {
                                             if left + self.content-x < 0px {
                                                 self.content-x = -left;
                                             } else if left + self.active-chip + self.content-x > self.visible-width {
-                                                self.content-x = min(0px, self.visible-width - left - self.active-chip);
+                                                // Snap to a tab edge so the first visible tab is whole, not cut mid-label.
+                                                let shift = max(0px, left + self.active-chip - self.visible-width);
+                                                self.content-x = -Math.min(left, Math.ceil(shift / (self.chip + 1px)) * (self.chip + 1px));
                                             }
                                         }
                                         changed active-chip => { self.reveal(); }

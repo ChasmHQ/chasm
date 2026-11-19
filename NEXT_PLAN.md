@@ -1,6 +1,6 @@
 # Next plan, after goals G1–G7 (2026-11-18)
 
-Status: P1, P2, P3 and P4.2 done; every planned step is done. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
+Status: every step (P1–P4) is done. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
 finished. This plan covers what is left, ordered by what blocks real use
 first.
 

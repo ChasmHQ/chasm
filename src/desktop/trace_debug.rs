@@ -71,7 +71,7 @@ pub struct Location {
     pub length: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct Session {
     pub title: String,
     pub target: String,
@@ -103,7 +103,12 @@ pub struct Session {
     line_hits: Vec<Vec<i32>>,
     /// Per program: local variable declarations from its AST.
     locals: Vec<Option<super::trace_locals::Index>>,
+    /// Frame tracking saved every `LOCALS_CHECKPOINT` steps of an external
+    /// frame: (frame entry step, step) -> internal frames after that step.
+    locals_cache: std::sync::Mutex<HashMap<(usize, usize), Vec<super::trace_locals::Frame>>>,
 }
+
+const LOCALS_CHECKPOINT: usize = 4096;
 
 impl Session {
     pub fn is_empty(&self) -> bool {
@@ -436,24 +441,39 @@ impl Session {
         let step = self.current()?;
         let program = *self.mapped.get(&step.address)?;
         let index = self.locals.get(program)?.as_ref()?;
-        // Steps of this external frame, from its entry to the cursor.
+        let view = |at: usize| {
+            let item = &self.steps[at];
+            let instruction = self.pc_index[program].get(&item.pc).copied();
+            super::trace_locals::StepView {
+                pc: item.pc,
+                op: &item.op,
+                stack_len: item.stack.len(),
+                range: instruction.and_then(|instruction| self.ranges[program].get(instruction).copied().flatten()),
+                jump: instruction.and_then(|instruction| self.jumps[program].get(instruction).copied()),
+            }
+        };
+        // Steps of this external frame, from its entry to the cursor. Tracking
+        // resumes from the newest checkpoint so long traces stay fast.
         let begin = (0..=self.cursor).rev().take_while(|at| self.steps[*at].depth >= step.depth).last().unwrap_or(self.cursor);
-        let views: Vec<super::trace_locals::StepView> = (begin..=self.cursor)
-            .filter(|at| self.steps[*at].depth == step.depth)
-            .map(|at| {
-                let item = &self.steps[at];
-                let instruction = self.pc_index[program].get(&item.pc).copied();
-                super::trace_locals::StepView {
-                    pc: item.pc,
-                    op: &item.op,
-                    stack_len: item.stack.len(),
-                    range: instruction.and_then(|instruction| self.ranges[program].get(instruction).copied().flatten()),
-                    jump: instruction.and_then(|instruction| self.jumps[program].get(instruction).copied()),
-                }
-            })
-            .collect();
-        let frames = super::trace_locals::frames_at(index, &views);
-        let offset = views.last()?.range?.0;
+        let own: Vec<usize> = (begin..=self.cursor).filter(|at| self.steps[*at].depth == step.depth).collect();
+        let mut cache = self.locals_cache.lock().unwrap();
+        let mut start = 0;
+        let mut frames = Vec::new();
+        for (position, at) in own.iter().enumerate().rev() {
+            if let Some(saved) = cache.get(&(begin, *at)) {
+                start = position;
+                frames = saved.clone();
+                break;
+            }
+        }
+        for position in start..own.len().saturating_sub(1) {
+            super::trace_locals::advance(index, &mut frames, &view(own[position]), &view(own[position + 1]));
+            if (position + 1) % LOCALS_CHECKPOINT == 0 {
+                cache.insert((begin, own[position + 1]), frames.clone());
+            }
+        }
+        drop(cache);
+        let offset = view(*own.last()?).range?.0;
         let frame = frames.last()?;
         // Only the outermost call's input is recorded; inner calls show calldata as pointers.
         let calldata = if step.depth == self.steps.first().map(|first| first.depth).unwrap_or(1) { &self.calldata[..] } else { &[] };

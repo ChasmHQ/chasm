@@ -791,7 +791,10 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
             })
             .collect(),
     ));
-    data.set_variables(super::model(variables(session, &labels)));
+    // Locals replay the frame up to the cursor, so they are built only while shown.
+    if data.get_state_tab() == 4 {
+        data.set_variables(super::model(variables(session, &labels)));
+    }
     // The profile walks every step, so it is built only while its tab shows.
     if data.get_state_tab() == 5 {
         let rows = |rows: Vec<super::gas_profile::Row>, limit: usize| {

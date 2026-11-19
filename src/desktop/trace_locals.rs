@@ -262,9 +262,16 @@ pub struct StepView<'a> {
 /// Replays one external frame's steps (all at the same depth, in order, up to
 /// and including the cursor) and returns its internal frames at the cursor.
 pub fn frames_at(index: &Index, steps: &[StepView]) -> Vec<Frame> {
-    let mut frames: Vec<Frame> = Vec::new();
+    let mut frames = Vec::new();
     for at in 0..steps.len().saturating_sub(1) {
-        let (step, next) = (&steps[at], &steps[at + 1]);
+        advance(index, &mut frames, &steps[at], &steps[at + 1]);
+    }
+    frames
+}
+
+/// One step of frame tracking: `step` ran, `next` follows it in the same frame.
+pub fn advance(index: &Index, frames: &mut Vec<Frame>, step: &StepView, next: &StepView) {
+    {
         // Back in a known function: frames above it have returned.
         if let Some(function) = step.range.and_then(|(start, _)| index.function_at(start)) {
             if let Some(found) = frames.iter().rposition(|frame| frame.function == Some(function.id)) {
@@ -279,7 +286,7 @@ pub fn frames_at(index: &Index, steps: &[StepView]) -> Vec<Frame> {
             }
         }
         if step.op != "JUMP" || next.pc == step.pc + 1 {
-            continue;
+            return;
         }
         match step.jump {
             Some('o') => {
@@ -290,14 +297,13 @@ pub fn frames_at(index: &Index, steps: &[StepView]) -> Vec<Frame> {
                 // The dispatcher's jump into a public function's body re-enters it.
                 if function.is_some() && frames.last().is_some_and(|top| top.function == function && top.entry_sp.is_none()) {
                     frames.last_mut().unwrap().entry_sp = Some(next.stack_len);
-                    continue;
+                    return;
                 }
                 frames.push(Frame { function, entry_sp: Some(next.stack_len), slots: HashMap::new() });
             }
             _ => {}
         }
     }
-    frames
 }
 
 /// One decoded local: name, type label, value text.

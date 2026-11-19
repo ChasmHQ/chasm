@@ -97,6 +97,9 @@ def stress():
             check("a cut trace says so", "cut at the step limit" in t["summary"], t["summary"])
         timed(f"seek to the end of {label}", lambda: command("debugger.trace.seek", step=t["total"] - 1), 500)
         timed(f"step back in {label}", lambda: command("debugger.trace.step", action="op-back"), 500)
+        command("debugger.trace.view", tab=4)
+        timed(f"step with Variables (locals) shown in {label}", lambda: command("debugger.trace.step", action="op-back"), 1000)
+        command("debugger.trace.view", tab=0)
         if name == "churn":
             command("debugger.trace.view", tab=4)
             variables = trace()["variables"]
