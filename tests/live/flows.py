@@ -425,4 +425,54 @@ def gas():
     check("console gas table", "total execution gas" in trace()["console"], trace()["console"][-300:])
     command("debugger.trace.view", tab=0)
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, fork]
+
+def locals():
+    """Solidity locals of the function at the cursor, from the AST and the stack."""
+    import shutil
+    here = os.path.dirname(os.path.abspath(__file__))
+    shutil.copy(os.path.join(here, "fixtures", "Stress.sol"), os.path.join(WORKSPACE, "Stress.sol"))
+    command("workspace.compile")
+    compiled()
+    artifact = next(a for a in query("workspace.artifacts")["artifacts"] if a["name"] == "Stress")
+    command("contracts.select", id=artifact["id"])
+    command("contracts.deploy")
+    settle()
+    command("contracts.function.select", id=function_id("sum"))
+    command("contracts.request.edit", arguments=json.dumps([[5, 6, 7]]))
+    command("contracts.send")
+    settle()
+    command("debugger.trace", hash=None)
+    for _ in range(60):
+        if trace()["loaded"] and not trace()["busy"]:
+            break
+        time.sleep(0.5)
+    # The SSTORE of `total = result` runs after the loop: result is 18.
+    command("debugger.trace.console", line="goto 1")
+    command("debugger.trace.console", line="find SSTORE")
+    out = command_raw("debugger.trace.console", line="locals")
+    console = trace()["console"]
+    for line in console.splitlines()[-4:]:
+        print("  | " + line[:160])
+    check("locals name the function's variables", "result" in console and "values" in console, console[-400:])
+    check("result holds the sum at the store", "result (uint256) = 18" in console, console[-400:])
+    check("calldata array decoded", "values (uint256[] calldata) = [5, 6, 7]" in console, console[-400:])
+    # Inside the loop body `i` is in scope.
+    line = next(n for n, text in enumerate(open(os.path.join(WORKSPACE, "Stress.sol"), encoding="utf-8"), 1) if "result += values[i]" in text)
+    command("debugger.trace.console", line="goto 1")
+    command("debugger.trace.console", line=f"b {line}")
+    for _ in range(3):
+        command("debugger.trace.console", line="c")
+    command("debugger.trace.console", line=f"d {line}")
+    command("debugger.trace.console", line="locals")
+    console = trace()["console"]
+    for line in console.splitlines()[-4:]:
+        print("  | " + line[:160])
+    shown = console.split("(trace) locals")[-1]
+    # Three continues stop on line 24 at i = 0, 1, 2; result already holds 5 + 6.
+    check("the loop counter is a local inside the loop", "i (uint256) =" in shown and "result (uint256) =" in shown, shown[-300:])
+    command("debugger.trace.view", tab=4)
+    names = [row["name"] for row in trace()["variables"]]
+    check("Variables tab lists locals", any(name.startswith("result") for name in names), str(names)[:300])
+    command("debugger.trace.view", tab=0)
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, fork]

@@ -20,7 +20,8 @@ sload <slot>     storage value of a slot touched so far
 where            current location
 args             decoded arguments of the call
 writes           storage writes so far, by slot
-gas [lines]      gas per call frame, or per source line";
+gas [lines]      gas per call frame, or per source line
+locals           Solidity locals of the function at the cursor";
 
 /// Run one command line and return what to print.
 pub fn run(session: &mut Session, line: &str) -> String {
@@ -56,6 +57,11 @@ pub fn run(session: &mut Session, line: &str) -> String {
             if done.is_empty() { "No storage written up to this step. The Variables tab names each slot.".into() } else { done.join("
 ") }
         }
+        "locals" | "info locals" => match session.locals() {
+            Some(locals) if !locals.is_empty() => locals.iter().map(|(name, kind, value)| format!("{name} ({kind}) = {value}")).collect::<Vec<_>>().join("\n"),
+            Some(_) => "No locals in scope here.".into(),
+            None => "Locals need the running contract's AST from this workspace.".into(),
+        },
         "gas" => {
             let rows = if args.first().is_some_and(|arg| arg.starts_with('l')) { super::gas_profile::by_line(session) } else { super::gas_profile::by_call(session) };
             super::gas_profile::table(&rows, 20)

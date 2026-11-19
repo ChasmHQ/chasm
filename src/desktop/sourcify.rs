@@ -78,6 +78,7 @@ pub fn program(value: &Value) -> Option<Program> {
         source_id: value["sourceIds"][file]["id"].as_u64().map(|id| id as u32),
         layout: value["storageLayout"].as_object().map(|_| value["storageLayout"].clone()),
         abi,
+        ast: None,
     })
 }
 

@@ -31,6 +31,7 @@ mod toolchain;
 mod templates;
 mod sourcify;
 mod gas_profile;
+mod trace_locals;
 mod native_toolchain;
 mod chain_tools;
 mod native_chain;

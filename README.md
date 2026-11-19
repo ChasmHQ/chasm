@@ -41,6 +41,7 @@ macros, and fork a live chain to debug real transactions.
 - **Step debugger** for any transaction or call on the project node:
   - step into, over and out, and single instructions, each with a reverse step;
   - breakpoints and opcode search;
+  - Solidity locals in scope at each step;
   - a gas profile per call and per source line.
 - **Variables.**
   - The call's decoded arguments.

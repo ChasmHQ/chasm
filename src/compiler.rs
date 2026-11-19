@@ -109,6 +109,7 @@ impl Compiler {
         let mut artifacts_config = ConfigurableArtifacts::default();
         if with_storage_layout {
             artifacts_config.additional_values.storage_layout = true;
+            artifacts_config.additional_values.ast = true;
         }
 
         let mut project = Project::builder()
@@ -125,7 +126,10 @@ impl Compiler {
                 .collect();
             outputs.push("storageLayout".to_string());
             project.update_output_selection(|selection| {
-                *selection = OutputSelection::common_output_selection(outputs.clone());
+                let mut value = serde_json::to_value(OutputSelection::common_output_selection(outputs.clone())).unwrap_or_default();
+                // The AST of each workspace file names local variables for the debugger.
+                value["*"][""] = serde_json::json!(["ast"]);
+                *selection = serde_json::from_value(value).unwrap_or_else(|_| OutputSelection::common_output_selection(outputs.clone()));
             });
         }
 

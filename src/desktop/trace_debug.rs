@@ -44,6 +44,8 @@ pub struct Program {
     /// Compiler storage layout JSON, for naming slots.
     pub layout: Option<Value>,
     pub abi: Option<ethers::abi::Abi>,
+    /// solc AST of `source`, for local variables.
+    pub ast: Option<Value>,
 }
 
 /// One SSTORE, named when the layout can explain the slot.
@@ -99,6 +101,8 @@ pub struct Session {
     line_starts: Vec<Vec<usize>>,
     /// Per program: how many steps ran each source line (index = line).
     line_hits: Vec<Vec<i32>>,
+    /// Per program: local variable declarations from its AST.
+    locals: Vec<Option<super::trace_locals::Index>>,
 }
 
 impl Session {
@@ -342,6 +346,7 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
     session.assign_nesting();
     session.collect_storage(logs);
     session.index_lines();
+    session.locals = session.programs.iter().map(|program| program.ast.as_ref().map(|ast| super::trace_locals::Index::build(ast, program.source_id))).collect();
     Ok(session)
 }
 
@@ -423,6 +428,36 @@ impl Session {
             }
         }
         let _ = logs;
+    }
+
+    /// Solidity locals of the innermost function at the cursor, when the
+    /// running contract's AST is known: (name, type, value).
+    pub fn locals(&self) -> Option<Vec<(String, String, String)>> {
+        let step = self.current()?;
+        let program = *self.mapped.get(&step.address)?;
+        let index = self.locals.get(program)?.as_ref()?;
+        // Steps of this external frame, from its entry to the cursor.
+        let begin = (0..=self.cursor).rev().take_while(|at| self.steps[*at].depth >= step.depth).last().unwrap_or(self.cursor);
+        let views: Vec<super::trace_locals::StepView> = (begin..=self.cursor)
+            .filter(|at| self.steps[*at].depth == step.depth)
+            .map(|at| {
+                let item = &self.steps[at];
+                let instruction = self.pc_index[program].get(&item.pc).copied();
+                super::trace_locals::StepView {
+                    pc: item.pc,
+                    op: &item.op,
+                    stack_len: item.stack.len(),
+                    range: instruction.and_then(|instruction| self.ranges[program].get(instruction).copied().flatten()),
+                    jump: instruction.and_then(|instruction| self.jumps[program].get(instruction).copied()),
+                }
+            })
+            .collect();
+        let frames = super::trace_locals::frames_at(index, &views);
+        let offset = views.last()?.range?.0;
+        let frame = frames.last()?;
+        // Only the outermost call's input is recorded; inner calls show calldata as pointers.
+        let calldata = if step.depth == self.steps.first().map(|first| first.depth).unwrap_or(1) { &self.calldata[..] } else { &[] };
+        Some(super::trace_locals::read(index, frame, offset, &step.stack, &step.memory, calldata).into_iter().map(|value| (value.name, value.type_label, value.value)).collect())
     }
 
     /// Storage layout of the code running at `address`.
@@ -619,6 +654,7 @@ mod tests {
             source_id: Some(0),
             layout: None,
             abi: None,
+            ast: None,
         };
         let logs: Vec<Value> = (0..5).map(|pc| json!({"pc":pc,"op":if pc == 3 {"SSTORE"} else {"JUMPDEST"},"gas":100-pc,"gasCost":1,"depth":1,"stack":["0x01"],"memory":[]})).collect();
         let trace = json!({"failed":false,"gas":21000,"returnValue":"","structLogs":logs});
@@ -657,7 +693,7 @@ mod tests {
         // pc: 0 line 3, 1 JUMP into g, 2-3 line 7 (g body), 4 JUMP out, 5 line 4.
         let map = format!("{call}:4:0:-;{call}:4:0:i;{body}:5:0:-;{body}:5:0:-;{body}:5:0:o;{after}:5:0:-");
         let runtime = vec![0x5b, 0x56, 0x5b, 0x5b, 0x56, 0x5b, 0xa2, 0x00, 0x01];
-        let program = Program { name: "A".into(), runtime: runtime.clone(), source_map: map, source_path: "A.sol".into(), source, source_id: Some(0), layout: None, abi: None };
+        let program = Program { name: "A".into(), runtime: runtime.clone(), source_map: map, source_path: "A.sol".into(), source, source_id: Some(0), layout: None, abi: None, ast: None };
         let ops = ["JUMPDEST", "JUMP", "JUMPDEST", "JUMPDEST", "JUMP", "JUMPDEST"];
         let logs: Vec<Value> = ops.iter().enumerate().map(|(pc, op)| json!({"pc":pc,"op":op,"gas":100,"gasCost":1,"depth":1,"stack":[],"memory":[]})).collect();
         let trace = json!({"failed":false,"gas":21000,"returnValue":"","structLogs":logs});

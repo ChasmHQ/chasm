@@ -262,7 +262,7 @@ fn programs(state: &DesktopState) -> Vec<Program> {
             // offsets drift by one byte per line on a CRLF checkout.
             let source = std::fs::read_to_string(&path).ok()?.replace("\r\n", "\n");
             let abi = state.contracts.iter().find(|contract| &contract.name == name).map(|contract| contract.abi.clone());
-            Some(Program { name: name.clone(), runtime: runtime.code.clone(), source_map: runtime.source_map.clone(), source_path: runtime.source_path.clone(), source, source_id: runtime.source_id, layout: state.storage_layouts.get(name).cloned(), abi })
+            Some(Program { name: name.clone(), runtime: runtime.code.clone(), source_map: runtime.source_map.clone(), source_path: runtime.source_path.clone(), source, source_id: runtime.source_id, layout: state.storage_layouts.get(name).cloned(), abi, ast: runtime.ast.clone() })
         })
         .collect()
 }
@@ -831,6 +831,13 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
 /// listed dimmed as "later", so the whole effect of the call is visible.
 fn variables(session: &Session, labels: &HashMap<String, String>) -> Vec<TraceValue> {
     let mut rows = Vec::new();
+    // Locals of the function at the cursor, then the call's arguments and writes.
+    if let Some(locals) = session.locals().filter(|locals| !locals.is_empty()) {
+        rows.push(TraceValue { label: "locals".into(), value: "in the function at the cursor".into(), changed: false });
+        for (name, type_label, value) in locals {
+            rows.push(TraceValue { label: format!("{name}  ({type_label})").into(), value: super::address_book::annotate(&value, labels).into(), changed: false });
+        }
+    }
     if let Some((function, args)) = session.call_arguments() {
         rows.push(TraceValue { label: "call".into(), value: function.into(), changed: false });
         for (name, value) in args {
@@ -942,7 +949,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(workspace.path().join("A.sol"), "line one\r\nline two\r\n").unwrap();
         let mut state = DesktopState::new(workspace.path().to_path_buf(), 1.0);
-        state.runtimes.insert("A".into(), super::super::session::RuntimeInfo { code: vec![0x00], source_map: "9:8:0".into(), source_path: "A.sol".into(), source_id: Some(0) });
+        state.runtimes.insert("A".into(), super::super::session::RuntimeInfo { code: vec![0x00], source_map: "9:8:0".into(), source_path: "A.sol".into(), source_id: Some(0), ast: None });
         let programs = programs(&state);
         assert_eq!(programs.len(), 1);
         // Offset 9 is the start of line two in the LF text solc compiled.
