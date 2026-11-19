@@ -106,6 +106,13 @@ pub struct Session {
     line_hits: Vec<Vec<i32>>,
     /// Per program: local variable declarations from its AST.
     locals: Vec<Option<super::trace_locals::Index>>,
+    /// ABIs to decode frames: matched programs, attached addresses, workspace.
+    pub abis: super::call_tree::Abis,
+    /// Breakpoints that need no source: by pc (any contract), by opcode, and
+    /// on entering any call frame.
+    pub pc_breaks: Vec<u64>,
+    pub op_breaks: Vec<String>,
+    pub break_on_entry: bool,
     /// Frame tracking saved every `LOCALS_CHECKPOINT` steps of an external
     /// frame: (frame entry step, step) -> internal frames after that step.
     locals_cache: std::sync::Mutex<HashMap<(usize, usize), Vec<super::trace_locals::Frame>>>,
@@ -229,8 +236,13 @@ impl Session {
     pub fn resume(&mut self, forward: bool) -> bool {
         let lines: Vec<_> = self.breakpoints.clone();
         let hit = |session: &Self, index: usize| {
-            session.location(index).is_some_and(|location| lines.contains(&location.line))
-                && session.line_key(index) != session.line_key(index.wrapping_sub(1))
+            let step = &session.steps[index];
+            let entered = index > 0 && step.depth > session.steps[index - 1].depth;
+            (session.location(index).is_some_and(|location| lines.contains(&location.line))
+                && session.line_key(index) != session.line_key(index.wrapping_sub(1)))
+                || session.pc_breaks.contains(&step.pc)
+                || session.op_breaks.iter().any(|op| op == &step.op)
+                || (session.break_on_entry && entered)
         };
         if forward {
             match (self.cursor + 1..self.steps.len()).find(|&index| hit(self, index)) {
@@ -271,6 +283,7 @@ impl Session {
     }
 
     /// Call stack at the cursor: one entry per depth, from the outermost frame.
+    #[cfg(test)]
     pub fn frames(&self) -> Vec<(u64, String, String)> {
         let mut frames: Vec<(u64, String, String)> = Vec::new();
         for index in 0..=self.cursor.min(self.steps.len().saturating_sub(1)) {
@@ -490,22 +503,33 @@ impl Session {
     }
 
     /// Function and decoded arguments of the outermost call, when its ABI is known.
+    /// Decoded arguments of the call frame at the cursor (the outermost call
+    /// when the cursor is in it), using every ABI the session knows.
     pub fn call_arguments(&self) -> Option<(String, Vec<(String, String)>)> {
-        use ethers::abi::FunctionExt;
-        let program = self.programs.get(*self.mapped.get(&self.target)?)?;
-        let abi = program.abi.as_ref()?;
-        if self.calldata.len() < 4 {
-            return None;
+        let frames = super::call_tree::frames(self);
+        let index = super::call_tree::frame_at(&frames, self.cursor).unwrap_or(0);
+        let mut abis = self.abis.clone();
+        // A matched program's own ABI decodes its frames even with no attach.
+        for (address, program) in &self.mapped {
+            if let Some(abi) = &self.programs[*program].abi {
+                abis.by_address.entry(address.clone()).or_insert_with(|| (self.programs[*program].name.clone(), abi.clone()));
+            }
         }
-        let function = abi.functions().find(|function| function.selector() == self.calldata[..4])?;
-        let tokens = function.decode_input(&self.calldata[4..]).ok()?;
-        let args = function
-            .inputs
-            .iter()
-            .zip(tokens)
-            .map(|(param, token)| (if param.name.is_empty() { param.kind.to_string() } else { param.name.clone() }, token_text(&token)))
-            .collect();
-        Some((function.abi_signature(), args))
+        super::call_tree::arguments(frames.get(index)?, &abis)
+    }
+
+    /// The call tree with names, for the Calls tab and console.
+    pub fn call_frames(&self) -> Vec<(super::call_tree::Frame, String)> {
+        let mut abis = self.abis.clone();
+        for (address, program) in &self.mapped {
+            if let Some(abi) = &self.programs[*program].abi {
+                abis.by_address.entry(address.clone()).or_insert_with(|| (self.programs[*program].name.clone(), abi.clone()));
+            }
+        }
+        super::call_tree::frames(self).into_iter().map(|frame| {
+            let text = super::call_tree::describe(self, &frame, &abis);
+            (frame, text)
+        }).collect()
     }
 
     fn assign_nesting(&mut self) {
@@ -544,7 +568,7 @@ impl Session {
     }
 }
 
-fn token_text(token: &ethers::abi::Token) -> String {
+pub fn token_text(token: &ethers::abi::Token) -> String {
     use ethers::abi::Token;
     match token {
         Token::Address(address) => ethers::utils::to_checksum(address, None),

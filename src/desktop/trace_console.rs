@@ -21,7 +21,10 @@ where            current location
 args             decoded arguments of the call
 writes           storage writes so far, by slot
 gas [lines]      gas per call frame, or per source line
-locals           Solidity locals of the function at the cursor";
+locals           Solidity locals of the function at the cursor
+calls            the call tree; frame <n> jumps to a frame's first step
+b *<pc>, b op <OP>, b entry   break on a pc, an opcode, or entering any call
+d *<pc>, d op <OP>, d entry   delete those breakpoints";
 
 /// Run one command line and return what to print.
 pub fn run(session: &mut Session, line: &str) -> String {
@@ -66,6 +69,73 @@ pub fn run(session: &mut Session, line: &str) -> String {
             let rows = if args.first().is_some_and(|arg| arg.starts_with('l')) { super::gas_profile::by_line(session) } else { super::gas_profile::by_call(session) };
             super::gas_profile::table(&rows, 20)
         }
+        "calls" => {
+            let frames = session.call_frames();
+            let here = super::call_tree::frame_at(&frames.iter().map(|(frame, _)| frame.clone()).collect::<Vec<_>>(), session.cursor);
+            frames
+                .iter()
+                .enumerate()
+                .map(|(index, (frame, text))| format!("{}{index:>3} {}{text}", if Some(index) == here { ">" } else { " " }, "  ".repeat(frame.depth.saturating_sub(1) as usize)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        "frame" => match args.first().and_then(|text| text.parse::<usize>().ok()) {
+            Some(index) => match session.call_frames().get(index) {
+                Some((frame, _)) => {
+                    let first = frame.first;
+                    session.go(first);
+                    where_line(session)
+                }
+                None => format!("No frame {index}. calls lists them."),
+            },
+            None => "Usage: frame <n> (see calls)".into(),
+        },
+        "b" | "break" if args.first().is_some_and(|arg| arg.starts_with('*') || *arg == "op" || *arg == "entry") => {
+            match (args.first().copied(), args.get(1)) {
+                (Some("entry"), _) => {
+                    session.break_on_entry = true;
+                    "Break on entering any call frame.".into()
+                }
+                (Some("op"), Some(op)) => {
+                    let op = op.to_ascii_uppercase();
+                    if !session.op_breaks.contains(&op) {
+                        session.op_breaks.push(op.clone());
+                    }
+                    format!("Break on every {op}.")
+                }
+                (Some(pc), _) => match parse_number(pc.trim_start_matches('*')).filter(|pc| *pc <= U256::from(u64::MAX)).map(|pc| pc.as_u64()) {
+                    Some(pc) => {
+                        if !session.pc_breaks.contains(&pc) {
+                            session.pc_breaks.push(pc);
+                        }
+                        format!("Break at pc {pc} in any contract.")
+                    }
+                    None => "Usage: b *<pc>, b op <OPCODE>, b entry".into(),
+                },
+                _ => "Usage: b *<pc>, b op <OPCODE>, b entry".into(),
+            }
+        }
+        "d" | "delete" if args.first().is_some_and(|arg| arg.starts_with('*') || *arg == "op" || *arg == "entry") => {
+            match (args.first().copied(), args.get(1)) {
+                (Some("entry"), _) => {
+                    session.break_on_entry = false;
+                    "No longer breaking on frame entry.".into()
+                }
+                (Some("op"), Some(op)) => {
+                    let op = op.to_ascii_uppercase();
+                    session.op_breaks.retain(|item| item != &op);
+                    format!("Deleted the {op} breakpoint.")
+                }
+                (Some(pc), _) => match parse_number(pc.trim_start_matches('*')).filter(|pc| *pc <= U256::from(u64::MAX)).map(|pc| pc.as_u64()) {
+                    Some(pc) => {
+                        session.pc_breaks.retain(|item| *item != pc);
+                        format!("Deleted the breakpoint at pc {pc}.")
+                    }
+                    None => "Usage: d *<pc>, d op <OPCODE>, d entry".into(),
+                },
+                _ => "Usage: d *<pc>, d op <OPCODE>, d entry".into(),
+            }
+        }
         "b" | "break" => match args.first().and_then(|text| text.parse::<usize>().ok()).filter(|line| *line > 0) {
             Some(line) if session.breakpoints.contains(&line) => format!("Breakpoint already on line {line}."),
             Some(line) => {
@@ -89,13 +159,15 @@ pub fn run(session: &mut Session, line: &str) -> String {
             },
         },
         "info" | "i" if matches!(args.first(), Some(&("b" | "break" | "breakpoints"))) => {
-            if session.breakpoints.is_empty() {
-                "No breakpoints.".into()
-            } else {
-                let mut lines = session.breakpoints.clone();
-                lines.sort_unstable();
-                lines.iter().map(|line| format!("line {line}")).collect::<Vec<_>>().join("\n")
+            let mut lines = session.breakpoints.clone();
+            lines.sort_unstable();
+            let mut out: Vec<String> = lines.iter().map(|line| format!("line {line}")).collect();
+            out.extend(session.pc_breaks.iter().map(|pc| format!("pc {pc}")));
+            out.extend(session.op_breaks.iter().map(|op| format!("opcode {op}")));
+            if session.break_on_entry {
+                out.push("frame entry".into());
             }
+            if out.is_empty() { "No breakpoints.".into() } else { out.join("\n") }
         }
         "goto" | "g" => match args.first().and_then(|text| text.parse::<usize>().ok()).filter(|step| *step > 0) {
             Some(step) => {
@@ -227,5 +299,14 @@ mod tests {
         assert!(run(&mut session, "help").contains("rfin"));
         assert!(run(&mut session, "gas").contains("total execution gas"));
         assert!(run(&mut session, "gas lines").contains("no source"));
+        assert!(run(&mut session, "calls").contains("→ returned"), "{}", run(&mut session, "calls"));
+        assert_eq!(run(&mut session, "b op sload"), "Break on every SLOAD.");
+        assert!(run(&mut session, "goto 1").starts_with("step 1/3"));
+        assert!(run(&mut session, "c").starts_with("step 2/3"), "continue stops on the SLOAD");
+        assert!(run(&mut session, "info b").contains("opcode SLOAD"));
+        assert_eq!(run(&mut session, "d op sload"), "Deleted the SLOAD breakpoint.");
+        assert_eq!(run(&mut session, "b *3"), "Break at pc 3 in any contract.");
+        assert!(run(&mut session, "goto 1").starts_with("step 1/3"));
+        assert!(run(&mut session, "c").starts_with("step 3/3"));
     }
 }

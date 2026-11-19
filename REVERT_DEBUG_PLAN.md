@@ -1,6 +1,6 @@
 # Plan: find the cause of any revert in one flow (2026-11-19)
 
-Status: R1, R2.1, R2.2, R2.4 and R6.3 done; next R3.
+Status: R1, R2.1, R2.2, R2.4, R3 and R6.3 done; next R6.1–6.2.
 
 This plan comes from a review of a real fork session. The step debugger
 works: a contract Chasm compiled itself stepped by source line, through
@@ -174,7 +174,7 @@ Every step ships with unit tests and its live check, gets its own commit on
 |---|---|
 | R1 | done: `revert_cause.rs` (first self-reverting frame, reason from all ABIs, oversized creation), deploy preflight keeps the creation call, size/out-of-gas messages via a redacted `chasmKind`, `debugger.trace {call}`; `revert_explained` live flow |
 | R2 | R2.1 compiler settings, R2.2 build source (`build_config.rs`: Auto/Foundry/Chasm, `forge config --json`) and R2.4 tolerant matching done; live flows `external_build`, `build_source`. A copy of the review's PoC compiles 123 contracts under Auto. R2.3 (import a Foundry build) next |
-| R3 | not started |
+| R3 | done: `call_tree.rs` (frames, kinds, outcomes, ranges), Calls tab with frame jump, `calls` / `frame n`, per-frame `args` via attached or unique ABIs (ambiguous selectors list candidates), `b *pc`, `b op`, `b entry`; `call_tree` live flow |
 | R4 | not started |
 | R5 | not started |
 | R6 | R6.3 duplicate-library message done (`duplicate_library_hint`); R6.1–6.2 next |

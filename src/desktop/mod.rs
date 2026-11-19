@@ -34,6 +34,7 @@ mod gas_profile;
 mod trace_locals;
 mod captures;
 mod revert_cause;
+mod call_tree;
 mod native_toolchain;
 mod chain_tools;
 mod native_chain;

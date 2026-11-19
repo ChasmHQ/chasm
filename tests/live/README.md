@@ -31,6 +31,7 @@ key is stored here.
 | `panes` | trace panes dock, float and hide |
 | `gas`, `locals` | gas profile per call and line; Solidity locals (`i`, `result`, calldata array) |
 | `captures` | offline replay saved to `.chasm/captures/`, uploaded and replayed |
+| `call_tree` | keeper → token frames with outcomes, per-frame args, entry and opcode breaks, an attached ABI naming code Chasm did not build |
 | `external_build` | a via-IR, optimizer, no-metadata contract with an immutable, deployed by `cast`, maps to source with matching `[compiler]` settings |
 | `build_source` | Auto follows `foundry.toml`; a duplicate library names both copies |
 | `revert_explained` | a keeper revert names `MiniToken.transfer` and its custom error; an oversized deploy names EIP-170; unsent calls trace through the API |

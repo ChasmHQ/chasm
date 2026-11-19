@@ -68,6 +68,21 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     });
     let weak = ui.as_weak();
     let held = state.clone();
+    ui.global::<TraceLogic>().on_select_frame({
+        let weak = weak.clone();
+        let held = held.clone();
+        move |index| {
+            {
+                let mut state = held.lock().unwrap();
+                let Some(session) = state.trace.as_mut() else { return };
+                if let Some((frame, _)) = session.call_frames().get(index.max(0) as usize) {
+                    let first = frame.first;
+                    session.go(first);
+                }
+            }
+            super::paint(&weak, &held);
+        }
+    });
     ui.global::<TraceLogic>().on_console_run(move |line| {
         let line = line.trim().to_string();
         if line.is_empty() || line.len() > 200 {
@@ -139,6 +154,7 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
             match result {
                 Ok((mut session, path)) => {
                     state.trace_status = format!("Opened {}", shown_path(&path));
+                    session.abis = frame_abis(&state, &session);
                     if let Some(cause) = open_at_cause(&state, &mut session) {
                         state.trace_status = format!("{cause} {}", state.trace_status);
                     }
@@ -216,6 +232,20 @@ fn known_abis(state: &DesktopState, session: &Session) -> Vec<(String, ethers::a
         if let Some(abi) = &program.abi {
             if !abis.iter().any(|(name, _)| name == &program.name) {
                 abis.push((program.name.clone(), abi.clone()));
+            }
+        }
+    }
+    abis
+}
+
+/// ABIs for frame decoding: contract tabs bound to an address (deployed or
+/// attached), then every workspace contract by name.
+fn frame_abis(state: &DesktopState, session: &Session) -> super::call_tree::Abis {
+    let mut abis = super::call_tree::Abis { named: known_abis(state, session), ..Default::default() };
+    for doc in &state.documents {
+        if let Some(target) = &doc.contract_view.target {
+            if let Some(contract) = state.contracts.iter().find(|contract| contract.name == target.contract) {
+                abis.by_address.insert(target.address.to_ascii_lowercase(), (contract.name.clone(), contract.abi.clone()));
             }
         }
     }
@@ -372,6 +402,7 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
                     if !note.is_empty() {
                         state.trace_status = format!("{note} {}", state.trace_status);
                     }
+                    session.abis = frame_abis(&state, &session);
                     if let Some(cause) = open_at_cause(&state, &mut session) {
                         state.trace_status = format!("{cause} {}", state.trace_status);
                     }
@@ -875,13 +906,24 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
         data.set_gas_calls(rows(super::gas_profile::by_call(session), 30));
         data.set_gas_lines(rows(super::gas_profile::by_line(session), 50));
     }
-    data.set_frames(super::model(
-        session
-            .frames()
-            .into_iter()
-            .map(|(depth, address, name)| TraceValue { label: format!("depth {depth}").into(), value: match labels.get(&address) { Some(label) if label != &name => format!("{name}  {address} ({label})"), _ => format!("{name}  {address}") }.into(), changed: false })
-            .collect(),
-    ));
+    // The call tree only while the Calls tab shows: it walks every step.
+    if data.get_state_tab() == 3 {
+        let frames = session.call_frames();
+        let plain: Vec<super::call_tree::Frame> = frames.iter().map(|(frame, _)| frame.clone()).collect();
+        let here = super::call_tree::frame_at(&plain, session.cursor);
+        data.set_call_rows(super::model(
+            frames
+                .iter()
+                .enumerate()
+                .take(500)
+                .map(|(index, (frame, text))| TraceTarget {
+                    label: format!("{}{}", "  ".repeat(frame.depth.saturating_sub(1) as usize), super::address_book::annotate(text, &labels)).into(),
+                    detail: if Some(index) == here { "cursor is in this frame".into() } else { super::address_book::annotate(&frame.address, &labels).into() },
+                    query: index.to_string().into(),
+                })
+                .collect(),
+        ));
+    }
     data.set_step_info(super::model(vec![
         TraceValue { label: "opcode".into(), value: format!("{}  at pc {}", step.op, step.pc).into(), changed: false },
         TraceValue { label: "gas".into(), value: format!("{} left, costs {}", step.gas, step.gas_cost).into(), changed: false },

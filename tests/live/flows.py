@@ -704,4 +704,96 @@ def build_source():
         command("workspace.compile")
         compiled()
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, revert_explained, external_build, build_source, fork]
+
+def call_tree():
+    """The Calls tab lists frames; an attached ABI decodes code Chasm did not build; pc/opcode/entry breaks."""
+    import shutil
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    if not os.path.exists(os.path.join(WORKSPACE, "Keeper.sol")):
+        shutil.copy(os.path.join(here, "fixtures", "Keeper.sol"), os.path.join(WORKSPACE, "Keeper.sol"))
+        command("workspace.compile")
+        compiled()
+    artifacts = {a["name"]: a for a in query("workspace.artifacts")["artifacts"]}
+    # A MiniToken deployed outside Chasm: its code matches, but no tab is bound to it.
+    token_code = subprocess.run(["forge", "inspect", "--root", WORKSPACE, "--contracts", WORKSPACE, "Keeper.sol:MiniToken", "bytecode"],
+                                capture_output=True, text=True)
+    command("contracts.select", id=artifacts["MiniToken"]["id"])
+    command("contracts.deploy")
+    settle()
+    token = query("contracts.view")["address"]
+    command("contracts.select", id=artifacts["Keeper"]["id"])
+    command("contracts.constructor.edit", index=0, value=token)
+    command("contracts.deploy")
+    settle()
+    keeper = query("contracts.view")["address"]
+    data = rpc_call_data("payout(address,uint256)", [OWNER, 5])
+    command("debugger.trace", call={"to": keeper, "data": data})
+    for _ in range(60):
+        t = trace()
+        if t["loaded"] and not t["busy"]:
+            break
+        time.sleep(0.5)
+    command("debugger.trace.view", tab=3)
+    calls = trace()["calls"]
+    texts = [row["text"] for row in calls]
+    print("  | " + " || ".join(texts)[:240])
+    check("two frames: the keeper and the token", len(calls) == 2 and texts[0].startswith("Keeper.payout") and "MiniToken.transfer" in texts[1], str(texts))
+    check("each frame says how it ended", "→ reverted" in texts[0] and "→ reverted" in texts[1], str(texts))
+    check("the cursor is in the token frame", calls[1]["here"], str(calls))
+    command("debugger.trace.console", line="frame 0")
+    command("debugger.trace.console", line="args")
+    console = trace()["console"]
+    check("args decode the outer frame", "payout(address,uint256)" in console and "amount = 5" in console, console[-300:])
+    command("debugger.trace.console", line="frame 1")
+    command("debugger.trace.console", line="args")
+    console = trace()["console"]
+    check("args decode the inner frame", "transfer(address,uint256)" in console.split("(trace) args")[-1], console[-300:])
+    # Breakpoints that need no source.
+    command("debugger.trace.console", line="goto 1")
+    command("debugger.trace.console", line="b entry")
+    command("debugger.trace.console", line="c")
+    first_token_step = int(texts[1].split("steps ")[1].split("–")[0])
+    check("b entry stops on the token frame's first step", trace()["step"] + 1 == first_token_step, f"{trace()['step'] + 1} vs {first_token_step}")
+    command("debugger.trace.console", line="d entry")
+    command("debugger.trace.console", line="goto 1")
+    command("debugger.trace.console", line="b op SLOAD")
+    command("debugger.trace.console", line="c")
+    check("b op stops on an SLOAD", trace()["location"].rstrip().endswith("SLOAD"), trace()["location"])
+    command("debugger.trace.console", line="d op SLOAD")
+    # Code Chasm did not build: a MiniToken variant with a different body, so
+    # its runtime does not match. Attaching the MiniToken ABI names its frame.
+    variant = os.path.join(os.path.dirname(WORKSPACE), "variant")
+    os.makedirs(os.path.join(variant, "src"), exist_ok=True)
+    text = open(os.path.join(WORKSPACE, "Keeper.sol"), encoding="utf-8").read().split("contract Keeper")[0].replace("balanceOf[to] += amount;", "balanceOf[to] += amount + 0;")
+    open(os.path.join(variant, "src", "MiniToken.sol"), "w", encoding="utf-8").write(text)
+    subprocess.run(["forge", "build", "--offline", "--root", variant], capture_output=True, check=True)
+    creation = json.load(open(os.path.join(variant, "out", "MiniToken.sol", "MiniToken.json"), encoding="utf-8"))["bytecode"]["object"]
+    sent = subprocess.run(["cast", "send", "--rpc-url", "http://127.0.0.1:8545", "--private-key", anvil_key_0(), "--json", "--create", creation], capture_output=True, text=True, check=True)
+    outside = json.loads(sent.stdout)["contractAddress"]
+    call = rpc_call_data("transfer(address,uint256)", [OWNER, 1])
+    command("debugger.trace", call={"to": outside, "data": call})
+    for _ in range(60):
+        if trace()["loaded"] and not trace()["busy"]:
+            break
+        time.sleep(0.5)
+    command("debugger.trace.view", tab=3)
+    before = trace()["calls"][0]["text"]
+    # MiniToken alone declares this selector in a fresh workspace; with an
+    # ERC20 template present it is ambiguous and the candidates are listed.
+    check("an unmatched contract is named only when one ABI fits", before.startswith("MiniToken.transfer at ") or ("0xa9059cbb (one of " in before and "MiniToken.transfer" in before), before)
+    command("contracts.select", id=artifacts["MiniToken"]["id"])
+    command("contracts.attach", address=outside)
+    command("debugger.trace", call={"to": outside, "data": call})
+    for _ in range(60):
+        if trace()["loaded"] and not trace()["busy"]:
+            break
+        time.sleep(0.5)
+    after = trace()["calls"][0]["text"]
+    print("  | " + after[:160])
+    check("an attached ABI names it", after.startswith("MiniToken.transfer at "), after)
+    command("debugger.trace.console", line="args")
+    check("and decodes its arguments", "amount = 1" in trace()["console"].split("(trace) args")[-1], trace()["console"][-200:])
+    command("debugger.trace.view", tab=0)
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, revert_explained, call_tree, external_build, build_source, fork]

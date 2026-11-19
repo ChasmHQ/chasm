@@ -40,12 +40,17 @@ pub fn explain(session: &Session, abis: &[(String, Abi)]) -> Option<Failure> {
         if forwards_callee(session, index, &data) {
             continue;
         }
+        // The frame is named like the Calls tab: attached and matched ABIs
+        // first, and an ambiguous selector is not attributed to one contract.
+        let frames = session.call_frames();
+        let plain: Vec<super::call_tree::Frame> = frames.iter().map(|(frame, _)| frame.clone()).collect();
+        let frame = super::call_tree::frame_at(&plain, index).and_then(|at| frames.get(at)).map(|(_, text)| text.split(" → ").next().unwrap_or(text).to_string());
         let selector = frame_selector(session, index);
         return Some(Failure {
             step: index,
             depth: step.depth,
             address: step.address.clone(),
-            frame: frame_name(session, index, selector.as_deref(), abis),
+            frame: frame.unwrap_or_else(|| frame_name(session, index, selector.as_deref(), abis)),
             reason: match step.op.as_str() {
                 "REVERT" => decode_reason(&data, abis),
                 "INVALID" => "hit an INVALID opcode (assert or a designated invalid instruction)".into(),

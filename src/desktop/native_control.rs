@@ -728,6 +728,7 @@ fn trace_state(ui: &MainWindow) -> Value {
                 "stack": rows(trace.get_stack()).into_iter().take(8).map(|item| item.value.to_string()).collect::<Vec<_>>(),
                 "storage": rows(trace.get_storage()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
                 "frames": rows(trace.get_frames()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
+                "calls": rows(trace.get_call_rows()).into_iter().map(|row| json!({"index":row.query.as_str(),"text":row.label.as_str().trim_start(),"here":row.detail.as_str()=="cursor is in this frame"})).collect::<Vec<_>>(),
                 "gas": {"calls": rows(trace.get_gas_calls()).into_iter().map(|item| json!({"name":item.label.as_str(),"value":item.value.as_str()})).collect::<Vec<_>>(), "lines": rows(trace.get_gas_lines()).into_iter().take(10).map(|item| json!({"name":item.label.as_str(),"value":item.value.as_str()})).collect::<Vec<_>>()},
                 "variables": rows(trace.get_variables()).into_iter().map(|item| json!({"name":item.label.as_str(),"value":item.value.as_str()})).collect::<Vec<_>>(),
                 "panes": {"opcodes": trace.get_show_opcodes(), "state": trace.get_show_state(), "console": trace.get_show_console(), "compact": trace.get_compact(), "opcodesWidth": trace.get_opcodes_width(), "stateWidth": trace.get_state_width(), "consoleHeight": trace.get_console_height()},

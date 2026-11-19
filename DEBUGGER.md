@@ -134,6 +134,8 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 | `writes` | | Storage writes up to the cursor, by slot |
 | `locals` | | Solidity locals of the function at the cursor |
 | `gas`, `gas lines` | | Gas per call frame, or per source line |
+| `calls`, `frame <n>` | | The call tree; jump to a frame's first step |
+| `b *<pc>`, `b op <OP>`, `b entry` | `d …` | Break on a pc in any contract, on an opcode, or on entering any call. These need no source. |
 | `where`, `help` | | Current position, command list |
 
 ## State panes
@@ -141,7 +143,9 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 - **Stack:** top first. Changed entries are highlighted.
 - **Memory:** 32-byte words.
 - **Storage:** slots touched so far in this frame's contract.
-- **Calls:** the external call stack at the cursor.
+- **Calls:** the external call tree. Each frame shows its kind, `Contract.function`, value, how it ended (returned, reverted, stopped, out of gas) and its steps. The frame holding the cursor is highlighted; click a frame to jump to its first step.
+  - Frames are named with the matched contract's ABI, an ABI attached to that address in a contract tab, or a workspace ABI when exactly one declares the selector.
+  - If several do, the frame lists the candidates; attach the address to choose.
 - **Variables:** the Solidity locals of the function at the cursor (parameters, return variables and locals in scope, with value types, memory strings and arrays, and calldata arrays decoded), then the decoded arguments of the call, then every storage write by variable name with its old and new value, for example `balanceOf[0xf39F… (Anvil #0, signer)]  0 → 2000000000000000000 (2 ether)`. Writes after the cursor are marked *later*; the write at the cursor is highlighted. Names come from the compiler's storage layout: mapping keys and dynamic array indexes are recovered from the hashes computed in the same transaction, packed variables are split, and slots the layout cannot explain show as `slot 0x…`.
 - Locals come from the compiler's AST and the stack positions observed in the trace, the same method as the sevm debugger. They need a workspace contract compiled without via-IR; verified Sourcify contracts show no locals. The console's `locals` prints them.
 - **Gas:** where the execution gas went, per external call (`Contract.function`, named from the ABI or the selector) and per source line, most expensive first. Each step counts its own cost; a call's forwarded gas is counted in the callee. Intrinsic gas and refunds are not included. The console's `gas` and `gas lines` print the same tables.
@@ -164,6 +168,7 @@ AI clients with the `debug` scope use the same commands:
 - `debugger.trace.breakpoint` with `{"line": n}`.
 - `debugger.trace.console` with `{"line": "n"}`; output is in `debugger.state` `trace.console`.
 - `ui.panel` with `pane` = `trace_ops`, `trace_state` or `trace_console` and `action` = `dock` (with `zone`), `float` or `hide`; `action` = `preset` with `pane` = `tracing` applies the sevm layout. `app.state` lists each pane's placement under `layout.panes`.
+- `debugger.state` `trace.calls` lists the call tree (while the Calls tab, `tab: 3`, is shown).
 - `debugger.trace.view` with any of `opcodes`, `state`, `console`, `compact` (booleans), `tab` (0 Stack, 1 Memory, 2 Storage, 3 Calls, 4 Variables, 5 Gas) and `opcodes_width`, `state_width`, `console_height` (px). `debugger.state` `trace.variables` and `trace.gas` are filled while their tab is shown.
 - `debugger.capture.save` and `debugger.capture.open` with `{"name": "<file>.json"}` for the offline engine's captures (see below).
 - `debugger.trace.open_saved` with `{"name": "<file>.json"}`, a name from `debugger.state` `trace.saved`.
