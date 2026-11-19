@@ -513,7 +513,7 @@ pub fn jump_types(map: &str) -> Vec<char> {
 }
 
 /// Runtime code equality ignoring the CBOR metadata tail solc appends.
-fn same_code(compiled: &[u8], deployed: &[u8]) -> bool {
+pub fn same_code(compiled: &[u8], deployed: &[u8]) -> bool {
     let strip = |code: &[u8]| -> usize {
         if code.len() < 2 {
             return code.len();

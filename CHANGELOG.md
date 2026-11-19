@@ -30,6 +30,7 @@ the `ui/` folder and the npm build are gone.
 - Timeline: a snapshot before every Send, Deploy and cheat, with *Revert to here*.
 - Local chain cheats: time, blocks, balance, nonce, storage slot and code.
 - Fork a live chain at the latest or a chosen block (chain id stays 31337), from public RPC presets or any URL. The status bar names the forked chain.
+- Verified contracts on a fork show their source in the debugger, from Sourcify, cached per project.
 - A real transaction from the forked chain replays on a separate node at its parent block, with its block context and the real chain id, without reopening the project.
 
 ### Project

@@ -127,7 +127,13 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                 if saved.format != TRACE_FORMAT {
                     return Err(format!("{} uses an unknown trace format.", path.display()));
                 }
-                Ok((saved.session(programs(&state))?, path))
+                let mut known = programs(&state);
+                // Verified source fetched when it was recorded, from the cache.
+                if let Some(chain) = state.fork_chain_id {
+                    let code = saved.code.iter().filter_map(|(address, code)| Some((address.clone(), ethers::utils::hex::decode(code.trim_start_matches("0x")).ok()?))).collect();
+                    known.extend(load_verified(&state.workspace, chain, &code));
+                }
+                Ok((saved.session(known)?, path))
             });
             match result {
                 Ok((session, path)) => {
@@ -276,7 +282,7 @@ pub fn load(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle
                 };
                 state.trace_busy = true;
                 state.trace_status = "Recording the execution…".into();
-                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch, state.network.fork_url.clone()))
+                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch, state.network.fork_url.clone(), state.fork_chain_id))
             }
             Err(error) => {
                 state.trace_status = error;
@@ -285,10 +291,10 @@ pub fn load(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle
         }
     };
     super::paint(&weak, &held);
-    let Some((target, rpc, programs, epoch, fork_url)) = prepared else { return };
+    let Some((target, rpc, programs, epoch, fork_url, chain)) = prepared else { return };
     let workspace = held.lock().unwrap().workspace.clone();
     runtime.spawn(async move {
-        let result = record(&rpc, target, programs, &fork_url).await.map(|(session, saved, hash, note)| {
+        let result = record(&rpc, target, programs, &fork_url, chain.map(|chain| (workspace.as_path(), chain))).await.map(|(session, saved, hash, note)| {
             let path = save_trace(&workspace, &saved, hash.as_deref());
             (session, path, note)
         });
@@ -433,7 +439,9 @@ fn saved_path(workspace: &std::path::Path, name: &str) -> Result<std::path::Path
 
 /// Records a trace. Returns the session, its saved form, the transaction
 /// hash (for the file name) and a note to show when the replay is approximate.
-async fn record(rpc: &str, target: Target, programs: Vec<Program>, fork_url: &str) -> Result<(Session, SavedTrace, Option<String>, String), String> {
+/// On a fork, `verified` (workspace, chain id) adds Sourcify source for
+/// contracts that are not in the workspace.
+async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url: &str, verified: Option<(&std::path::Path, u64)>) -> Result<(Session, SavedTrace, Option<String>, String), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .no_proxy()
@@ -569,8 +577,48 @@ async fn record(rpc: &str, target: Target, programs: Vec<Program>, fork_url: &st
         input,
     };
     drop(replay_node);
+    if let Some((workspace, chain)) = verified {
+        let (found, missing) = verified_programs(workspace, chain, &code_at, &programs).await;
+        if found > 0 || missing > 0 {
+            let note = format!("Source from Sourcify for {found} verified contract(s){}.", if missing > 0 { format!("; {missing} unverified show opcodes only") } else { String::new() });
+            replay_note = if replay_note.is_empty() { note } else { format!("{replay_note} {note}") };
+        }
+        programs.extend(load_verified(workspace, chain, &code_at));
+    }
     let session = saved.session(programs)?;
     Ok((session, saved, hash, replay_note))
+}
+
+/// Looks up every traced address whose code no workspace program matches.
+/// Returns (verified, unverified) counts; answers land in the cache.
+async fn verified_programs(workspace: &std::path::Path, chain: u64, code_at: &HashMap<String, Vec<u8>>, programs: &[Program]) -> (usize, usize) {
+    let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build() else { return (0, 0) };
+    let (mut found, mut missing) = (0, 0);
+    let unknown = code_at
+        .iter()
+        .filter(|(_, code)| !code.is_empty() && !programs.iter().any(|program| trace_debug::same_code(&program.runtime, code)))
+        .take(super::sourcify::MAX_LOOKUPS);
+    for (address, _) in unknown {
+        match super::sourcify::lookup(&client, workspace, chain, address).await {
+            Ok(value) if value["verified"] == true => found += 1,
+            Ok(_) => missing += 1,
+            Err(_) => {}
+        }
+    }
+    (found, missing)
+}
+
+/// Programs for traced addresses already answered by Sourcify (cache only),
+/// so a saved trace reopens with source and without the network.
+fn load_verified(workspace: &std::path::Path, chain: u64, code_at: &HashMap<String, Vec<u8>>) -> Vec<Program> {
+    code_at
+        .keys()
+        .filter_map(|address| {
+            let path = workspace.join(".chasm").join("sources").join(chain.to_string()).join(format!("{}.json", address.to_ascii_lowercase()));
+            let value: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+            super::sourcify::program(&value)
+        })
+        .collect()
 }
 
 async fn rpc_call(client: &reqwest::Client, url: &str, method: &str, params: Value) -> Result<Value, String> {

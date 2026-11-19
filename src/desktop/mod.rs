@@ -29,6 +29,7 @@ mod notice_action;
 mod native_palette;
 mod toolchain;
 mod templates;
+mod sourcify;
 mod native_toolchain;
 mod chain_tools;
 mod native_chain;

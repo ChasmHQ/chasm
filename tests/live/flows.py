@@ -299,6 +299,12 @@ def fork():
     check("replayed without reopening the project", t["loaded"] and rpc("eth_blockNumber") == head_before, t["status"])
     check("replay outcome matches mainnet", ("REVERTED" in t["summary"]) == (receipt["status"] == "0x0"), t["summary"])
     check("replay gas matches the receipt", f"gas used {int(receipt['gasUsed'], 16)}" in t["summary"], f"{t['summary']} vs {int(receipt['gasUsed'], 16)}")
+    verified = rpc("eth_getCode", [tx["to"], "latest"])
+    status = t["status"]
+    print(f"  note: {status[:160]}")
+    check("Sourcify was asked about the contracts", "Sourcify" in status or len(verified) <= 2, status)
+    if "Source from Sourcify for 0" not in status and "Sourcify" in status:
+        check("verified source is shown", t["file"] != "" or any(not f.endswith("unknown code") for f in t["frames"]), f"{t['file']} {t['frames']}")
     command("toolchain.action", action="network", fork_url="")
     reopened(None)
     check("back to a local chain", rpc("eth_getCode", [usdc, "latest"]) == "0x")

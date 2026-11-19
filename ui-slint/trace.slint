@@ -257,12 +257,11 @@ export component TraceStatePane inherits Rectangle {
     background: Theme.panel;
     VerticalLayout {
         if !TraceData.loaded: NoTrace { vertical-stretch: 1; }
+        if root.embedded: TracePaneHeader { title: "Machine state"; key: "trace_state"; dock-zone: 2; }
         if TraceData.loaded: VerticalLayout {
             vertical-stretch: 1;
             HorizontalLayout {
                 height: Theme.tab-height;
-                if root.embedded: ToolButton { text: "Float"; tip: "Open this pane in its own window."; clicked => { TraceLogic.pane-float("trace_state"); } }
-                if root.embedded: ToolButton { text: "Dock"; tip: "Move this pane to the right dock zone."; clicked => { TraceLogic.pane-dock("trace_state", 2); } }
                 DockTab { label: "Stack"; selected: TraceData.state-tab == 0; clicked => { TraceData.state-tab = 0; } }
                 DockTab { label: "Memory"; selected: TraceData.state-tab == 1; clicked => { TraceData.state-tab = 1; } }
                 DockTab { label: "Storage"; selected: TraceData.state-tab == 2; clicked => { TraceData.state-tab = 2; } }

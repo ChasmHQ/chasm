@@ -41,6 +41,7 @@ With the project forked (Workspace > Compiler and libraries > Network), paste a 
 - The replay node keeps the real chain id, so contracts that check `block.chainid` (EIP-712 signatures, permits) behave as on chain. Chasm never signs on it.
 - The replay runs with the mined block's context (number, timestamp, base fee, coinbase, gas limit, prevrandao) and the transaction's own fees.
 - It is exact for the first transaction of a block. For a later one, the transactions before it in the same block did not run first, and the status line says so.
+- Contracts that are not in the workspace get their verified source from [Sourcify](https://sourcify.dev) (no API key), cached in `.chasm/sources/<chain>/<address>.json`. The file that declares the contract is listed; code in its imports and unverified contracts show opcodes only. Saved traces reopen with the cached source.
 - Some MEV bot transactions check their position in the block or the builder's balance. Replayed alone they can revert even though they succeeded on chain.
 
 ## Step commands

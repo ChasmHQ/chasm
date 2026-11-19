@@ -14,6 +14,7 @@ macros, and fork a live chain to debug real transactions.
 ![The step debugger with named storage writes](screenshots/native/debugger-variables.png)
 ![An undeployed tab deploys in place](screenshots/native/inline-deploy.png)
 ![The sevm-style layout: opcodes, source, machine state and console as docked panes](screenshots/native/debugger-sevm-layout.png)
+![A mainnet USDC transfer stepped through its verified source](screenshots/native/debugger-sourcify.png)
 ![Saved call history with Repeat, Debug and To macro](screenshots/native/history.png)
 ![Snapshot timeline and local chain cheats](screenshots/native/timeline-cheats.png)
 ![Fork a public chain from a preset; the status bar names it](screenshots/native/fork-network.png)
@@ -60,7 +61,7 @@ macros, and fork a live chain to debug real transactions.
   - Every Send and Simulate is saved per project.
   - *Repeat* refills the request, *Debug* opens the trace, *To macro* adds it as a macro step.
 - **Fork a live chain** at the latest or a chosen block: pick Ethereum, Base, Arbitrum, Optimism, Polygon or Sepolia, or paste any EVM RPC. The status bar names the forked chain.
-  - Paste a real transaction hash to replay and step through it.
+  - Paste a real transaction hash to replay and step through it. Verified contracts show their source, fetched from Sourcify.
   - The fork keeps chain id 31337, so nothing you sign is valid on the real network.
 
 ### Project
