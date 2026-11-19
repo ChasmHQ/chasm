@@ -616,6 +616,8 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
         }
         Command::DebugConsole { command } => ui.global::<super::PanelLogic>().invoke_console_submit(command.as_str().into()),
         Command::DebugCancel {} => debug.invoke_cancel(),
+        Command::CaptureSave {} => debug.invoke_save_capture(),
+        Command::CaptureOpen { name } => debug.invoke_open_capture(name.as_str().into()),
         Command::Panel { pane, action, zone } => {
             let panels = ui.global::<PanelLogic>();
             match action {
@@ -681,6 +683,8 @@ fn debugger_state(ui: &MainWindow) -> Value {
     let data = ui.global::<super::DebugData>();
     json!({
         "launchMode": data.get_launch_mode(), "launchSummary": data.get_launch_summary().as_str(),
+        "captureId": data.get_capture_id().as_str(), "captureStatus": data.get_capture_status().as_str(),
+        "captures": rows(data.get_saved_captures()).into_iter().map(|name| name.to_string()).collect::<Vec<_>>(),
         "phase": data.get_phase().as_str(), "status": data.get_status().as_str(),
         "location": data.get_location().as_str(), "notice": data.get_notice().as_str(),
         "canStart": data.get_can_start(), "canCommand": data.get_can_command(), "canCancel": data.get_can_cancel(),

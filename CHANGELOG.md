@@ -24,6 +24,7 @@ the `ui/` folder and the npm build are gone.
 - Resizable, hideable and compact panes that also float or dock like any other pane, a sevm-style layout preset, and a sevm-style console (`s`, `n`, `si`, `fin`, `c`, `rc`, `b`, `p`, `x`, `sload`, `find`, `args`, `writes`).
 - Solidity locals of the function at the cursor (Variables tab, console `locals`).
 - Gas profile per call frame and per source line (Gas tab, console `gas`).
+- Offline-engine replays are saved as captures in `.chasm/captures/` and reopen offline.
 - Traces are saved under `.chasm/traces/` and reopen without the node.
 
 ### Chain

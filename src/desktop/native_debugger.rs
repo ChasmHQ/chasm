@@ -159,6 +159,14 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     let weak = ui.as_weak();
     let held = state.clone();
     let rt = runtime.clone();
+    ui.global::<DebugLogic>().on_save_capture(move || save_capture(weak.clone(), held.clone(), rt.clone()));
+    let weak = ui.as_weak();
+    let held = state.clone();
+    let rt = runtime.clone();
+    ui.global::<DebugLogic>().on_open_capture(move |name| open_capture(weak.clone(), held.clone(), rt.clone(), name.to_string()));
+    let weak = ui.as_weak();
+    let held = state.clone();
+    let rt = runtime.clone();
     ui.global::<DebugLogic>().on_evaluate(move || {
         if let Some(ui) = weak.upgrade() {
             let expression = ui.global::<DebugData>().get_evaluate_input().to_string();
@@ -250,6 +258,115 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
             state.debug.select_inspection(tab);
         }
         super::paint(&weak, &held);
+    });
+}
+
+/// Exports the paused session's capture through the worker and saves it in
+/// `.chasm/captures/`. Synthetic and Foundry runs have no replay baseline.
+fn save_capture(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle) {
+    let prepared = {
+        let mut state = held.lock().unwrap();
+        if state.transition_pending() || !state.workspace_ready {
+            return;
+        }
+        if matches!(state.debug_launch_mode, 0 | 1) {
+            state.debug_capture_status = "Only a replay of a chain transaction has a capture to save. Synthetic and Foundry runs have no replay baseline.".into();
+            drop(state);
+            super::paint(&weak, &held);
+            return;
+        }
+        let Some(envelope) = state.debug.envelope.clone().filter(|_| state.debug.can_command()) else {
+            state.debug_capture_status = "Pause a debugger session first.".into();
+            drop(state);
+            super::paint(&weak, &held);
+            return;
+        };
+        state.debug_capture_status = "Exporting the capture…".into();
+        (client(&state), envelope, state.workspace.clone(), state.debug_capture_id.clone())
+    };
+    super::paint(&weak, &held);
+    let (client, envelope, workspace, label) = prepared;
+    runtime.spawn(async move {
+        let sent = session::debugger_command(&client.http, &client.csrf, &envelope.id, envelope.generation, envelope.revision, "export_capture", json!({})).await;
+        let mut outcome = sent.map(|_| ());
+        let started = tokio::time::Instant::now();
+        let mut capture = Value::Null;
+        while outcome.is_ok() && started.elapsed() < Duration::from_secs(60) {
+            match session::debugger_snapshot(client.http.clone(), &envelope.id).await {
+                Ok(value) if value["busy"] == false && value["revision"].as_u64() > Some(envelope.revision) => {
+                    if let Some(error) = value["error"].as_object() {
+                        outcome = Err(error.get("message").and_then(Value::as_str).unwrap_or("The worker refused the export.").to_string());
+                    }
+                    capture = value["result"].clone();
+                    break;
+                }
+                Ok(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+                Err(error) => outcome = Err(error),
+            }
+        }
+        let saved = outcome.and_then(|_| super::captures::save(&workspace, &label, &capture));
+        let _ = slint::invoke_from_event_loop(move || {
+            let mut state = held.lock().unwrap();
+            if same_workspace(&state, &client) {
+                state.debug_capture_status = match saved {
+                    Ok(path) => format!("Saved {}", path.display().to_string().trim_start_matches(r"\\?\")),
+                    Err(error) if error.contains("baseline") => "This session has no replay baseline to export. Only a replay of a chain transaction can be saved as a capture.".into(),
+                    Err(error) => format!("Capture not saved: {error}"),
+                };
+            }
+            drop(state);
+            super::paint(&weak, &held);
+        });
+    });
+}
+
+/// Uploads a saved capture as a gateway resource and selects it for an
+/// Offline capture launch; Start then replays it without the network.
+fn open_capture(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, name: String) {
+    let prepared = {
+        let mut state = held.lock().unwrap();
+        if state.transition_pending() || !state.workspace_ready || !state.debug.can_start() {
+            return;
+        }
+        match super::captures::read(&state.workspace, &name) {
+            Ok(content) => {
+                state.debug_capture_status = format!("Uploading {name}…");
+                Some((client(&state), content))
+            }
+            Err(error) => {
+                state.debug_capture_status = error;
+                None
+            }
+        }
+    };
+    super::paint(&weak, &held);
+    let Some((mut client, content)) = prepared else { return };
+    runtime.spawn(async move {
+        if client.csrf.is_empty() {
+            if let Ok(csrf) = session::establish_debugger(&client.http).await {
+                client.csrf = csrf;
+            }
+        }
+        let uploaded = session::debugger_upload_capture(&client.http, &client.csrf, &name, content).await;
+        let _ = slint::invoke_from_event_loop(move || {
+            let mut state = held.lock().unwrap();
+            if same_workspace(&state, &client) {
+                if !client.csrf.is_empty() {
+                    state.csrf = client.csrf.clone();
+                }
+                match uploaded {
+                    Ok(id) => {
+                        state.debug_launch_mode = 2;
+                        state.debug_capture_id = id;
+                        state.debug_launch_summary = launch_summary(&state);
+                        state.debug_capture_status = format!("{name} is ready. Press Start offline capture.");
+                    }
+                    Err(error) => state.debug_capture_status = format!("Could not open {name}: {error}"),
+                }
+            }
+            drop(state);
+            super::paint(&weak, &held);
+        });
     });
 }
 
@@ -1067,6 +1184,7 @@ fn allowed_command(debug: &DebugSession, method: &str, params: &Value) -> Result
             }
         }
         "snapshot" | "refresh" => {}
+        "export_capture" => {}
         _ => return Err("Unsupported native debugger method.".into()),
     }
     Ok(())
@@ -1192,6 +1310,10 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     project_launch!(state.debug_capture_id.as_str(), get_capture_id, set_capture_id);
     project_launch!(state.debug_build_info_id.as_str(), get_build_info_id, set_build_info_id);
     project_launch!(state.debug_launch_summary.as_str(), get_launch_summary, set_launch_summary);
+    project_launch!(state.debug_capture_status.as_str(), get_capture_status, set_capture_status);
+    if state.debug_launch_mode == 2 {
+        data.set_saved_captures(super::model(super::captures::list(&state.workspace).into_iter().map(Into::into).collect()));
+    }
     if data.get_foundry_trusted() != state.debug_foundry_trusted {
         data.set_foundry_trusted(state.debug_foundry_trusted);
     }

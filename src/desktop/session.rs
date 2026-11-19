@@ -228,6 +228,8 @@ pub struct DesktopState {
     pub debug_foundry_match: String,
     pub debug_foundry_trusted: bool,
     pub debug_capture_id: String,
+    /// Result of the last Save capture / Open capture.
+    pub debug_capture_status: String,
     pub debug_build_info_id: String,
     pub debug_launch_summary: String,
     pub debug_prepared_launch: Option<super::debug_transport::PreparedLaunch>,
@@ -385,6 +387,7 @@ impl DesktopState {
             debug_foundry_match: String::new(),
             debug_foundry_trusted: false,
             debug_capture_id: String::new(),
+            debug_capture_status: String::new(),
             debug_build_info_id: String::new(),
             debug_launch_summary: "Synthetic fixture selected. No project or chain transaction is implied.".into(),
             debug_prepared_launch: None,
@@ -2511,6 +2514,12 @@ pub async fn debugger_command(
         }),
     )
     .await
+}
+
+/// Registers a capture with the gateway; returns its resource id.
+pub async fn debugger_upload_capture(client: &reqwest::Client, csrf: &str, name: &str, content: Value) -> Result<String, String> {
+    let value = debugger_post(client, csrf, "/api/debugger/resources", json!({"kind": "capture", "name": name, "content": content})).await?;
+    value["id"].as_str().map(str::to_string).ok_or_else(|| "The gateway did not return a resource id.".into())
 }
 
 pub async fn debugger_snapshot(client: reqwest::Client, session_id: &str) -> Result<Value, String> {

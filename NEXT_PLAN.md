@@ -1,6 +1,6 @@
 # Next plan, after goals G1–G7 (2026-11-18)
 
-Status: P1, P2, P3 and P4.2 done; left: P2.3 offline captures. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
+Status: P1, P2, P3 and P4.2 done; every planned step is done. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
 finished. This plan covers what is left, ordered by what blocks real use
 first.
 
@@ -110,7 +110,7 @@ its own commit, and is recorded in this file's progress table.
 | P1.4 merge review | done: README, CHANGELOG, docs/archive; no debug prints or stubs; `.agents/` stays untracked. Merge waits for the user |
 | P2.1 deploy in request editor | done: constructor form inside the unbound tab, Deploy beside Send; `inline_deploy` live flow measures 5 clicks |
 | P2.2 docking debugger panes | done: `PaneKind::TraceOps/TraceState/TraceConsole`, Float/Dock in the view, `Preset::Tracing` (sevm), `ui.panel` dock/float/hide/preset; `panes` live flow |
-| P2.3 offline captures | not started |
+| P2.3 offline captures | done: `captures.rs`, Save capture / Open in the offline engine, `debugger.capture.save/open`; `captures` live flow saves, uploads and replays one |
 | P2.4 templates | done: `templates.rs`, sidebar form, `contracts.template`; `template` live flow installs OpenZeppelin when missing and deploys the token |
 | P2.5 fork usability | done: public RPC presets, forked chain named in the status bar and `toolchain.state`; address lookups already read the remote chain through Anvil |
 | P3 robustness | done: `tests/live/stress.py` (20-field form, 50-item array, 37k- and 200k-step traces, 30 deployments, 47 tabs, 500 History rows, 128-step macro, zoom 100/125/150 %); fixed a quadratic macro result render (3 s freeze), per-repaint line hit counting (seek 1.1 s to 50 ms) and debugger/macro clipping at 150 %. Fork replay now runs on its own node with the real chain id |

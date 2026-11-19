@@ -162,6 +162,12 @@ pub enum Command {
     DebugConsole { command: String },
     #[serde(rename = "debugger.cancel")]
     DebugCancel {},
+    /// Save the paused replay's capture in `.chasm/captures/`.
+    #[serde(rename = "debugger.capture.save")]
+    CaptureSave {},
+    /// Upload a saved capture (file name) and select it for an offline launch.
+    #[serde(rename = "debugger.capture.open")]
+    CaptureOpen { name: String },
     #[serde(rename = "ui.panel")]
     Panel { pane: String, action: PanelAction, zone: Option<u8> },
 }
@@ -261,7 +267,7 @@ impl Command {
             | Self::Snapshot {} | Self::Revert {} | Self::Mine {} | Self::Warp {}
             | Self::RunMacro { .. } | Self::TimelineRevert { .. } | Self::Cheat { .. } | Self::Toolchain { .. } | Self::Template { .. } => "act",
             Self::DebugLaunch { .. } | Self::DebugStart {} | Self::DebugNavigate { .. }
-            | Self::DebugEvaluate { .. } | Self::DebugConsole { .. } | Self::DebugCancel {}
+            | Self::DebugEvaluate { .. } | Self::DebugConsole { .. } | Self::DebugCancel {} | Self::CaptureSave {} | Self::CaptureOpen { .. }
             | Self::TraceLoad { .. } | Self::TraceStep { .. } | Self::TraceSeek { .. } | Self::TraceBreakpoint { .. } | Self::TraceOpenSaved { .. } | Self::TraceConsole { .. } => "debug",
             _ => "ui",
         }
@@ -342,6 +348,8 @@ impl Command {
             Self::DebugEvaluate { .. } => "debugger.evaluate",
             Self::DebugConsole { .. } => "debugger.console",
             Self::DebugCancel {} => "debugger.cancel",
+            Self::CaptureSave {} => "debugger.capture.save",
+            Self::CaptureOpen { .. } => "debugger.capture.open",
             Self::Panel { .. } => "ui.panel",
         }
     }
@@ -1076,6 +1084,8 @@ pub fn command_schema() -> Value {
         ("debugger.evaluate", object(json!({"expression":{"type":"string","maxLength":4096}}), vec!["expression"])),
         ("debugger.console", object(json!({"command":{"type":"string","maxLength":4096}}), vec!["command"])),
         ("debugger.cancel", object(json!({}), vec![])),
+        ("debugger.capture.save", object(json!({}), vec![])),
+        ("debugger.capture.open", object(json!({"name":{"type":"string","maxLength":128,"description":"File name from debugger.state.captures"}}), vec!["name"])),
         (
             "ui.panel",
             object(

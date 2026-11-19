@@ -475,4 +475,58 @@ def locals():
     check("Variables tab lists locals", any(name.startswith("result") for name in names), str(names)[:300])
     command("debugger.trace.view", tab=0)
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, fork]
+
+def captures():
+    """Offline engine: save the replay's capture in the project and reopen it."""
+    def debugger():
+        return query("debugger.state")["debugger"]
+
+    def paused(seconds=180):
+        for _ in range(seconds * 2):
+            state = debugger()
+            if state["canCommand"] or state["phase"] in ("Failed", "Finished"):
+                return state
+            time.sleep(0.5)
+        raise SystemExit(f"debugger did not pause: {debugger()['status']}")
+
+    command("ui.navigate", activity="debugger")
+    # The built-in example is a synthetic capture: an offline replay with a baseline.
+    command("debugger.launch", mode=2, capture_id="synthetic")
+    command("debugger.start")
+    state = paused()
+    check("offline replay paused", state["canCommand"], state["status"] + " " + state["notice"])
+    command("debugger.capture.save")
+    for _ in range(120):
+        status = debugger()["captureStatus"]
+        if status and not status.startswith("Exporting"):
+            break
+        time.sleep(0.5)
+    check("capture saved in the project", status.startswith("Saved") and ".chasm" in status, status)
+    saved = debugger()["captures"]
+    check("capture listed", len(saved) >= 1, str(saved))
+    command("debugger.cancel")
+    for _ in range(60):
+        if debugger()["canStart"]:
+            break
+        time.sleep(0.5)
+    command("debugger.capture.open", name=saved[0])
+    for _ in range(60):
+        status = debugger()["captureStatus"]
+        if status.endswith("Start offline capture.") or status.startswith("Could not"):
+            break
+        time.sleep(0.5)
+    check("saved capture uploaded", status.endswith("Start offline capture."), status)
+    command("debugger.start")
+    state = paused()
+    check("saved capture replays offline", state["canCommand"], state["status"] + " " + state["notice"])
+    command("debugger.cancel")
+    for _ in range(60):
+        if debugger()["canStart"]:
+            break
+        time.sleep(0.5)
+    command("debugger.launch", mode=0)
+    command("debugger.capture.save")
+    time.sleep(0.5)
+    check("synthetic runs say why there is nothing to save", "no replay baseline" in debugger()["captureStatus"], debugger()["captureStatus"])
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, fork]

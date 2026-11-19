@@ -14,6 +14,9 @@ export global DebugData {
     in-out property <string> capture-id;
     in-out property <string> build-info-id;
     in property <string> launch-summary;
+    // Saved captures in .chasm/captures (file names) and the save/open status.
+    in property <[string]> saved-captures;
+    in property <string> capture-status;
     in property <string> phase;
     in property <string> status;
     in property <string> location;
@@ -77,6 +80,8 @@ export global DebugLogic {
     callback run-to();
     callback evaluate();
     callback read-window();
+    callback save-capture();
+    callback open-capture(string);
 }
 
 component DebugField inherits HorizontalLayout {
@@ -407,7 +412,18 @@ export component DebugSessionPane inherits Rectangle {
                     spacing: 0.375rem;
                     DebugLaunchField { label: "Capture resource ID"; enabled: DebugData.can-start; text <=> DebugData.capture-id; }
                     DebugLaunchField { label: "Build-info ID (optional)"; enabled: DebugData.can-start; text <=> DebugData.build-info-id; }
+                    if DebugData.saved-captures.length > 0: SelectableText { text: "Saved in this project (.chasm/captures)"; color: Theme.muted; font-size: 0.75rem; }
+                    for name in DebugData.saved-captures: HorizontalLayout {
+                        spacing: 0.375rem;
+                        Text { text: name; color: Theme.text; font-family: "Cascadia Mono"; font-size: 0.75rem; overflow: elide; horizontal-stretch: 1; min-width: 0px; vertical-alignment: center; }
+                        IconButton { icon: @image-url("icons/play.svg"); label: "Open"; enabled: DebugData.can-start; clicked => { DebugLogic.open-capture(name); } }
+                    }
                 }
+                HorizontalLayout {
+                    alignment: start; spacing: 0.375rem;
+                    IconButton { icon: @image-url("icons/storage.svg"); label: "Save capture"; enabled: DebugData.can-command; clicked => { DebugLogic.save-capture(); } }
+                }
+                if DebugData.capture-status != "": SelectableText { text: DebugData.capture-status; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
                 if DebugData.launch-summary != "": SelectableText { text: DebugData.launch-summary; color: Theme.accent; font-size: 0.75rem; wrap: word-wrap; }
                 Rectangle { height: 1px; background: Theme.line; }
                 SelectableText { text: "Session identity and validation"; font-weight: 600; }
