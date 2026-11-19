@@ -273,7 +273,10 @@ impl Compiler {
 
 pub fn debug_build_info(root: PathBuf, remappings: Vec<String>) -> Result<serde_json::Value> {
     // The offline engine must see the same bytecode as the workspace build.
-    let settings = crate::config::ChasmConfig::load(&root).map(|config| config.compiler).unwrap_or_default();
+    let (remappings, settings) = match crate::build_config::resolve(&root) {
+        Ok(effective) => (effective.remappings, effective.compiler),
+        Err(_) => (remappings, Default::default()),
+    };
     let mut compiler = Compiler::new(root, remappings)?;
     compiler.apply_settings(&settings)?;
     compiler.debug_build_info()

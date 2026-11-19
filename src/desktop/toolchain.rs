@@ -127,7 +127,11 @@ pub fn used_version(workspace: &Path, id: &str) -> Option<String> {
 /// Imports in the workspace sources that no remapping or file resolves, by
 /// prefix, so the UI can offer the matching library.
 pub fn missing_imports(workspace: &Path) -> Vec<&'static Library> {
-    let remappings = ChasmConfig::load(workspace).map(|config| config.remappings).unwrap_or_default();
+    // With a Foundry build the project's own remappings decide what resolves.
+    let remappings = match crate::build_config::resolve(workspace) {
+        Ok(effective) => effective.remappings,
+        Err(_) => ChasmConfig::load(workspace).map(|config| config.remappings).unwrap_or_default(),
+    };
     let mut missing = Vec::new();
     for entry in walkdir::WalkDir::new(workspace)
         .max_depth(6)
@@ -165,6 +169,15 @@ pub fn locked_solc(workspace: &Path) -> String {
 /// The `[compiler]` settings, or defaults when the config cannot be read.
 pub fn compiler_settings(workspace: &Path) -> crate::config::CompilerConfig {
     ChasmConfig::load(workspace).map(|config| config.compiler).unwrap_or_default()
+}
+
+/// The build source and what it resolves to, for the UI: (chosen, active, origin, settings, error).
+pub fn build_source(workspace: &Path) -> (String, String, String, String, String) {
+    let chosen = crate::build_config::chosen(workspace).label().to_string();
+    match crate::build_config::resolve(workspace) {
+        Ok(effective) => (chosen, effective.active.label().into(), effective.origin, effective.compiler.describe(), String::new()),
+        Err(error) => (chosen, String::new(), String::new(), String::new(), error),
+    }
 }
 
 /// Saves optimizer, runs, via-IR, EVM version and metadata hash. Empty text

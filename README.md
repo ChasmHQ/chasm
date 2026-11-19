@@ -25,6 +25,11 @@ macros, and fork a live chain to debug real transactions.
 
 ### Contracts
 - **Templates.** *New contract from template* writes an ERC20, ERC721 or Ownable contract on OpenZeppelin v5 and recompiles; if OpenZeppelin is not mapped, the notice links to the library manager.
+- **Foundry projects build as Foundry does.**
+  - With `foundry.toml`, Chasm uses the project's own remappings and compiler settings, as `forge config` resolves them.
+  - *Build source* in Compiler and libraries switches between Auto, Foundry and Chasm.
+  - The two sources are never mixed.
+  - Two copies of one library name both paths and the remapping that brought each.
 - **Zero-config compile.** Chasm finds the Solidity files in the folder and compiles them with `foundry-compilers`; no `foundry.toml` is needed.
 - **Deploy in place.** An undeployed contract tab shows its constructor form above the functions, with Deploy beside Send. Deploy, call and debug take five clicks.
 - **Request editor.**

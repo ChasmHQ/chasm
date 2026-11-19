@@ -28,6 +28,11 @@ export global ToolchainData {
     in-out property <string> tag-input;
     // [compiler] settings: the summary and the form.
     in property <string> settings-summary;
+    // [build] source: auto, foundry or chasm; what Auto resolved to; errors.
+    in property <string> build-chosen;
+    in property <string> build-active;
+    in property <string> build-origin;
+    in property <string> build-error;
     in-out property <int> optimizer: 0;
     in-out property <string> optimizer-runs;
     in-out property <bool> via-ir;
@@ -44,6 +49,7 @@ export global ToolchainLogic {
     callback preset(int);
     // optimizer: 0 default, 1 on, 2 off.
     callback save-settings(int, string, bool, string, string);
+    callback build-source(string);
 }
 
 component Small inherits ActionControl {
@@ -94,6 +100,19 @@ export component ToolchainWorkspace inherits ScrollView {
         }
         if ToolchainData.fork-saved != ToolchainData.fork-running: SelectableText { text: "Saved setting: \{ToolchainData.fork-saved}. It applies when the project reopens."; color: Theme.warn; font-size: 0.75rem; wrap: word-wrap; }
         SelectableText { text: "Public RPCs rate-limit heavy use; a provider URL with a key is kept in .chasm/chasm.toml, which git ignores. Reopening resets the local chain."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        Rectangle { height: 1px; background: Theme.line; }
+
+        SelectableText { text: "Build source"; font-weight: 600; font-size: 0.9375rem; }
+        SelectableText { text: "Where remappings and compiler settings come from. Auto uses foundry.toml when the folder has one. The two are never mixed."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 0.25rem; alignment: start;
+            DockTab { label: "Auto"; selected: ToolchainData.build-chosen == "auto"; clicked => { ToolchainLogic.build-source("auto"); } }
+            DockTab { label: "Foundry (foundry.toml)"; selected: ToolchainData.build-chosen == "foundry"; clicked => { ToolchainLogic.build-source("foundry"); } }
+            DockTab { label: "Chasm (.chasm/chasm.toml)"; selected: ToolchainData.build-chosen == "chasm"; clicked => { ToolchainLogic.build-source("chasm"); } }
+        }
+        if ToolchainData.build-error == "": SelectableText { text: "Active: \{ToolchainData.build-origin}."; color: Theme.accent; font-size: 0.8125rem; wrap: word-wrap; }
+        if ToolchainData.build-error != "": SelectableText { text: ToolchainData.build-error; color: Theme.danger; font-size: 0.8125rem; wrap: word-wrap; }
+        if ToolchainData.build-active == "foundry": SelectableText { text: "Foundry is active: the settings, solc lock and Use buttons below edit .chasm/chasm.toml and apply only with Build source Chasm."; color: Theme.warn; font-size: 0.75rem; wrap: word-wrap; }
         Rectangle { height: 1px; background: Theme.line; }
 
         SelectableText { text: "Solidity compiler"; font-weight: 600; font-size: 0.9375rem; }

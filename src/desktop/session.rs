@@ -2224,14 +2224,12 @@ pub fn contracts_from_compile(raw: &str) -> Result<Vec<ContractItem>, String> {
     Ok(report.contracts)
 }
 
-pub fn compile_workspace_report(
-    root: &Path,
-    remappings: Vec<String>,
-) -> Result<CompileReport, String> {
+pub fn compile_workspace_report(root: &Path) -> Result<CompileReport, String> {
     // Only workspace sources are compiled, so the storage layout stays small
     // and the Storage tab can name every variable without a second compile.
-    // A version locked in .chasm/chasm.toml wins over the per-file pragma choice.
-    let settings = crate::config::ChasmConfig::load(root).map(|config| config.compiler).unwrap_or_default();
+    // Remappings and solc settings come from foundry.toml or chasm.toml, never both.
+    let effective = crate::build_config::resolve(root)?;
+    let (remappings, settings) = (effective.remappings.clone(), effective.compiler.clone());
     let compile = || -> Result<String, String> {
         Compiler::new_for_storage_layout_with_solc(root.to_path_buf(), remappings.clone(), &settings.solc)
             .and_then(|mut compiler| compiler.apply_settings(&settings).map(|_| compiler))
@@ -2241,9 +2239,13 @@ pub fn compile_workspace_report(
     // solc can be interrupted (0xc000013a) while the desktop detaches from its
     // launching console at startup; that is not a source error, so retry once.
     let raw = match compile() {
-        Err(error) if error.contains("0xc000013a") => compile()?,
-        other => other?,
+        Err(error) if error.contains("0xc000013a") => compile(),
+        other => other,
     };
+    let raw = raw.map_err(|error| match crate::build_config::duplicate_library_hint(&error, &remappings) {
+        Some(hint) => format!("{hint}\n\n{error}"),
+        None => error,
+    })?;
     contracts_from_compile_report(&raw)
 }
 

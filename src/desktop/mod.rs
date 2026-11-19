@@ -294,7 +294,9 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
         Ok(config) => (Some(config), None),
         Err(error) => (None, Some(format!("{error}. Remappings from it are not applied; fix the file and recompile."))),
     };
-    if let (Some(config), Some(oz)) = (config.as_mut(), crate::config::scan_openzeppelin(&root)) {
+    // Only for Chasm-managed builds: a Foundry project brings its own remappings.
+    let foundry_build = crate::build_config::resolve(&root).is_ok_and(|effective| effective.active == crate::build_config::Source::Foundry);
+    if let (Some(config), Some(oz), false) = (config.as_mut(), crate::config::scan_openzeppelin(&root), foundry_build) {
         let remapping = crate::config::generate_remapping(&oz, &root);
         if !config.remappings.iter().any(|item| item.contains("@openzeppelin")) {
             config.add_remapping(remapping);
@@ -380,7 +382,8 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
         .map(|handle| owned_node::OwnedNode::from_child_handle(handle, services.anvil.port()));
     (state.sidebar_width, state.sidebar_collapsed) = load_sidebar(&root);
     state.refresh_keystores();
-    match compile_workspace_report(&root, remappings) {
+    let _ = &remappings;
+    match compile_workspace_report(&root) {
         Ok(report) => {
             let warning = report.warning();
             state.compile_label = format!("{} contracts", report.contracts.len());
@@ -799,11 +802,8 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
         let weak = weak.clone();
         runtime_compile.spawn(async move {
             let root = held.lock().unwrap().workspace.clone();
-            let (remappings, config_warning) = match ChasmConfig::load(&root) {
-                Ok(config) => (config.remappings, None),
-                Err(error) => (Vec::new(), Some(format!("{error}. Remappings from it are not applied."))),
-            };
-            let compiled = tokio::task::spawn_blocking(move || compile_workspace_report(&root, remappings)).await;
+            let config_warning: Option<String> = None;
+            let compiled = tokio::task::spawn_blocking(move || compile_workspace_report(&root)).await;
             let _ = slint::invoke_from_event_loop(move || {
                 let mut state = held.lock().unwrap();
                 let compiled = compiled.unwrap_or_else(|_| Err("Compile task failed.".into()));
@@ -1587,6 +1587,12 @@ fn search_chain(weak: Weak<MainWindow>, state: Arc<Mutex<DesktopState>>, runtime
 /// Host part of an RPC URL, without credentials or path (keys often sit in the path).
 pub(super) fn fork_host(url: &str) -> String {
     reqwest::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_else(|| "remote".into())
+}
+
+/// Test hook: compile a folder as the desktop would; returns the contract count.
+#[cfg(test)]
+pub fn compile_workspace_probe(root: &std::path::Path) -> Result<usize, String> {
+    compile_workspace_report(root).map(|report| report.contracts.len())
 }
 
 fn paint(weak: &Weak<MainWindow>, state: &Arc<Mutex<DesktopState>>) {

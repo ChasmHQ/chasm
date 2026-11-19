@@ -88,7 +88,7 @@ pub enum Command {
     #[serde(rename = "chain.cheat")]
     Cheat { action: String, address: Option<String>, value: String, slot: Option<String> },
     #[serde(rename = "toolchain.action")]
-    Toolchain { action: String, library: Option<String>, version: Option<String>, fork_url: Option<String>, fork_block: Option<String>, optimizer: Option<bool>, optimizer_runs: Option<u32>, via_ir: Option<bool>, evm_version: Option<String>, bytecode_hash: Option<String> },
+    Toolchain { action: String, library: Option<String>, version: Option<String>, fork_url: Option<String>, fork_block: Option<String>, optimizer: Option<bool>, optimizer_runs: Option<u32>, via_ir: Option<bool>, evm_version: Option<String>, bytecode_hash: Option<String>, source: Option<String> },
     #[serde(rename = "ui.palette")]
     /// Without `index` the palette stays open showing the matches.
     Palette { query: String, index: Option<u32> },
@@ -939,6 +939,7 @@ pub fn query(state: &DesktopState, query: &Query) -> Value {
             "context":context(state),
             "solc":{"locked":super::toolchain::locked_solc(&state.workspace),"installed":super::toolchain::installed_solc()},
             "settings":{"summary":super::toolchain::compiler_settings(&state.workspace).describe(),"config":super::toolchain::compiler_settings(&state.workspace)},
+            "build":build_source_json(state),
             "pragmas":super::toolchain::pragmas(&state.workspace).into_iter().map(|(file, pragma)| json!({"file":file,"pragma":pragma})).collect::<Vec<_>>(),
             "libraries":super::toolchain::LIBRARIES.iter().map(|library| json!({"id":library.id,"prefix":library.prefix,"installed":super::toolchain::installed(library.id),"used":super::toolchain::used_version(&state.workspace, library.id)})).collect::<Vec<_>>(),
             "missing":super::toolchain::missing_imports(&state.workspace).iter().map(|library| library.id).collect::<Vec<_>>(),
@@ -986,6 +987,11 @@ fn function_id_for(state: &DesktopState, doc: &super::session::Document, index: 
     let contract = state.contracts.iter().find(|item| item.name == name)?;
     let item = contract.functions.get(index)?;
     Some(entity_id(state, "function", &format!("{name}:{}({})", item.name, item.params.iter().map(|(_, kind)| kind.as_str()).collect::<Vec<_>>().join(","))))
+}
+
+fn build_source_json(state: &DesktopState) -> Value {
+    let (chosen, active, origin, settings, error) = super::toolchain::build_source(&state.workspace);
+    json!({"chosen":chosen,"active":active,"origin":origin,"settings":settings,"error":error})
 }
 
 fn deploy_form(state: &DesktopState) -> Value {
@@ -1087,7 +1093,7 @@ pub fn command_schema() -> Value {
         ("debugger.trace.breakpoint", object(json!({"line":{"type":"integer","minimum":1}}), vec!["line"])),
         ("chain.timeline.revert", object(json!({"index":{"type":"integer","minimum":0,"description":"Row of app.state timeline, newest first"}}), vec!["index"])),
         ("chain.cheat", object(json!({"action":{"enum":["time","timestamp","mine","deal","nonce","storage","code"]},"address":{"type":"string","maxLength":42},"value":{"type":"string","maxLength":100000,"description":"seconds, timestamp, blocks, ether, nonce, slot value or 0x bytecode"},"slot":{"type":"string","maxLength":80}}), vec!["action","value"])),
-        ("toolchain.action", object(json!({"action":{"enum":["open","lock_solc","install","use","remove","network","settings"],"description":"lock_solc takes version (empty for Auto); install/use/remove take library and optional version tag; network takes fork_url (empty for local) and fork_block, saves them and reopens the project; settings saves optimizer, optimizer_runs, via_ir, evm_version and bytecode_hash (omitted keys reset to solc defaults) and recompiles"},"optimizer":{"type":"boolean"},"optimizer_runs":{"type":"integer","minimum":0,"maximum":4294967295u64},"via_ir":{"type":"boolean"},"evm_version":{"type":"string","maxLength":20},"bytecode_hash":{"enum":["","ipfs","bzzr1","none"]},"fork_url":{"type":"string","maxLength":512},"fork_block":{"type":"string","maxLength":20},"library":{"enum":["openzeppelin-contracts","openzeppelin-contracts-upgradeable","forge-std","solmate","solady"]},"version":{"type":"string","maxLength":40}}), vec!["action"])),
+        ("toolchain.action", object(json!({"source":{"enum":["auto","foundry","chasm"],"description":"For action build_source"},"action":{"enum":["open","lock_solc","install","use","remove","network","settings","build_source"],"description":"lock_solc takes version (empty for Auto); install/use/remove take library and optional version tag; network takes fork_url (empty for local) and fork_block, saves them and reopens the project; settings saves optimizer, optimizer_runs, via_ir, evm_version and bytecode_hash (omitted keys reset to solc defaults) and recompiles"},"optimizer":{"type":"boolean"},"optimizer_runs":{"type":"integer","minimum":0,"maximum":4294967295u64},"via_ir":{"type":"boolean"},"evm_version":{"type":"string","maxLength":20},"bytecode_hash":{"enum":["","ipfs","bzzr1","none"]},"fork_url":{"type":"string","maxLength":512},"fork_block":{"type":"string","maxLength":20},"library":{"enum":["openzeppelin-contracts","openzeppelin-contracts-upgradeable","forge-std","solmate","solady"]},"version":{"type":"string","maxLength":40}}), vec!["action"])),
         ("ui.palette", object(json!({"query":{"type":"string","maxLength":200},"index":{"type":"integer","minimum":0,"description":"Row of the filtered list, as the Ctrl+K palette shows it"}}), vec!["query"])),
         ("ui.notice.action", object(json!({}), vec![])),
         ("contracts.template", object(json!({"kind":{"enum":["erc20","erc721","ownable"]},"name":{"type":"string","maxLength":64,"description":"Solidity contract name; also the file name"}}), vec!["kind", "name"])),

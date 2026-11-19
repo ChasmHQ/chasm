@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 mod compiler;
 mod config;
+mod build_config;
 mod anvil;
 mod debugger;
 mod desktop;

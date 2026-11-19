@@ -67,7 +67,7 @@ contracts/           sample workspace (Bank.sol)
 ## Project files Chasm writes (inside the opened workspace)
 
 All under `.chasm/`, which `.gitignore` excludes:
-- `chasm.toml`: `remappings`, `[compiler] solc / optimizer / optimizer_runs / via_ir / evm_version / bytecode_hash`, `[network] fork_url / fork_block`.
+- `chasm.toml`: `[build] source` (auto, foundry or chasm; see `src/build_config.rs`), `remappings`, `[compiler] solc / optimizer / optimizer_runs / via_ir / evm_version / bytecode_hash`, `[network] fork_url / fork_block`.
 - `history.jsonl`: every Send/Simulate (public addresses only).
 - `traces/*.json`: recorded step-debugger sessions; they reopen without the node.
 - `sources/<chain>/<address>.json`: Sourcify answers (verified or not) for forked contracts.

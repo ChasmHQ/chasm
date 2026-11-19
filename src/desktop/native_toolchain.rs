@@ -22,7 +22,12 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     let workspace = &state.workspace;
     data.set_locked(toolchain::locked_solc(workspace).into());
     let settings = toolchain::compiler_settings(workspace);
-    data.set_settings_summary(settings.describe().into());
+    let (chosen, active, origin, effective, error) = toolchain::build_source(workspace);
+    data.set_build_chosen(chosen.into());
+    data.set_build_active(active.clone().into());
+    data.set_build_origin(origin.into());
+    data.set_build_error(error.into());
+    data.set_settings_summary(if active == "foundry" { format!("{effective} (from foundry.toml)") } else { settings.describe() }.into());
     // Fill the form from the saved settings once per change, never while typing.
     let key = format!("{settings:?}");
     let fresh = SETTINGS_SHOWN.with(|shown| shown.replace(key.clone()) != key);
@@ -95,6 +100,22 @@ fn recompile(weak: &Weak<MainWindow>) {
 pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     let weak = ui.as_weak();
     let held = state.clone();
+    ui.global::<ToolchainLogic>().on_build_source({
+        let weak = weak.clone();
+        let held = held.clone();
+        move |source| {
+            let workspace = held.lock().unwrap().workspace.clone();
+            let Some(source) = crate::build_config::Source::parse(source.as_str()) else { return };
+            match crate::build_config::choose(&workspace, source) {
+                Ok(()) => {
+                    status(&weak, format!("Build source: {}. Recompiling…", source.label()), false);
+                    recompile(&weak);
+                }
+                Err(error) => status(&weak, error, false),
+            }
+            super::paint(&weak, &held);
+        }
+    });
     ui.global::<ToolchainLogic>().on_save_settings({
         let weak = weak.clone();
         let held = held.clone();

@@ -14,6 +14,9 @@ pub struct ChasmConfig {
     /// `[network]`: fork a remote chain into the local node when set.
     #[serde(default, skip_serializing_if = "NetworkConfig::is_local")]
     pub network: NetworkConfig,
+    /// `[build]`: where remappings and solc settings come from.
+    #[serde(default, skip_serializing_if = "BuildConfig::is_default")]
+    pub build: BuildConfig,
     /// Keys Chasm does not manage (for example foundry.toml settings) are
     /// kept verbatim so saving remappings never drops the user's settings.
     #[serde(flatten)]
@@ -41,6 +44,19 @@ pub struct CompilerConfig {
     /// "ipfs" (solc default), "bzzr1" or "none".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bytecode_hash: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
+pub struct BuildConfig {
+    /// auto (default), foundry or chasm. See `build_config`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::build_config::Source>,
+}
+
+impl BuildConfig {
+    pub fn is_default(&self) -> bool {
+        self.source.is_none()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]

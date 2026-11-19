@@ -650,4 +650,58 @@ def external_build():
     command("workspace.compile")
     compiled()
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, revert_explained, external_build, fork]
+
+def build_source():
+    """Auto picks foundry.toml when present; a duplicate library names both copies."""
+    import shutil
+    here = os.path.dirname(os.path.abspath(__file__))
+    fixture = os.path.join(here, "fixtures", "foundry_project")
+    state = query("toolchain.state")["build"]
+    check("Auto uses chasm.toml without foundry.toml", state["chosen"] == "auto" and state["active"] == "chasm", str(state))
+    config_path = os.path.join(WORKSPACE, ".chasm", "chasm.toml")
+    saved_config = open(config_path, encoding="utf-8").read() if os.path.exists(config_path) else None
+    # Earlier flows leave contracts that import Chasm-managed libraries; park
+    # them so the Foundry build sees only this project's sources.
+    parked = os.path.join(os.path.dirname(WORKSPACE), "parked")
+    os.makedirs(parked, exist_ok=True)
+    for name in os.listdir(WORKSPACE):
+        if name.endswith(".sol") and name != "Bank.sol":
+            shutil.move(os.path.join(WORKSPACE, name), os.path.join(parked, name))
+    # Turn the workspace into a Foundry project with its own library.
+    shutil.copy(os.path.join(fixture, "foundry.toml"), os.path.join(WORKSPACE, "foundry.toml"))
+    shutil.copytree(os.path.join(fixture, "lib"), os.path.join(WORKSPACE, "lib"), dirs_exist_ok=True)
+    os.makedirs(os.path.join(WORKSPACE, "src"), exist_ok=True)
+    shutil.copy(os.path.join(fixture, "src", "Pool.sol"), os.path.join(WORKSPACE, "src", "Pool.sol"))
+    try:
+        command("workspace.compile")
+        label = compiled()
+        state = query("toolchain.state")["build"]
+        check("Auto switches to foundry.toml", state["active"] == "foundry" and state["origin"].startswith("foundry.toml"), str(state))
+        check("the Foundry remapping compiles Pool", "Pool" in [a["name"] for a in query("workspace.artifacts")["artifacts"]], label + " " + query("app.state")["notice"][:300])
+        check("Foundry settings apply", state["settings"].startswith("optimizer 200 runs"), state["settings"])
+        # Chasm mode, with a second copy of the library under a more specific
+        # prefix: like Chasm's OpenZeppelin next to OpenZeppelin Upgradeable.
+        copy = os.path.join(os.path.dirname(WORKSPACE), "shared-copy")
+        shutil.copytree(os.path.join(fixture, "lib", "shared"), copy, dirs_exist_ok=True)
+        base = WORKSPACE.replace(os.sep, "/")
+        mapping = f'remappings = ["@shared/base/={copy.replace(os.sep, "/")}/base/", "@shared/upgradeable/={base}/lib/shared/upgradeable/"]'
+        open(config_path, "w", encoding="utf-8").write(mapping + "\n\n[build]\nsource = \"chasm\"\n")
+        command("workspace.compile")
+        compiled()
+        notice = query("app.state")["notice"]
+        print("  | " + " / ".join(notice.splitlines()[:3])[:300])
+        check("a duplicate library names both copies", notice.startswith("Two copies of Init.sol") and "(from @shared/base/=" in notice and "(from a relative import)" in notice, notice[:400])
+    finally:
+        if saved_config is None:
+            os.remove(config_path)
+        else:
+            open(config_path, "w", encoding="utf-8").write(saved_config)
+        os.remove(os.path.join(WORKSPACE, "foundry.toml"))
+        shutil.rmtree(os.path.join(WORKSPACE, "lib"), ignore_errors=True)
+        shutil.rmtree(os.path.join(WORKSPACE, "src"), ignore_errors=True)
+        for name in os.listdir(parked):
+            shutil.move(os.path.join(parked, name), os.path.join(WORKSPACE, name))
+        command("workspace.compile")
+        compiled()
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, revert_explained, external_build, build_source, fork]

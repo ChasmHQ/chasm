@@ -38,6 +38,7 @@ the `ui/` folder and the npm build are gone.
 - A real transaction from the forked chain replays on a separate node at its parent block, with its block context and the real chain id, without reopening the project.
 
 ### Project
+- Build source: Auto uses `foundry.toml` (remappings and solc settings via `forge config --json`) when present, else `.chasm/chasm.toml`; never both. A duplicate-library compile error names both copies and their remappings.
 - Compiler: auto per-file pragma, or one solc version locked in `.chasm/chasm.toml`, plus optimizer, runs, via-IR, EVM version and metadata hash. The debugger matches deployed code across immutables, linked libraries and builds without a metadata hash.
 - Library manager for OpenZeppelin, OpenZeppelin Upgradeable, forge-std, Solmate and Solady, installed once into `~/.chasm/lib`. Missing imports are flagged.
 - New contract from an ERC20, ERC721 or Ownable template (OpenZeppelin v5).
