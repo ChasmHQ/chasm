@@ -410,4 +410,19 @@ def panes():
     time.sleep(0.5)
     check("hidden panes return to the integrated view", (placement("trace_state") or {}).get("mode") == "hidden", str(placement("trace_state")))
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, fork]
+def gas():
+    """Gas profile of the last trace: per call frame and per source line."""
+    command("debugger.trace", hash=None)
+    for _ in range(60):
+        if trace()["loaded"] and not trace()["busy"]:
+            break
+        time.sleep(0.5)
+    command("debugger.trace.view", tab=5)
+    profile = trace()["gas"]
+    check("gas per call frame, named from the ABI", profile["calls"] and "." in profile["calls"][0]["name"] and "0x" not in profile["calls"][0]["name"], str(profile["calls"])[:300])
+    check("gas per source line", any(".sol:" in row["name"] for row in profile["lines"]), str(profile["lines"])[:300])
+    command("debugger.trace.console", line="gas lines")
+    check("console gas table", "total execution gas" in trace()["console"], trace()["console"][-300:])
+    command("debugger.trace.view", tab=0)
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, fork]

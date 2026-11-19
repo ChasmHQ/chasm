@@ -792,6 +792,24 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
             .collect(),
     ));
     data.set_variables(super::model(variables(session, &labels)));
+    // The profile walks every step, so it is built only while its tab shows.
+    if data.get_state_tab() == 5 {
+        let rows = |rows: Vec<super::gas_profile::Row>, limit: usize| {
+            let total: u64 = rows.iter().map(|row| row.gas).sum::<u64>().max(1);
+            super::model(
+                rows.into_iter()
+                    .take(limit)
+                    .map(|row| TraceValue {
+                        label: super::address_book::annotate(&row.label, &labels).into(),
+                        value: format!("{} gas  {:.1}%  {} steps", row.gas, row.gas as f64 * 100.0 / total as f64, row.steps).into(),
+                        changed: false,
+                    })
+                    .collect(),
+            )
+        };
+        data.set_gas_calls(rows(super::gas_profile::by_call(session), 30));
+        data.set_gas_lines(rows(super::gas_profile::by_line(session), 50));
+    }
     data.set_frames(super::model(
         session
             .frames()

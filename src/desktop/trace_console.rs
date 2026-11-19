@@ -19,7 +19,8 @@ x <offset> [n]   n bytes of memory at offset (default 32)
 sload <slot>     storage value of a slot touched so far
 where            current location
 args             decoded arguments of the call
-writes           storage writes so far, by slot";
+writes           storage writes so far, by slot
+gas [lines]      gas per call frame, or per source line";
 
 /// Run one command line and return what to print.
 pub fn run(session: &mut Session, line: &str) -> String {
@@ -54,6 +55,10 @@ pub fn run(session: &mut Session, line: &str) -> String {
             let done: Vec<String> = session.writes.iter().filter(|write| write.step <= session.cursor).map(|write| format!("step {}  slot {:#x}  {:#x} -> {:#x}", write.step + 1, write.slot, write.before, write.after)).collect();
             if done.is_empty() { "No storage written up to this step. The Variables tab names each slot.".into() } else { done.join("
 ") }
+        }
+        "gas" => {
+            let rows = if args.first().is_some_and(|arg| arg.starts_with('l')) { super::gas_profile::by_line(session) } else { super::gas_profile::by_call(session) };
+            super::gas_profile::table(&rows, 20)
         }
         "b" | "break" => match args.first().and_then(|text| text.parse::<usize>().ok()).filter(|line| *line > 0) {
             Some(line) if session.breakpoints.contains(&line) => format!("Breakpoint already on line {line}."),
@@ -214,5 +219,7 @@ mod tests {
         assert_eq!(run(&mut session, "info b"), "No breakpoints.");
         assert!(run(&mut session, "bogus").starts_with("Unknown command"));
         assert!(run(&mut session, "help").contains("rfin"));
+        assert!(run(&mut session, "gas").contains("total execution gas"));
+        assert!(run(&mut session, "gas lines").contains("no source"));
     }
 }

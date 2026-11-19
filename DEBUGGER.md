@@ -128,6 +128,7 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 - **Storage:** slots touched so far in this frame's contract.
 - **Calls:** the external call stack at the cursor.
 - **Variables:** the decoded arguments of the call, then every storage write by variable name with its old and new value, for example `balanceOf[0xf39F… (Anvil #0, signer)]  0 → 2000000000000000000 (2 ether)`. Writes after the cursor are marked *later*; the write at the cursor is highlighted. Names come from the compiler's storage layout: mapping keys and dynamic array indexes are recovered from the hashes computed in the same transaction, packed variables are split, and slots the layout cannot explain show as `slot 0x…`.
+- **Gas:** where the execution gas went, per external call (`Contract.function`, named from the ABI or the selector) and per source line, most expensive first. Each step counts its own cost; a call's forwarded gas is counted in the callee. Intrinsic gas and refunds are not included. The console's `gas` and `gas lines` print the same tables.
 - Known addresses are labelled everywhere (Anvil accounts, the signer, workspace deployments).
 - **This step:** the opcode, gas left and cost, depth and code address. At the
   last step it also shows the return or revert data.

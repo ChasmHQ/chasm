@@ -39,6 +39,9 @@ export global TraceData {
     in property <[TraceValue]> frames;
     // Call arguments and named storage writes.
     in property <[TraceValue]> variables;
+    // Gas per call frame and per source line, filled while the Gas tab shows.
+    in property <[TraceValue]> gas-calls;
+    in property <[TraceValue]> gas-lines;
     in property <[TraceValue]> step-info;
     in property <[TraceTarget]> targets;
     // Recordings saved under .chasm/traces; `query` is the file name.
@@ -267,15 +270,20 @@ export component TraceStatePane inherits Rectangle {
                 DockTab { label: "Storage"; selected: TraceData.state-tab == 2; clicked => { TraceData.state-tab = 2; } }
                 DockTab { label: "Calls"; selected: TraceData.state-tab == 3; clicked => { TraceData.state-tab = 3; } }
                 DockTab { label: "Variables"; selected: TraceData.state-tab == 4; clicked => { TraceData.state-tab = 4; } }
+                DockTab { label: "Gas"; selected: TraceData.state-tab == 5; clicked => { TraceData.state-tab = 5; } }
             }
             if TraceData.state-tab == 0: StateList { items: TraceData.stack; empty: "Stack is empty."; vertical-stretch: 1; }
             if TraceData.state-tab == 1: StateList { items: TraceData.memory; empty: "No memory used yet."; vertical-stretch: 1; }
             if TraceData.state-tab == 2: StateList { items: TraceData.storage; empty: "No storage touched yet in this frame."; vertical-stretch: 1; }
             if TraceData.state-tab == 3: StateList { items: TraceData.frames; empty: "No call frames."; vertical-stretch: 1; }
+            if TraceData.state-tab == 5: StateList { stacked: true; items: TraceData.gas-calls; empty: "No steps recorded."; vertical-stretch: 1; }
+            if TraceData.state-tab == 5: SideHeader { title: "Most expensive lines"; }
+            if TraceData.state-tab == 5: StateList { stacked: true; items: TraceData.gas-lines; empty: "No step maps to workspace or verified source."; vertical-stretch: 1; }
             if TraceData.state-tab == 4: StateList { stacked: true; items: TraceData.variables; empty: "No arguments decoded and no storage written. Variables need the contract's ABI and storage layout from this workspace."; vertical-stretch: 1; }
-            SideHeader { title: "This step"; }
+            // The Gas tab needs the height; the step is still in the summary row.
+            if TraceData.state-tab != 5: SideHeader { title: "This step"; }
             // Shrinks before the tab's list when the window is short.
-            StateList { items: TraceData.step-info; empty: ""; min-height: 0px; preferred-height: TraceData.compact ? 7rem : 8.5rem; max-height: TraceData.compact ? 7rem : 8.5rem; vertical-stretch: 0.4; }
+            if TraceData.state-tab != 5: StateList { items: TraceData.step-info; empty: ""; min-height: 0px; preferred-height: TraceData.compact ? 7rem : 8.5rem; max-height: TraceData.compact ? 7rem : 8.5rem; vertical-stretch: 0.4; }
         }
     }
 }

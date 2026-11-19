@@ -15,6 +15,7 @@ macros, and fork a live chain to debug real transactions.
 ![An undeployed tab deploys in place](screenshots/native/inline-deploy.png)
 ![The sevm-style layout: opcodes, source, machine state and console as docked panes](screenshots/native/debugger-sevm-layout.png)
 ![A mainnet USDC transfer stepped through its verified source](screenshots/native/debugger-sourcify.png)
+![Gas per call and per line for a mainnet USDC transfer](screenshots/native/debugger-gas.png)
 ![Saved call history with Repeat, Debug and To macro](screenshots/native/history.png)
 ![Snapshot timeline and local chain cheats](screenshots/native/timeline-cheats.png)
 ![Fork a public chain from a preset; the status bar names it](screenshots/native/fork-network.png)
@@ -39,7 +40,8 @@ macros, and fork a live chain to debug real transactions.
 ### Debugger
 - **Step debugger** for any transaction or call on the project node:
   - step into, over and out, and single instructions, each with a reverse step;
-  - breakpoints and opcode search.
+  - breakpoints and opcode search;
+  - a gas profile per call and per source line.
 - **Variables.**
   - The call's decoded arguments.
   - Every storage write by variable name, with its old and new value. Mapping keys and array indexes are recovered from the trace.

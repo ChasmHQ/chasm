@@ -1,6 +1,6 @@
 # Next plan, after goals G1–G7 (2026-11-18)
 
-Status: P1, P2, P3 and P4.2 done; left: P2.3 offline captures, P4.1 locals, P4.3 gas profile. FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
+Status: P1, P2, P3 and P4.2 done; left: P2.3 offline captures, P4.1 locals (both need the sevm worker). FIX_PLAN.md (round 2 and goals G1–G7, now in docs/archive/) is
 finished. This plan covers what is left, ordered by what blocks real use
 first.
 
@@ -116,4 +116,4 @@ its own commit, and is recorded in this file's progress table.
 | P3 robustness | done: `tests/live/stress.py` (20-field form, 50-item array, 37k- and 200k-step traces, 30 deployments, 47 tabs, 500 History rows, 128-step macro, zoom 100/125/150 %); fixed a quadratic macro result render (3 s freeze), per-repaint line hit counting (seek 1.1 s to 50 ms) and debugger/macro clipping at 150 %. Fork replay now runs on its own node with the real chain id |
 | P4.1 locals | not started |
 | P4.2 Sourcify source | done: `sourcify.rs` (v2 API, cache in `.chasm/sources/`), programs added for unmapped traced addresses on a fork; fork live flow checks it |
-| P4.3 gas profile | not started |
+| P4.3 gas profile | done: `gas_profile.rs` (own cost per step, per call and per line), Gas tab, console `gas`, `debugger.state.trace.gas`; `gas` live flow |

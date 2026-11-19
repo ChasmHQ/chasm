@@ -536,7 +536,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             if let Some(value) = state { data.set_show_state(*value); }
             if let Some(value) = console { data.set_show_console(*value); }
             if let Some(value) = compact { data.set_compact(*value); }
-            if let Some(value) = tab { data.set_state_tab(i32::from((*value).min(4))); }
+            if let Some(value) = tab { data.set_state_tab(i32::from((*value).min(5))); }
             if let Some(value) = opcodes_width { data.set_opcodes_width(value.clamp(220.0, 700.0)); }
             if let Some(value) = state_width { data.set_state_width(value.clamp(200.0, 900.0)); }
             if let Some(value) = console_height { data.set_console_height(value.clamp(70.0, 600.0)); }
@@ -706,6 +706,7 @@ fn trace_state(ui: &MainWindow) -> Value {
                 "stack": rows(trace.get_stack()).into_iter().take(8).map(|item| item.value.to_string()).collect::<Vec<_>>(),
                 "storage": rows(trace.get_storage()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
                 "frames": rows(trace.get_frames()).into_iter().map(|item| item.value.to_string()).collect::<Vec<_>>(),
+                "gas": {"calls": rows(trace.get_gas_calls()).into_iter().map(|item| json!({"name":item.label.as_str(),"value":item.value.as_str()})).collect::<Vec<_>>(), "lines": rows(trace.get_gas_lines()).into_iter().take(10).map(|item| json!({"name":item.label.as_str(),"value":item.value.as_str()})).collect::<Vec<_>>()},
                 "variables": rows(trace.get_variables()).into_iter().map(|item| json!({"name":item.label.as_str(),"value":item.value.as_str()})).collect::<Vec<_>>(),
                 "panes": {"opcodes": trace.get_show_opcodes(), "state": trace.get_show_state(), "console": trace.get_show_console(), "compact": trace.get_compact(), "opcodesWidth": trace.get_opcodes_width(), "stateWidth": trace.get_state_width(), "consoleHeight": trace.get_console_height()},
                 "savedFolder": trace.get_saved_folder().as_str(),
