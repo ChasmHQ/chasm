@@ -27,6 +27,20 @@ pub struct CompilerConfig {
     /// when none fits.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub solc: String,
+    /// solc settings, as in foundry.toml. Deployed code only matches its
+    /// source when these match how it was built.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimizer: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimizer_runs: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_ir: Option<bool>,
+    /// For example "cancun"; empty uses the solc default.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub evm_version: String,
+    /// "ipfs" (solc default), "bzzr1" or "none".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bytecode_hash: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
@@ -46,8 +60,45 @@ impl NetworkConfig {
 }
 
 impl CompilerConfig {
+    /// Nothing set: Auto solc with solc's default settings.
     pub fn is_auto(&self) -> bool {
-        self.solc.is_empty()
+        self == &Self::default()
+    }
+
+    /// Check values before they reach solc, so a typo names the key.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.evm_version.is_empty() && self.evm_version.parse::<foundry_compilers::artifacts::EvmVersion>().is_err() {
+            return Err(format!("[compiler] evm_version {:?} is not an EVM version such as cancun or shanghai.", self.evm_version));
+        }
+        if !self.bytecode_hash.is_empty() && !matches!(self.bytecode_hash.as_str(), "ipfs" | "bzzr1" | "none") {
+            return Err(format!("[compiler] bytecode_hash {:?} must be ipfs, bzzr1 or none.", self.bytecode_hash));
+        }
+        if self.optimizer_runs.is_some_and(|runs| runs > u32::MAX as usize) {
+            return Err("[compiler] optimizer_runs is too large.".into());
+        }
+        Ok(())
+    }
+
+    /// One line for the UI, e.g. "optimizer 200 runs, via-IR, cancun, no metadata hash".
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        match (self.optimizer, self.optimizer_runs) {
+            (Some(true), Some(runs)) => parts.push(format!("optimizer {runs} runs")),
+            (Some(true), None) => parts.push("optimizer 200 runs".into()),
+            _ => parts.push("optimizer off".into()),
+        }
+        if self.via_ir == Some(true) {
+            parts.push("via-IR".into());
+        }
+        if !self.evm_version.is_empty() {
+            parts.push(self.evm_version.clone());
+        }
+        if self.bytecode_hash == "none" {
+            parts.push("no metadata hash".into());
+        } else if !self.bytecode_hash.is_empty() {
+            parts.push(format!("{} metadata hash", self.bytecode_hash));
+        }
+        parts.join(", ")
     }
 }
 

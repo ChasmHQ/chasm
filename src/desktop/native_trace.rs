@@ -291,7 +291,7 @@ fn programs(state: &DesktopState) -> Vec<Program> {
             // offsets drift by one byte per line on a CRLF checkout.
             let source = std::fs::read_to_string(&path).ok()?.replace("\r\n", "\n");
             let abi = state.contracts.iter().find(|contract| &contract.name == name).map(|contract| contract.abi.clone());
-            Some(Program { name: name.clone(), runtime: runtime.code.clone(), source_map: runtime.source_map.clone(), source_path: runtime.source_path.clone(), source, source_id: runtime.source_id, layout: state.storage_layouts.get(name).cloned(), abi, ast: runtime.ast.clone() })
+            Some(Program { name: name.clone(), runtime: runtime.code.clone(), source_map: runtime.source_map.clone(), source_path: runtime.source_path.clone(), source, source_id: runtime.source_id, layout: state.storage_layouts.get(name).cloned(), abi, ast: runtime.ast.clone(), variable: runtime.variable.clone() })
         })
         .collect()
 }
@@ -658,7 +658,7 @@ async fn verified_programs(workspace: &std::path::Path, chain: u64, code_at: &Ha
     let (mut found, mut missing) = (0, 0);
     let unknown = code_at
         .iter()
-        .filter(|(_, code)| !code.is_empty() && !programs.iter().any(|program| trace_debug::same_code(&program.runtime, code)))
+        .filter(|(_, code)| !code.is_empty() && !programs.iter().any(|program| trace_debug::program_matches(program, code)))
         .take(super::sourcify::MAX_LOOKUPS);
     for (address, _) in unknown {
         match super::sourcify::lookup(&client, workspace, chain, address).await {
@@ -1014,7 +1014,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(workspace.path().join("A.sol"), "line one\r\nline two\r\n").unwrap();
         let mut state = DesktopState::new(workspace.path().to_path_buf(), 1.0);
-        state.runtimes.insert("A".into(), super::super::session::RuntimeInfo { code: vec![0x00], source_map: "9:8:0".into(), source_path: "A.sol".into(), source_id: Some(0), ast: None });
+        state.runtimes.insert("A".into(), super::super::session::RuntimeInfo { code: vec![0x00], source_map: "9:8:0".into(), source_path: "A.sol".into(), source_id: Some(0), ast: None, variable: Vec::new() });
         let programs = programs(&state);
         assert_eq!(programs.len(), 1);
         // Offset 9 is the start of line two in the LF text solc compiled.

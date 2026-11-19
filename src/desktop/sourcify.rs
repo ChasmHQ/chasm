@@ -41,6 +41,7 @@ pub async fn lookup(client: &reqwest::Client, workspace: &Path, chain: u64, addr
                 "fullyQualifiedName": body["compilation"]["fullyQualifiedName"],
                 "compilerVersion": body["compilation"]["compilerVersion"],
                 "runtime": body["runtimeBytecode"]["recompiledBytecode"],
+                "immutableReferences": body["runtimeBytecode"]["immutableReferences"],
                 "sourceMap": body["runtimeBytecode"]["sourceMap"],
                 "sources": body["sources"],
                 "sourceIds": body["sourceIds"],
@@ -79,6 +80,8 @@ pub fn program(value: &Value) -> Option<Program> {
         layout: value["storageLayout"].as_object().map(|_| value["storageLayout"].clone()),
         abi,
         ast: None,
+        // Sourcify's recompiled code is compared with immutables zeroed.
+        variable: value["immutableReferences"].as_object().map(|_| super::trace_debug::variable_ranges(&serde_json::json!({"immutableReferences": value["immutableReferences"]}))).unwrap_or_default(),
     })
 }
 

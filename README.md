@@ -70,7 +70,7 @@ macros, and fork a live chain to debug real transactions.
   - The fork keeps chain id 31337, so nothing you sign is valid on the real network.
 
 ### Project
-- **Compiler.** Auto (per file pragma), or one solc version locked in `.chasm/chasm.toml`, downloaded when missing.
+- **Compiler.** Auto (per file pragma), or one solc version locked in `.chasm/chasm.toml`, downloaded when missing. Optimizer, runs, via-IR, EVM version and metadata hash are set there too. When they match how deployed code was built, the debugger shows its source. Immutables, linked libraries and code without a metadata hash still match.
 - **Libraries.**
   - OpenZeppelin, OpenZeppelin Upgradeable, forge-std, Solmate and Solady.
   - Each is installed once into `~/.chasm/lib` and mapped per project.

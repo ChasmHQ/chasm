@@ -46,6 +46,9 @@ pub struct Program {
     pub abi: Option<ethers::abi::Abi>,
     /// solc AST of `source`, for local variables.
     pub ast: Option<Value>,
+    /// Byte ranges (start, length) of `runtime` that differ per deployment:
+    /// immutables and linked library addresses. Ignored when matching code.
+    pub variable: Vec<(usize, usize)>,
 }
 
 /// One SSTORE, named when the layout can explain the slot.
@@ -339,7 +342,7 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
         session.ranges.push(parse_source_map(&program.source_map, program.source_id));
     }
     for (address, code) in code_at {
-        if let Some(index) = programs.iter().position(|program| same_code(&program.runtime, code)) {
+        if let Some(index) = programs.iter().position(|program| program_matches(program, code)) {
             session.mapped.insert(address.to_ascii_lowercase(), index);
         }
     }
@@ -567,17 +570,65 @@ pub fn jump_types(map: &str) -> Vec<char> {
         .collect()
 }
 
+/// Length of `code` without solc's CBOR metadata tail. The tail ends in its
+/// own 2-byte length and starts with a CBOR map (0xa1-0xa5); code built
+/// with `bytecode_hash = none` and no metadata has no tail to strip.
+fn without_metadata(code: &[u8]) -> usize {
+    if code.len() < 2 {
+        return code.len();
+    }
+    let meta = u16::from_be_bytes([code[code.len() - 2], code[code.len() - 1]]) as usize + 2;
+    if meta >= code.len() || meta < 3 {
+        return code.len();
+    }
+    let start = code.len() - meta;
+    if (0xa1..=0xa5).contains(&code[start]) { start } else { code.len() }
+}
+
 /// Runtime code equality ignoring the CBOR metadata tail solc appends.
+#[cfg(test)]
 pub fn same_code(compiled: &[u8], deployed: &[u8]) -> bool {
-    let strip = |code: &[u8]| -> usize {
-        if code.len() < 2 {
-            return code.len();
+    same_code_except(compiled, deployed, &[])
+}
+
+/// Like `same_code`, ignoring the bytes in `variable` (immutables, links).
+pub fn same_code_except(compiled: &[u8], deployed: &[u8], variable: &[(usize, usize)]) -> bool {
+    let (a, b) = (without_metadata(compiled), without_metadata(deployed));
+    if a != b || a == 0 {
+        return false;
+    }
+    let mut skip = vec![false; a];
+    for &(start, length) in variable {
+        for flag in skip.iter_mut().skip(start).take(length) {
+            *flag = true;
         }
-        let meta = u16::from_be_bytes([code[code.len() - 2], code[code.len() - 1]]) as usize + 2;
-        if meta < code.len() { code.len() - meta } else { code.len() }
+    }
+    compiled[..a].iter().zip(&deployed[..b]).zip(&skip).all(|((x, y), skip)| *skip || x == y)
+}
+
+/// Whether deployed `code` is this program's runtime.
+pub fn program_matches(program: &Program, code: &[u8]) -> bool {
+    same_code_except(&program.runtime, code, &program.variable)
+}
+
+/// Variable byte ranges from a deployedBytecode artifact: immutableReferences
+/// (`{id: [{start, length}]}`) and linkReferences (`{file: {lib: [{start, length}]}}`).
+pub fn variable_ranges(deployed: &Value) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut push = |item: &Value| {
+        if let (Some(start), Some(length)) = (item["start"].as_u64(), item["length"].as_u64()) {
+            ranges.push((start as usize, length as usize));
+        }
     };
-    let (a, b) = (strip(compiled), strip(deployed));
-    a == b && compiled[..a] == deployed[..b] && a > 0
+    for list in deployed["immutableReferences"].as_object().into_iter().flat_map(|map| map.values()) {
+        list.as_array().into_iter().flatten().for_each(&mut push);
+    }
+    for libraries in deployed["linkReferences"].as_object().into_iter().flat_map(|map| map.values()) {
+        for list in libraries.as_object().into_iter().flat_map(|map| map.values()) {
+            list.as_array().into_iter().flatten().for_each(&mut push);
+        }
+    }
+    ranges
 }
 
 fn normalize_word(text: &str) -> String {
@@ -675,6 +726,7 @@ mod tests {
             layout: None,
             abi: None,
             ast: None,
+            variable: Vec::new(),
         };
         let logs: Vec<Value> = (0..5).map(|pc| json!({"pc":pc,"op":if pc == 3 {"SSTORE"} else {"JUMPDEST"},"gas":100-pc,"gasCost":1,"depth":1,"stack":["0x01"],"memory":[]})).collect();
         let trace = json!({"failed":false,"gas":21000,"returnValue":"","structLogs":logs});
@@ -713,7 +765,7 @@ mod tests {
         // pc: 0 line 3, 1 JUMP into g, 2-3 line 7 (g body), 4 JUMP out, 5 line 4.
         let map = format!("{call}:4:0:-;{call}:4:0:i;{body}:5:0:-;{body}:5:0:-;{body}:5:0:o;{after}:5:0:-");
         let runtime = vec![0x5b, 0x56, 0x5b, 0x5b, 0x56, 0x5b, 0xa2, 0x00, 0x01];
-        let program = Program { name: "A".into(), runtime: runtime.clone(), source_map: map, source_path: "A.sol".into(), source, source_id: Some(0), layout: None, abi: None, ast: None };
+        let program = Program { name: "A".into(), runtime: runtime.clone(), source_map: map, source_path: "A.sol".into(), source, source_id: Some(0), layout: None, abi: None, ast: None, variable: Vec::new() };
         let ops = ["JUMPDEST", "JUMP", "JUMPDEST", "JUMPDEST", "JUMP", "JUMPDEST"];
         let logs: Vec<Value> = ops.iter().enumerate().map(|(pc, op)| json!({"pc":pc,"op":op,"gas":100,"gasCost":1,"depth":1,"stack":[],"memory":[]})).collect();
         let trace = json!({"failed":false,"gas":21000,"returnValue":"","structLogs":logs});
@@ -750,8 +802,29 @@ mod tests {
     }
 
     #[test]
+    fn code_match_tolerates_immutables_links_and_missing_metadata() {
+        // bytecode_hash = none: no CBOR tail, so the last bytes are code and must match.
+        assert!(same_code(&[1, 2, 3, 4], &[1, 2, 3, 4]));
+        assert!(!same_code(&[1, 2, 3, 4], &[1, 2, 3, 5]));
+        // An immutable at bytes 1..3 differs per deployment.
+        assert!(same_code_except(&[0x60, 0, 0, 0x55], &[0x60, 0xab, 0xcd, 0x55], &[(1, 2)]));
+        assert!(!same_code_except(&[0x60, 0, 0, 0x55], &[0x61, 0xab, 0xcd, 0x55], &[(1, 2)]));
+        let deployed = json!({
+            "immutableReferences": {"7": [{"start": 1, "length": 2}]},
+            "linkReferences": {"src/L.sol": {"L": [{"start": 10, "length": 20}]}},
+        });
+        assert_eq!(variable_ranges(&deployed), vec![(1, 2), (10, 20)]);
+        // A real CBOR tail (a2 ... 0033) is still stripped.
+        let mut compiled = vec![0x60, 0x01];
+        compiled.extend([0xa2, 0x64, 0x69, 0x70, 0x00, 0x04]);
+        let mut deployed = vec![0x60, 0x01];
+        deployed.extend([0xa2, 0x64, 0x69, 0x71, 0x00, 0x04]);
+        assert!(same_code(&compiled, &deployed));
+    }
+
+    #[test]
     fn code_match_ignores_metadata_but_not_body() {
-        assert!(same_code(&[1, 2, 3, 0xaa, 0x00, 0x01], &[1, 2, 3, 0xbb, 0x00, 0x01]));
-        assert!(!same_code(&[1, 2, 4, 0xaa, 0x00, 0x01], &[1, 2, 3, 0xbb, 0x00, 0x01]));
+        assert!(same_code(&[1, 2, 3, 0xa1, 0xaa, 0x00, 0x02], &[1, 2, 3, 0xa1, 0xbb, 0x00, 0x02]));
+        assert!(!same_code(&[1, 2, 4, 0xa1, 0xaa, 0x00, 0x02], &[1, 2, 3, 0xa1, 0xbb, 0x00, 0x02]));
     }
 }

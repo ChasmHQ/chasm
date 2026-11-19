@@ -605,4 +605,49 @@ def revert_explained():
     print("  | " + t["status"][:200])
     check("tracing the creation names the size limit", t["loaded"] and "EIP-170" in t["status"], t["status"])
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, revert_explained, fork]
+
+def external_build():
+    """Code built outside Chasm (via-IR, optimizer, no metadata hash, an immutable) steps by source."""
+    import shutil
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    work = os.path.join(WORKSPACE, "..", "external")
+    shutil.rmtree(work, ignore_errors=True)
+    shutil.copytree(os.path.join(here, "fixtures", "external"), work, ignore=shutil.ignore_patterns("out", "cache"))
+    os.makedirs(os.path.join(work, "src"), exist_ok=True)
+    shutil.move(os.path.join(work, "Vault.sol"), os.path.join(work, "src", "Vault.sol"))
+    subprocess.run(["forge", "build", "--offline", "--root", work], capture_output=True, check=True)
+    artifact = json.load(open(os.path.join(work, "out", "Vault.sol", "Vault.json"), encoding="utf-8"))
+    creation = artifact["bytecode"]["object"] + "000000000000000000000000" + OWNER[2:].lower()
+    # Deploy outside Chasm with the public Anvil key, derived at runtime.
+    sent = subprocess.run(["cast", "send", "--rpc-url", "http://127.0.0.1:8545", "--private-key", anvil_key_0(), "--json", "--create", creation],
+                          capture_output=True, text=True, check=True)
+    address = json.loads(sent.stdout)["contractAddress"]
+    check("vault deployed outside Chasm", bool(address), sent.stdout[:200])
+
+    # The same source in the workspace, compiled with the same settings.
+    shutil.copy(os.path.join(work, "src", "Vault.sol"), os.path.join(WORKSPACE, "Vault.sol"))
+    command("toolchain.action", action="settings", optimizer=True, optimizer_runs=200, via_ir=True, bytecode_hash="none")
+    label = compiled()
+    summary = query("toolchain.state")["settings"]["summary"]
+    check("settings saved", summary == "optimizer 200 runs, via-IR, no metadata hash", summary)
+    check("workspace compiles with them", "contract" in label, label)
+
+    data = rpc_call_data("deposit(uint256)", [7])
+    command("debugger.trace", call={"to": address, "data": data})
+    for _ in range(60):
+        t = trace()
+        if t["loaded"] and not t["busy"]:
+            break
+        time.sleep(0.5)
+    check("external code maps to Vault.sol", t["file"] == "Vault.sol", f"{t['file']!r} {t['location']}")
+    command("debugger.trace.console", line="args")
+    check("arguments decode", "amount = 7" in trace()["console"], trace()["console"][-200:])
+    # Back to defaults so later flows compile as before.
+    command("toolchain.action", action="settings")
+    compiled()
+    os.remove(os.path.join(WORKSPACE, "Vault.sol"))
+    command("workspace.compile")
+    compiled()
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, revert_explained, external_build, fork]

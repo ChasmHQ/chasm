@@ -162,6 +162,33 @@ pub fn locked_solc(workspace: &Path) -> String {
     ChasmConfig::load(workspace).map(|config| config.compiler.solc).unwrap_or_default()
 }
 
+/// The `[compiler]` settings, or defaults when the config cannot be read.
+pub fn compiler_settings(workspace: &Path) -> crate::config::CompilerConfig {
+    ChasmConfig::load(workspace).map(|config| config.compiler).unwrap_or_default()
+}
+
+/// Saves optimizer, runs, via-IR, EVM version and metadata hash. Empty text
+/// clears a key back to solc's default.
+pub fn save_compiler_settings(workspace: &Path, optimizer: Option<bool>, runs: &str, via_ir: Option<bool>, evm_version: &str, bytecode_hash: &str) -> Result<String, String> {
+    let runs = runs.trim();
+    let runs = if runs.is_empty() { None } else { Some(runs.parse::<usize>().map_err(|_| "Optimizer runs must be a whole number.".to_string())?) };
+    let mut next = compiler_settings(workspace);
+    next.optimizer = optimizer;
+    next.optimizer_runs = runs;
+    next.via_ir = via_ir;
+    next.evm_version = evm_version.trim().to_ascii_lowercase();
+    next.bytecode_hash = bytecode_hash.trim().to_ascii_lowercase();
+    next.validate()?;
+    let summary = next.describe();
+    ChasmConfig::update(workspace, |config| {
+        let solc = std::mem::take(&mut config.compiler.solc);
+        config.compiler = next.clone();
+        config.compiler.solc = solc;
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(summary)
+}
+
 pub fn lock_solc(workspace: &Path, version: &str) -> Result<(), String> {
     let version = version.trim();
     if !version.is_empty() {

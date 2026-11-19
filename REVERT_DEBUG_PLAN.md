@@ -1,6 +1,6 @@
 # Plan: find the cause of any revert in one flow (2026-11-19)
 
-Status: R1 done; next R2.
+Status: R1, R2.1 and R2.4 done; next R2.2.
 
 This plan comes from a review of a real fork session. The step debugger
 works: a contract Chasm compiled itself stepped by source line, through
@@ -173,7 +173,7 @@ Every step ships with unit tests and its live check, gets its own commit on
 | Step | Status |
 |---|---|
 | R1 | done: `revert_cause.rs` (first self-reverting frame, reason from all ABIs, oversized creation), deploy preflight keeps the creation call, size/out-of-gas messages via a redacted `chasmKind`, `debugger.trace {call}`; `revert_explained` live flow |
-| R2 | not started |
+| R2 | R2.1 compiler settings (`[compiler]` + UI + `toolchain.action settings`) and R2.4 tolerant matching (`variable_ranges`, CBOR check) done; `external_build` live flow. R2.2 and R2.3 next |
 | R3 | not started |
 | R4 | not started |
 | R5 | not started |

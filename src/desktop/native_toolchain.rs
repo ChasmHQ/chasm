@@ -8,6 +8,11 @@ use std::sync::{Arc, Mutex};
 
 type State = Arc<Mutex<DesktopState>>;
 
+thread_local! {
+    /// The `[compiler]` settings last copied into the form.
+    static SETTINGS_SHOWN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
 pub fn render(ui: &MainWindow, state: &DesktopState) {
     // Disk scans only while the view is open.
     if state.current_doc_kind() != 8 {
@@ -16,6 +21,18 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     let data = ui.global::<ToolchainData>();
     let workspace = &state.workspace;
     data.set_locked(toolchain::locked_solc(workspace).into());
+    let settings = toolchain::compiler_settings(workspace);
+    data.set_settings_summary(settings.describe().into());
+    // Fill the form from the saved settings once per change, never while typing.
+    let key = format!("{settings:?}");
+    let fresh = SETTINGS_SHOWN.with(|shown| shown.replace(key.clone()) != key);
+    if fresh {
+        data.set_optimizer(match settings.optimizer { Some(true) => 1, Some(false) => 2, None => 0 });
+        data.set_optimizer_runs(settings.optimizer_runs.map(|runs| runs.to_string()).unwrap_or_default().into());
+        data.set_via_ir(settings.via_ir == Some(true));
+        data.set_evm_version(settings.evm_version.clone().into());
+        data.set_bytecode_hash(settings.bytecode_hash.clone().into());
+    }
     data.set_installed_solc(super::model(toolchain::installed_solc().into_iter().map(Into::into).collect()));
     data.set_pragmas(super::model(toolchain::pragmas(workspace).into_iter().map(|(file, pragma)| PragmaRow { file: file.into(), pragma: pragma.into() }).collect()));
     let missing: Vec<&str> = toolchain::missing_imports(workspace).iter().map(|library| library.id).collect();
@@ -78,6 +95,22 @@ fn recompile(weak: &Weak<MainWindow>) {
 pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     let weak = ui.as_weak();
     let held = state.clone();
+    ui.global::<ToolchainLogic>().on_save_settings({
+        let weak = weak.clone();
+        let held = held.clone();
+        move |optimizer, runs, via_ir, evm_version, bytecode_hash| {
+            let workspace = held.lock().unwrap().workspace.clone();
+            let optimizer = match optimizer { 1 => Some(true), 2 => Some(false), _ => None };
+            match toolchain::save_compiler_settings(&workspace, optimizer, runs.as_str(), via_ir.then_some(true), evm_version.as_str(), bytecode_hash.as_str()) {
+                Ok(summary) => {
+                    status(&weak, format!("Compiler settings: {summary}. Recompiling…"), false);
+                    recompile(&weak);
+                }
+                Err(error) => status(&weak, error, false),
+            }
+            super::paint(&weak, &held);
+        }
+    });
     ui.global::<ToolchainLogic>().on_lock_solc(move |version| {
         let workspace = held.lock().unwrap().workspace.clone();
         match toolchain::lock_solc(&workspace, version.as_str()) {

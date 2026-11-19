@@ -26,6 +26,13 @@ export global ToolchainData {
     // Names of the public RPCs; picking one fills the URL.
     in property <[string]> presets;
     in-out property <string> tag-input;
+    // [compiler] settings: the summary and the form.
+    in property <string> settings-summary;
+    in-out property <int> optimizer: 0;
+    in-out property <string> optimizer-runs;
+    in-out property <bool> via-ir;
+    in-out property <string> evm-version;
+    in-out property <string> bytecode-hash;
 }
 
 export global ToolchainLogic {
@@ -35,6 +42,8 @@ export global ToolchainLogic {
     callback remove(string);
     callback save-network(string, string);
     callback preset(int);
+    // optimizer: 0 default, 1 on, 2 off.
+    callback save-settings(int, string, bool, string, string);
 }
 
 component Small inherits ActionControl {
@@ -98,6 +107,18 @@ export component ToolchainWorkspace inherits ScrollView {
             spacing: 0.375rem;
             LineEdit { text <=> ToolchainData.solc-input; placeholder-text: "0.8.24, or empty for Auto"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 1; accepted => { ToolchainLogic.lock-solc(self.text); } }
             IconButton { icon: @image-url("icons/refresh.svg"); label: ToolchainData.solc-input == "" ? "Use Auto" : "Lock and recompile"; primary: true; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.lock-solc(ToolchainData.solc-input); } }
+        }
+        SelectableText { text: "Settings: \{ToolchainData.settings-summary}. Deployed code only shows its source when these match how it was built (see foundry.toml)."; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
+        FlexboxLayout {
+            spacing: 0.375rem;
+            DockTab { label: "Optimizer default"; selected: ToolchainData.optimizer == 0; clicked => { ToolchainData.optimizer = 0; } }
+            DockTab { label: "On"; selected: ToolchainData.optimizer == 1; clicked => { ToolchainData.optimizer = 1; } }
+            DockTab { label: "Off"; selected: ToolchainData.optimizer == 2; clicked => { ToolchainData.optimizer = 2; } }
+            LineEdit { text <=> ToolchainData.optimizer-runs; placeholder-text: "runs (200)"; font-size: 0.8125rem; width: 7rem; }
+            DockTab { label: "via-IR"; selected: ToolchainData.via-ir; clicked => { ToolchainData.via-ir = !ToolchainData.via-ir; } }
+            LineEdit { text <=> ToolchainData.evm-version; placeholder-text: "evm (default)"; font-size: 0.8125rem; width: 8rem; }
+            LineEdit { text <=> ToolchainData.bytecode-hash; placeholder-text: "metadata hash (ipfs)"; font-size: 0.8125rem; width: 10rem; }
+            IconButton { icon: @image-url("icons/refresh.svg"); label: "Save settings and recompile"; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.save-settings(ToolchainData.optimizer, ToolchainData.optimizer-runs, ToolchainData.via-ir, ToolchainData.evm-version, ToolchainData.bytecode-hash); } }
         }
         SideHeader { title: "Installed"; trailing: "click to use"; }
         if ToolchainData.installed-solc.length == 0: SelectableText { text: "No solc installed yet. One is downloaded on the first compile."; color: Theme.faint; font-size: 0.75rem; }

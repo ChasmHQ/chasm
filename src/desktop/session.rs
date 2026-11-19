@@ -2040,6 +2040,8 @@ pub struct RuntimeInfo {
     pub source_id: Option<u32>,
     /// solc AST of `source_path`, for naming local variables in the debugger.
     pub ast: Option<Value>,
+    /// Immutable and link byte ranges of `code`, ignored when matching.
+    pub variable: Vec<(usize, usize)>,
 }
 
 impl CompileReport {
@@ -2086,6 +2088,7 @@ pub fn contracts_from_compile_report(raw: &str) -> Result<CompileReport, String>
                     source_path: item.get("source_path").and_then(Value::as_str).unwrap_or("").to_string(),
                     source_id: item.pointer("/artifact/id").and_then(Value::as_u64).and_then(|id| u32::try_from(id).ok()),
                     ast: item.pointer("/artifact/ast").filter(|ast| ast.is_object()).cloned(),
+                    variable: item.pointer("/artifact/deployedBytecode").map(super::trace_debug::variable_ranges).unwrap_or_default(),
                 });
             }
         }
@@ -2228,9 +2231,10 @@ pub fn compile_workspace_report(
     // Only workspace sources are compiled, so the storage layout stays small
     // and the Storage tab can name every variable without a second compile.
     // A version locked in .chasm/chasm.toml wins over the per-file pragma choice.
-    let solc = crate::config::ChasmConfig::load(root).map(|config| config.compiler.solc).unwrap_or_default();
+    let settings = crate::config::ChasmConfig::load(root).map(|config| config.compiler).unwrap_or_default();
     let compile = || -> Result<String, String> {
-        Compiler::new_for_storage_layout_with_solc(root.to_path_buf(), remappings.clone(), &solc)
+        Compiler::new_for_storage_layout_with_solc(root.to_path_buf(), remappings.clone(), &settings.solc)
+            .and_then(|mut compiler| compiler.apply_settings(&settings).map(|_| compiler))
             .and_then(|compiler| compiler.compile_to_json())
             .map_err(|error| error.to_string())
     };

@@ -28,6 +28,35 @@ impl Compiler {
         Self::new_impl(root, remappings, false)
     }
 
+    /// Applies `[compiler]` settings: optimizer, runs, via-IR, EVM version and
+    /// metadata hash. Unset keys keep solc's defaults.
+    pub fn apply_settings(&mut self, config: &crate::config::CompilerConfig) -> Result<()> {
+        config.validate().map_err(|error| anyhow::anyhow!(error))?;
+        let settings = &mut self.project.settings.solc.settings;
+        if let Some(enabled) = config.optimizer {
+            settings.optimizer.enabled = Some(enabled);
+            if enabled {
+                settings.optimizer.runs = Some(config.optimizer_runs.unwrap_or(200));
+            }
+        } else if let Some(runs) = config.optimizer_runs {
+            settings.optimizer.runs = Some(runs);
+        }
+        if let Some(via_ir) = config.via_ir {
+            settings.via_ir = Some(via_ir);
+        }
+        if !config.evm_version.is_empty() {
+            settings.evm_version = Some(config.evm_version.parse().map_err(|_| anyhow::anyhow!("invalid evm_version"))?);
+        }
+        if !config.bytecode_hash.is_empty() {
+            let hash = config.bytecode_hash.parse().map_err(|error: String| anyhow::anyhow!(error))?;
+            match &mut settings.metadata {
+                Some(metadata) => metadata.bytecode_hash = Some(hash),
+                None => settings.metadata = Some(hash.into()),
+            }
+        }
+        Ok(())
+    }
+
     /// Requests storageLayout from solc, and compiles with an exact solc version ("0.8.24"),
     /// installed into the svm folder when missing. Empty means Auto.
     pub fn new_for_storage_layout_with_solc(root: PathBuf, remappings: Vec<String>, solc: &str) -> Result<Self> {
@@ -243,7 +272,11 @@ impl Compiler {
 }
 
 pub fn debug_build_info(root: PathBuf, remappings: Vec<String>) -> Result<serde_json::Value> {
-    Compiler::new(root, remappings)?.debug_build_info()
+    // The offline engine must see the same bytecode as the workspace build.
+    let settings = crate::config::ChasmConfig::load(&root).map(|config| config.compiler).unwrap_or_default();
+    let mut compiler = Compiler::new(root, remappings)?;
+    compiler.apply_settings(&settings)?;
+    compiler.debug_build_info()
 }
 
 /// Normalize a file path for cross-format comparison:

@@ -494,7 +494,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             data.set_slot(slot.clone().unwrap_or_default().into());
             ui.global::<super::ChainLogic>().invoke_apply_cheat();
         }
-        Command::Toolchain { action, library, version, fork_url, fork_block } => {
+        Command::Toolchain { action, library, version, fork_url, fork_block, optimizer, optimizer_runs, via_ir, evm_version, bytecode_hash } => {
             let logic = ui.global::<super::ToolchainLogic>();
             let library = library.clone().unwrap_or_default();
             let version = version.clone().unwrap_or_default();
@@ -505,6 +505,13 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
                 "use" => logic.invoke_use_version(library.into(), version.into()),
                 "remove" => logic.invoke_remove(library.into()),
                 "network" => logic.invoke_save_network(fork_url.clone().unwrap_or_default().into(), fork_block.clone().unwrap_or_default().into()),
+                "settings" => logic.invoke_save_settings(
+                    match optimizer { Some(true) => 1, Some(false) => 2, None => 0 },
+                    optimizer_runs.map(|runs| runs.to_string()).unwrap_or_default().into(),
+                    via_ir.unwrap_or(false),
+                    evm_version.clone().unwrap_or_default().into(),
+                    bytecode_hash.clone().unwrap_or_default().into(),
+                ),
                 _ => {}
             }
         }
