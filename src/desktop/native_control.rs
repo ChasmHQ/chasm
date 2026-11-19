@@ -466,9 +466,19 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             contract.invoke_read_slot(owner().into());
         }
         Command::Lookup { query } => logic.invoke_explorer_open(query.as_str().into()),
-        Command::TraceLoad { hash } => {
+        Command::TraceLoad { hash, call } => {
             ui.global::<AppData>().set_debugger_mode(0);
-            ui.global::<super::TraceLogic>().invoke_load(hash.clone().unwrap_or_default().into());
+            match call {
+                Some(call) => {
+                    let from = held.lock().unwrap().wallet_address.clone();
+                    match call.request(&from) {
+                        Ok((request, block)) => super::native_trace::load_call(ui.as_weak(), held.clone(), request, block),
+                        // Validated before the command ran; nothing to do.
+                        Err(_) => {}
+                    }
+                }
+                None => ui.global::<super::TraceLogic>().invoke_load(hash.clone().unwrap_or_default().into()),
+            }
         }
         Command::TraceStep { action } => ui.global::<super::TraceLogic>().invoke_navigate(action.as_str().into()),
         Command::TraceSeek { step } => ui.global::<super::TraceLogic>().invoke_seek(*step as i32),

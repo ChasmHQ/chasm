@@ -48,7 +48,9 @@ macros, and fork a live chain to debug real transactions.
   - Every storage write by variable name, with its old and new value. Mapping keys and array indexes are recovered from the trace.
 - **sevm-style console**:
   - `s`, `n`, `si`, `fin`, `c`, `rc`;
-  - `b 28`, `p stack[0]`, `x 0x40`, `sload 0`, `find SSTORE`, `args`, `writes`.
+  - `b 28`, `p stack[0]`, `x 0x40`, `sload 0`, `find SSTORE`, `args`, `writes`, `locals`, `gas`.
+- **Panes float and dock** like any other pane; *Panels > Trace debugger layout (sevm)* lays them out like the sevm TUI.
+- **Offline engine captures** are saved in `.chasm/captures/` and replay without the network.
 - **Saved traces** in `.chasm/traces/`. They reopen without the node.
 - See [DEBUGGER.md](DEBUGGER.md).
 
@@ -89,6 +91,9 @@ No command ever returns a private key, mnemonic or password. See
 
 ### Quick install
 
+The installers download the last published pre-release. It predates the
+native app on the `native-ui` branch; build from source to run it.
+
 macOS (ARM64):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ChasmHQ/chasm/main/install.sh | bash
@@ -104,10 +109,19 @@ Uninstall with `uninstall.sh` / `uninstall.ps1` from the same location.
 ### Build from source
 
 ```bash
-git clone https://github.com/ChasmHQ/chasm
+git clone -b native-ui https://github.com/ChasmHQ/chasm
 cd chasm
-cargo build --release
+cargo build --release -j 6
 ./target/release/chasm ./contracts
+```
+
+On Windows, add the **absolute path** of this checkout's `target\release` folder to PATH once, then open a new terminal. If it is already on PATH, leave PATH unchanged. To update that installation, close the running app and run `cargo build --release -j 6` in the checkout. A plain `cargo build` updates `target\debug`, not the executable on PATH.
+
+Verify in PowerShell before opening a project:
+
+```powershell
+(Get-Command chasm -CommandType Application).Source   # should end in target\release\chasm.exe
+chasm --help                                        # Chasm desktop workbench for Solidity contracts
 ```
 
 There is no Node.js step: the UI is compiled from `ui-slint/`. A debug build
@@ -126,7 +140,8 @@ Converter, Macros and Debugger. Press **Ctrl+K** to find anything, and
 - [CLAUDE.md](CLAUDE.md): architecture, module map and the rules the code must keep.
 - `cargo test`: unit and UI tests.
 - `python tests/live/run.py`: end-to-end flows against a running build ([tests/live](tests/live/README.md)).
-- [NEXT_PLAN.md](NEXT_PLAN.md): what is planned next.
+- [NEXT_PLAN.md](NEXT_PLAN.md): the last plan and its progress (all done); [CHANGELOG.md](CHANGELOG.md): what changed.
+- [DEBUGGER.md](DEBUGGER.md): step debugger commands, keys and panes.
 
 ---
 Built for the Ethereum development and security community.

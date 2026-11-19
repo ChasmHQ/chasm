@@ -222,6 +222,9 @@ pub async fn deploy_with_gas(
     if creation.len() > MAX_BYTES / 2 {
         return Err("Contract creation bytecode is too large.".into());
     }
+    if creation.len() > MAX_INITCODE_BYTES {
+        return Err(format!("{REVERTED_BEFORE_SENDING}: the creation code is {} bytes, over the {MAX_INITCODE_BYTES}-byte limit (EIP-3860). Enable the optimizer or split the contract.\nNothing was broadcast.", creation.len()));
+    }
     let context = ResultContext {
         contract: String::new(),
         address: String::new(),
@@ -414,7 +417,7 @@ async fn submit_transaction_guarded(
                 json!([public_transaction.clone()]),
             )
             .await?;
-            preflight_quantity(&estimate, "eth_estimateGas", &plan.abi)?
+            preflight_quantity_for(&estimate, "eth_estimateGas", &plan.abi, plan.to.is_none().then_some(plan.data.len()))?
         }
     };
     let nonce = preflight_quantity(&nonce, "eth_getTransactionCount", &plan.abi)?;
@@ -924,13 +927,65 @@ fn parse_quantity_text(text: &str) -> Result<U256, String> {
 /// Start of the error for a call that reverted in the gas estimate.
 pub const REVERTED_BEFORE_SENDING: &str = "Reverted before sending";
 
+/// EIP-3860: largest creation code a transaction may carry.
+pub const MAX_INITCODE_BYTES: usize = 49_152;
+/// EIP-170: largest runtime code a contract may have.
+pub const MAX_RUNTIME_BYTES: usize = 24_576;
+
+/// A fixed label for a provider error message; the message itself is dropped.
+fn error_kind(message: &str) -> Option<&'static str> {
+    let message = message.to_ascii_lowercase();
+    if message.contains("initcode size") {
+        Some("initcode_limit")
+    } else if message.contains("createcontractsizelimit") || message.contains("contract size limit") || message.contains("max code size") {
+        Some("code_size_limit")
+    } else if message.contains("out of gas") || message.contains("gas required exceeds") {
+        Some("out_of_gas")
+    } else if message.contains("insufficient funds") || message.contains("lack of funds") {
+        Some("insufficient_funds")
+    } else if message.contains("nonce") {
+        Some("nonce")
+    } else {
+        None
+    }
+}
+
+/// Why an estimate failed without revert data, from the error's kind (set
+/// when the provider message was redacted) and what the transaction is.
+fn bare_revert_cause(error: &Value, creation: Option<usize>) -> String {
+    let kind = error.get("chasmKind").and_then(Value::as_str).or_else(|| error_kind(error.get("message").and_then(Value::as_str).unwrap_or_default()));
+    if kind == Some("initcode_limit") {
+        let size = creation.map(|bytes| format!(" is {bytes} bytes,")).unwrap_or_default();
+        return format!("the creation code{size} over the {MAX_INITCODE_BYTES}-byte limit (EIP-3860). Enable the optimizer or split the contract");
+    }
+    if kind == Some("code_size_limit") {
+        return format!("the deployed runtime code is over the {MAX_RUNTIME_BYTES}-byte limit (EIP-170). Enable the optimizer or split the contract");
+    }
+    if kind == Some("out_of_gas") {
+        return "out of gas: the call used all the gas the node allows. Look for an unbounded loop or a very large copy".into();
+    }
+    if kind == Some("insufficient_funds") {
+        return "the sender cannot pay the value plus gas".into();
+    }
+    if kind == Some("nonce") {
+        return "the sender's nonce does not match the node".into();
+    }
+    "the node returned no revert data (a bare revert, a require without a message, or a failed low-level call)".into()
+}
+
 /// Quantity from a pre-send RPC response. An `error` there means nothing was
 /// signed; a gas estimate error is the call reverting, so name its reason.
 fn preflight_quantity(response: &Value, method: &str, abi: &Abi) -> Result<U256, String> {
+    preflight_quantity_for(response, method, abi, None)
+}
+
+/// `creation` is the creation code size when the transaction deploys.
+fn preflight_quantity_for(response: &Value, method: &str, abi: &Abi, creation: Option<usize>) -> Result<U256, String> {
     if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
         if method == "eth_estimateGas" {
             let reason = super::call_result::revert_reason(error, abi)
-                .unwrap_or_else(|| "the node returned no revert data (a bare revert, a require without a message, or out of gas)".into());
+                .filter(|reason| !reason.starts_with("Error data is too short"))
+                .unwrap_or_else(|| bare_revert_cause(error, creation));
             return Err(format!("{REVERTED_BEFORE_SENDING}: {reason}\nNothing was broadcast. Debug this call steps to the failing line."));
         }
         let code = error.get("code").and_then(Value::as_i64).unwrap_or_default();
@@ -1027,6 +1082,8 @@ fn validate_and_redact_rpc(mut value: Value, method: &str) -> Result<Value, Stri
         {
             return Err("Contract RPC returned an invalid error code or message.".into());
         }
+        // Keep only a fixed classification of the provider text, never the text.
+        let kind = error_kind(error.get("message").and_then(Value::as_str).unwrap_or_default());
         error.insert("message".into(), json!("[provider message redacted]"));
         let safe_data = if method == "eth_sendRawTransaction" {
             None
@@ -1036,6 +1093,9 @@ fn validate_and_redact_rpc(mut value: Value, method: &str) -> Result<Value, Stri
         error.retain(|key, _| key == "code" || key == "message");
         if let Some(data) = safe_data {
             error.insert("data".into(), json!(data));
+        }
+        if let Some(kind) = kind {
+            error.insert("chasmKind".into(), json!(kind));
         }
         object.insert("chasmRedaction".into(), json!({"applied":true,"reason":"provider message and untrusted error fields omitted; only ABI-shaped hex data retained"}));
         object
@@ -1336,6 +1396,21 @@ mod tests {
         assert!(nonce.contains("eth_getTransactionCount failed (code 3)"), "{nonce}");
         let gas = json!({"jsonrpc":"2.0","id":1,"result":"0x5208"});
         assert_eq!(preflight_quantity(&gas, "eth_estimateGas", &Abi::default()).unwrap(), U256::from(21000u64));
+        // Anvil's answers for each limit, as seen on a local node.
+        let cases = [
+            (json!({"code":-32003,"message":"max initcode size exceeded"}), Some(55_225), "55225 bytes, over the 49152-byte limit"),
+            (json!({"code":-32603,"message":"EVM error CreateContractSizeLimit"}), Some(30_000), "24576-byte limit (EIP-170)"),
+            (json!({"code":-32003,"message":"Out of gas: gas required exceeds allowance: 30000000"}), None, "out of gas"),
+            (json!({"code":3,"message":"execution reverted","data":"0x"}), None, "no revert data"),
+        ];
+        for (error, creation, expected) in cases {
+            // Through the same redaction the node's answers go through.
+            let response = validate_and_redact_rpc(json!({"jsonrpc":"2.0","id":1,"error":error}), "eth_estimateGas").unwrap();
+            assert_eq!(response["error"]["message"], "[provider message redacted]");
+            let message = preflight_quantity_for(&response, "eth_estimateGas", &Abi::default(), creation).unwrap_err();
+            assert!(message.starts_with(REVERTED_BEFORE_SENDING) && message.contains(expected), "{message}");
+            assert!(!message.contains("Anvil") && !message.contains("allowance"), "provider text leaked: {message}");
+        }
     }
 
     #[test]

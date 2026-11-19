@@ -33,6 +33,7 @@ mod sourcify;
 mod gas_profile;
 mod trace_locals;
 mod captures;
+mod revert_cause;
 mod native_toolchain;
 mod chain_tools;
 mod native_chain;
@@ -929,6 +930,13 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
             let name = prepared.name;
             let origin = prepared.origin;
             let point = chain_tools::snapshot(&prepared.rpc).await.ok();
+            // The same creation as a call, for Debug this call when the estimate reverts.
+            let creation_call = serde_json::json!({
+                "from": prepared.from,
+                "data": format!("0x{}", ethers::utils::hex::encode(&prepared.creation)),
+                "value": format!("{:#x}", prepared.value.parse::<u128>().unwrap_or(0)),
+                "gas": "0x1c9c380",
+            });
             let result = contract_service::deploy(prepared.rpc, prepared.key, prepared.creation, prepared.value, owned).await;
             let _ = slint::invoke_from_event_loop(move || {
                 let mut state = held_task.lock().unwrap();
@@ -979,6 +987,13 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                     }
                     Err(error) => {
                         state.deploy_output = error.clone();
+                        // A deploy that reverts in its estimate is traced as a creation call.
+                        if error.starts_with(contract_service::REVERTED_BEFORE_SENDING) {
+                            if let Some(doc) = state.documents.iter_mut().find(|doc| Some(&doc.id) == deployment_document.as_ref() && doc.kind == 0) {
+                                doc.contract_view.reverted_call = Some(creation_call.clone());
+                                doc.contract_view.call_status = error.clone();
+                            }
+                        }
                         state.notice = error;
                         state.status_left = format!("Deployment of {name} failed");
                     }
@@ -1228,6 +1243,8 @@ fn rpc_closure(
 
 struct PreparedDeployment {
     name: String,
+    /// Public signer address, for replaying the creation as a call.
+    from: String,
     origin: String,
     rpc: String,
     key: String,
@@ -1247,7 +1264,7 @@ fn prepare_deployment(state: &DesktopState) -> Result<PreparedDeployment, String
     let creation = deployment::prepare_creation(&contract.bytecode, contract.constructor.as_ref(), &draft)?;
     let key = state.wallet_key.clone().filter(|key| !key.trim().is_empty())
         .ok_or("Select a signing account before deploying.")?;
-    Ok(PreparedDeployment { name, origin: state.deployment_origin_document().unwrap_or_default(), rpc: state.rpc.clone(), key, creation, value: draft.value_wei })
+    Ok(PreparedDeployment { name, from: state.wallet_address.clone(), origin: state.deployment_origin_document().unwrap_or_default(), rpc: state.rpc.clone(), key, creation, value: draft.value_wei })
 }
 
 fn deployment_presentation(state: &DesktopState, doc: &session::Document) -> DeploymentView {

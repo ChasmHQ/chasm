@@ -529,4 +529,80 @@ def captures():
     time.sleep(0.5)
     check("synthetic runs say why there is nothing to save", "no replay baseline" in debugger()["captureStatus"], debugger()["captureStatus"])
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, fork]
+
+def rpc_call_data(signature, args):
+    """ABI-encode a call with cast; no keys involved."""
+    import subprocess
+    return subprocess.run(["cast", "calldata", signature, *map(str, args)], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def revert_explained():
+    """A revert two frames down names its frame and custom error; oversized code names the limit."""
+    import shutil
+    here = os.path.dirname(os.path.abspath(__file__))
+    shutil.copy(os.path.join(here, "fixtures", "Keeper.sol"), os.path.join(WORKSPACE, "Keeper.sol"))
+    command("workspace.compile")
+    compiled()
+    artifacts = {a["name"]: a for a in query("workspace.artifacts")["artifacts"]}
+    check("keeper fixture compiled", {"MiniToken", "Keeper", "Oversized"} <= set(artifacts), str(sorted(artifacts)))
+
+    command("contracts.select", id=artifacts["MiniToken"]["id"])
+    command("contracts.deploy")
+    settle()
+    token = query("contracts.view")["address"]
+    check("token deployed", token != "", query("app.state")["notice"])
+    command("contracts.select", id=query("workspace.artifacts")["artifacts"][[a["name"] for a in query("workspace.artifacts")["artifacts"]].index("Keeper")]["id"])
+    command("contracts.constructor.edit", index=0, value=token)
+    command("contracts.deploy")
+    settle()
+    keeper = query("contracts.view")["address"]
+    check("keeper deployed", keeper != "", query("app.state")["notice"])
+
+    # The keeper holds no tokens: payout reverts in MiniToken.transfer.
+    command("contracts.function.select", id=function_id("payout"))
+    command("contracts.request.edit", arguments=json.dumps([OWNER, "5"]))
+    command("contracts.send")
+    settle()
+    view = query("contracts.view")
+    check("send stopped before signing", view["callStatus"].startswith("Reverted before sending") and view["canDebugCall"], view["callStatus"])
+    command("debugger.trace", hash=None)
+    for _ in range(60):
+        t = trace()
+        if t["loaded"] and not t["busy"]:
+            break
+        time.sleep(0.5)
+    status = t["status"]
+    print("  | " + status[:220])
+    check("trace names the token frame", "Reverted in MiniToken.transfer" in status and "call depth 2" in status, status)
+    check("and decodes the custom error", "InsufficientBalance(sender: 0x" in status and "needed: 5" in status, status)
+    check("cursor sits on the failing line", (t["sourceLine"] or {}).get("text", "").strip().startswith("if (balance < amount) revert"), str(t["sourceLine"]))
+
+    # The same failure through the API, as an unsent call.
+    data = rpc_call_data("payout(address,uint256)", [OWNER, 5])
+    command("debugger.trace", call={"to": keeper, "data": data})
+    for _ in range(60):
+        t = trace()
+        if t["loaded"] and not t["busy"]:
+            break
+        time.sleep(0.5)
+    check("an unsent call traces through the API", "InsufficientBalance(" in t["status"], t["status"])
+    bad = command_raw("debugger.trace", call={"data": "nothex"})
+    check("a malformed call is refused", bad.get("error", {}).get("code") == "invalid_params", str(bad)[:200])
+
+    # Oversized runtime: the deploy is stopped with the size rule, and can be traced.
+    command("contracts.select", id=artifacts["Oversized"]["id"])
+    command("contracts.deploy")
+    settle()
+    notice = query("app.state")["notice"]
+    check("oversized deploy names EIP-170", "24576-byte limit (EIP-170)" in notice, notice)
+    check("the creation is kept for Debug this call", query("contracts.view")["canDebugCall"], query("contracts.view")["callStatus"])
+    command("debugger.trace", hash=None)
+    for _ in range(60):
+        t = trace()
+        if not t["busy"] and t["status"] and t["status"] != "Recording the execution…":
+            break
+        time.sleep(0.5)
+    print("  | " + t["status"][:200])
+    check("tracing the creation names the size limit", t["loaded"] and "EIP-170" in t["status"], t["status"])
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, revert_explained, fork]

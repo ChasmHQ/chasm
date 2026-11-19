@@ -261,6 +261,7 @@ pub struct StepView<'a> {
 
 /// Replays one external frame's steps (all at the same depth, in order, up to
 /// and including the cursor) and returns its internal frames at the cursor.
+#[cfg(test)]
 pub fn frames_at(index: &Index, steps: &[StepView]) -> Vec<Frame> {
     let mut frames = Vec::new();
     for at in 0..steps.len().saturating_sub(1) {

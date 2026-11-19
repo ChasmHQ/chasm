@@ -70,7 +70,9 @@ pub enum Command {
     #[serde(rename = "contracts.storage.read")]
     ReadStorage { slot: String },
     #[serde(rename = "debugger.trace")]
-    TraceLoad { hash: Option<String> },
+    /// `call` traces an unsent call (`to` empty for a creation); otherwise
+    /// `hash`, or the active tab's last transaction or call.
+    TraceLoad { hash: Option<String>, call: Option<TraceCall> },
     #[serde(rename = "debugger.trace.step")]
     TraceStep { action: String },
     #[serde(rename = "debugger.trace.seek")]
@@ -170,6 +172,45 @@ pub enum Command {
     CaptureOpen { name: String },
     #[serde(rename = "ui.panel")]
     Panel { pane: String, action: PanelAction, zone: Option<u8> },
+}
+
+/// An unsent call for `debugger.trace`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TraceCall {
+    pub data: String,
+    pub to: Option<String>,
+    pub value: Option<String>,
+    pub from: Option<String>,
+    pub block: Option<String>,
+}
+
+impl TraceCall {
+    /// The `eth_call` object and block, or why the call is invalid.
+    pub fn request(&self, default_from: &str) -> Result<(serde_json::Value, String), String> {
+        let hex = |text: &str| text.strip_prefix("0x").is_some_and(|digits| digits.len() % 2 == 0 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        if !hex(&self.data) {
+            return Err("call.data must be 0x-prefixed hex.".into());
+        }
+        let address = |text: &str| text.parse::<ethers::types::Address>().map(|address| format!("{address:#x}")).map_err(|_| format!("{text} is not an address."));
+        let mut call = json!({"data": self.data, "gas": "0x1c9c380"});
+        if let Some(to) = self.to.as_deref().filter(|to| !to.is_empty()) {
+            call["to"] = json!(address(to)?);
+        }
+        let from = self.from.as_deref().filter(|from| !from.is_empty()).unwrap_or(default_from);
+        if !from.is_empty() {
+            call["from"] = json!(address(from)?);
+        }
+        if let Some(value) = self.value.as_deref().filter(|value| !value.is_empty()) {
+            let wei = ethers::types::U256::from_dec_str(value).map_err(|_| "call.value must be decimal wei.".to_string())?;
+            call["value"] = json!(format!("{wei:#x}"));
+        }
+        let block = self.block.clone().filter(|block| !block.is_empty()).unwrap_or_else(|| "latest".into());
+        if block != "latest" && !block.strip_prefix("0x").is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+            return Err("call.block must be latest or a 0x block number.".into());
+        }
+        Ok((call, block))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -741,6 +782,9 @@ pub fn validate(state: &DesktopState, command: &Command) -> Result<(), AppError>
                 return Err(invalid("Give a non-empty expression or command of at most 4096 bytes."));
             }
         }
+        Command::TraceLoad { call: Some(call), .. } => {
+            call.request(&state.wallet_address).map_err(|error| AppError::new("invalid_params", error))?;
+        }
         Command::Panel { pane, zone, .. } => {
             if pane.len() > 200 || zone.is_some_and(|zone| zone > 3) {
                 return Err(invalid("Zone is 0 left, 1 center, 2 right or 3 bottom."));
@@ -1036,7 +1080,7 @@ pub fn command_schema() -> Value {
         ("contracts.send", object(json!({}), vec![])),
         ("contracts.trace", object(json!({}), vec![])),
         ("contracts.storage.read", object(json!({"slot":{"type":"string","maxLength":80}}), vec!["slot"])),
-        ("debugger.trace", object(json!({"hash":{"type":["string","null"],"maxLength":66,"description":"Transaction hash; empty traces the active tab's last transaction or call"}}), vec![])),
+        ("debugger.trace", object(json!({"hash":{"type":["string","null"],"maxLength":66,"description":"Transaction hash; empty traces the active tab's last transaction or call"},"call":{"type":["object","null"],"description":"Trace an unsent call instead: data, optional to (omit for a contract creation), value (wei, decimal), from and block. Nothing is signed or sent.","properties":{"to":{"type":"string","maxLength":42},"data":{"type":"string","maxLength":131074},"value":{"type":"string","maxLength":78},"from":{"type":"string","maxLength":42},"block":{"type":"string","maxLength":20}},"required":["data"],"additionalProperties":false}}), vec![])),
         ("debugger.trace.step", object(json!({"action":{"enum":["continue","back","step","step-back","next","prev-next","finish","finish-back","op","op-back"],"description":"step: next source line, entering calls and internal functions. next: next line in this frame; calls and internal functions run to completion. finish: run until this frame returns. op: one EVM instruction. continue: next breakpoint. Each -back / back / prev- form is the reverse. See DEBUGGER.md."}}), vec!["action"])),
         ("debugger.trace.seek", object(json!({"step":{"type":"integer","minimum":0}}), vec!["step"])),
         ("debugger.trace.breakpoint", object(json!({"line":{"type":"integer","minimum":1}}), vec!["line"])),
@@ -1234,5 +1278,31 @@ mod tests {
             json!({"actionId":"ui.navigate","params":{"activity":"wallet","password":"x"}})
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod trace_call_tests {
+    use super::TraceCall;
+
+    #[test]
+    fn unsent_calls_are_checked_before_tracing() {
+        let call = TraceCall { data: "0xa9059cbb".into(), to: Some("0x0000000000000000000000000000000000001234".into()), value: Some("1000".into()), from: None, block: None };
+        let (request, block) = call.request("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266").unwrap();
+        assert_eq!(block, "latest");
+        assert_eq!(request["value"], "0x3e8");
+        assert_eq!(request["from"], "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
+        let creation = TraceCall { data: "0x6080".into(), to: None, value: None, from: None, block: Some("0x10".into()) };
+        let (request, block) = creation.request("").unwrap();
+        assert!(request.get("to").is_none() && request.get("from").is_none());
+        assert_eq!(block, "0x10");
+        for bad in [
+            TraceCall { data: "a9059cbb".into(), to: None, value: None, from: None, block: None },
+            TraceCall { data: "0x".into(), to: Some("nope".into()), value: None, from: None, block: None },
+            TraceCall { data: "0x".into(), to: None, value: Some("0x10".into()), from: None, block: None },
+            TraceCall { data: "0x".into(), to: None, value: None, from: None, block: Some("pending".into()) },
+        ] {
+            assert!(bad.request("").is_err(), "{bad:?}");
+        }
     }
 }

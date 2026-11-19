@@ -1,6 +1,6 @@
 # Native control and investigation
 
-Implementation checkpoint: 2026-11-13. This is a staged addition to the native parity roadmap, not complete UI/API parity.
+Last updated: 2026-11-19. Query `app.catalog` for the exact command list and schemas of the build you run.
 
 ## Local access
 
@@ -16,9 +16,11 @@ The panel announces a random loopback port. The production API is `http://127.0.
 | Analysis (`/analyze`: pinned chain reads, eth_call, cases) | Yes | Yes | Yes |
 | UI control: navigate, select, edit drafts, attach, simulate, trace, storage read, macro edit/validate, panels | No | Yes | Yes |
 | Chain and build: deploy, send, compile, dev signer, snapshot, revert, mine, warp, macro run | No | One local approval per action | Yes |
-| Debugger: launch, start, step, evaluate, console, cancel | No | No | Yes |
+| Debugger: launch, start, step, evaluate, console, cancel; record or navigate a step trace; save/open captures | No | No | Yes |
+| Change step-debugger presentation (`debugger.trace.view`) | No | Yes | Yes |
 | `ui.screenshot` (PNG of the main window) | No | No | Yes |
-| Removing a deployment record, opening another project | No | Local approval | Local approval |
+| Remove a deployment record | No | Local approval | Local approval |
+| Open another project by remote path (`workspace.open`) | No | No | No |
 
 Never available at any tier, because no command exists for them:
 - reading or entering private keys, mnemonics or keystore passwords; keystore unlock, create, export or delete (use `wallet.dev_account` for the public Anvil test accounts);
@@ -65,7 +67,7 @@ Example UI command (replace context with the exact returned `app.state.context`)
 
 Implemented semantic commands: navigation, document select/close, artifact/function/deployment selection, converter edits, address/constructor/value drafts and layout. Deployment-record removal requires local approval and does not delete the on-chain contract. IDs are workspace-scoped semantic identities, not row indexes. Legacy duplicate artifact names are rejected, not guessed.
 
-Remote `workspace.open` is explicitly unavailable until directory identity can be bound safely; use the local native picker. Signing/broadcast, compile/project execution, keystore deletion, chain reset and debugger commands remain local-only. The catalog says why. These are not implicitly authorized by UI-control scope.
+Use the local folder picker to switch projects; the API does not accept `workspace.open` paths. For supported deploy/send operations, Chasm signs locally against its owned node. Clients never receive the key or signed payload. Build, chain and debugger commands have the tier requirements listed above; UI-control permission alone does not authorize them.
 
 Command request IDs are unique per client across HTTP and MCP. Same ID plus same payload returns the stored result; a changed payload conflicts. Terminal partial failures are retained too. At capacity, revoke/re-pair or disable access; accepted requests are not silently evicted and rerun. After an ambiguous timeout, check `/requests/<id>` or resend the identical request, never create a new ID blindly.
 
@@ -102,10 +104,23 @@ Analysis history is bounded to 50 successful captures and 16 MiB in this process
 
 Case file I/O is confined to the app-controlled repository, uses bounded reads and atomic writes, and refuses links/reparse points during checks. This is not a defense against a hostile local process racing filesystem path replacement; it does not replace the protected-handle keystore deletion implementation. Secret screening is a best-effort additional guard, not a promise that arbitrary free text cannot contain a secret. Never paste credentials into notes/imports or capture raw RPC credential URLs.
 
-## Native workspace additions (local-only)
+## Native workspace commands
 
-The desktop now has owner-bound contract documents, Simple/Raw JSON/Trace results, Bank-internal Storage, native dock/floating panels and a typed debugger console. These do not imply new production tools. The console and signing remain local-only; `ui.layout` still covers sidebar/zoom, not arbitrary pane placement. Native Trace uses a bounded callTracer request against the captured context, formatted locally with the captured ABI; it is not exposed by the historical analysis reader and is not verified debugger replay. Pending controller confirmations block relevant actions across native hosts. See [CLAUDE.md](CLAUDE.md) for the current layout.
+Commands added for the native app (all in `app.catalog`):
+
+| Area | Commands and queries |
+|---|---|
+| Deploy in place | `contracts.deploy.open`, `contracts.constructor.edit`, `contracts.deploy`; `contracts.deploy_form` reads the unbound tab's constructor form |
+| Templates | `contracts.template {kind: erc20 \| erc721 \| ownable, name}` |
+| Step debugger | `debugger.trace {hash?}`, `debugger.trace.step`, `.seek`, `.breakpoint`, `.console` (`locals`, `gas`, `args`, `writes`, …), `.view {tab: 0-5}` (5 = Gas), `.open_saved`; `debugger.state.trace` has `variables` (locals first) and `gas` |
+| Offline captures | `debugger.capture.save`, `debugger.capture.open {name}`; `debugger.state.captures` |
+| Panes | `ui.panel {pane, action: dock \| float \| hide \| maximize \| reset \| preset, zone?}`; trace panes are `trace_ops`, `trace_state`, `trace_console`; presets `contracts`, `debugging`, `investigation`, `tracing`; `app.state.layout.panes` |
+| History, timeline, cheats | `history.list`, `history.action`, `chain.timeline.revert`, `chain.cheat` |
+| Compiler, libraries, fork | `toolchain.state` (incl. `network.forkChain`, `publicRpcs`), `toolchain.action {open, lock_solc, install, use, remove, network}` |
+| Palette, notices | `ui.palette`, `ui.notice.action` |
+
+Forked transactions replay on a separate Anvil node with the real chain id; nothing is signed there. Pending controller confirmations block relevant actions across native hosts. See [CLAUDE.md](CLAUDE.md) for the code layout.
 
 ## Qualification
 
-The first integrated regression run was 147/150 passing, with three fixture/expectation failures. After fixes, subsequent checkpoints passed 153, 154 and 157 tests. The final post-edit suite passed **158/158**, including real SDK MCP client and HTTP equivalence, loopback authorization, delayed source invalidation before evidence insertion, obsolete native completion rejection, historical RPC/provider validation, case integrity/import and mock-clipboard keyboard/mouse selection. Native block0 read, eth_call simulation, case capture/persistence and access enable/disable were exercised against disposable local fixtures. Native popup visibility, complete zoom/layout coverage and full action parity are not implied by these tests. See the scoped verification record for exact commands and limits.
+Run `cargo test` for authorization, request handling and HTTP/MCP regression tests. The [live test runner](tests/live/README.md) exercises the control API against a debug build in a temporary workspace. Release builds require local pairing; they do not accept the runner's `--control-token-file` flag.

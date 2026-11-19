@@ -13,6 +13,7 @@ type State = Arc<Mutex<DesktopState>>;
 const OPS_WINDOW: usize = 400;
 
 pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
+    let _ = RUNTIME.set(runtime.clone());
     let weak = ui.as_weak();
     let held = state.clone();
     let rt = runtime.clone();
@@ -136,8 +137,11 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                 Ok((saved.session(known)?, path))
             });
             match result {
-                Ok((session, path)) => {
+                Ok((mut session, path)) => {
                     state.trace_status = format!("Opened {}", shown_path(&path));
+                    if let Some(cause) = open_at_cause(&state, &mut session) {
+                        state.trace_status = format!("{cause} {}", state.trace_status);
+                    }
                     state.trace = Some(session);
                 }
                 Err(error) => state.trace_status = error,
@@ -204,6 +208,31 @@ fn with_session(weak: &Weak<MainWindow>, held: &State, edit: impl FnOnce(&mut Se
     super::paint(weak, held);
 }
 
+/// Every ABI Chasm knows for decoding: workspace contracts, then the
+/// programs in the trace (which include verified Sourcify contracts).
+fn known_abis(state: &DesktopState, session: &Session) -> Vec<(String, ethers::abi::Abi)> {
+    let mut abis: Vec<(String, ethers::abi::Abi)> = state.contracts.iter().map(|contract| (contract.name.clone(), contract.abi.clone())).collect();
+    for program in &session.programs {
+        if let Some(abi) = &program.abi {
+            if !abis.iter().any(|(name, _)| name == &program.name) {
+                abis.push((program.name.clone(), abi.clone()));
+            }
+        }
+    }
+    abis
+}
+
+/// For a reverted trace: the cause as one line, with the cursor moved to it.
+fn open_at_cause(state: &DesktopState, session: &mut Session) -> Option<String> {
+    if !session.failed {
+        return None;
+    }
+    let abis = known_abis(state, session);
+    let failure = super::revert_cause::explain(session, &abis)?;
+    session.go(failure.step);
+    Some(super::revert_cause::summary(&failure))
+}
+
 /// What to trace: a mined transaction hash, or (empty input) the newest
 /// transaction or simulated call captured by the active contract tab.
 enum Target {
@@ -220,12 +249,12 @@ fn pick_target(state: &DesktopState, input: &str) -> Result<Target, String> {
         return Ok(Target::Transaction(hash));
     }
     if let Some(view) = state.current_contract_view() {
-        if let (Some(call), Some(target)) = (&view.reverted_call, &view.target) {
-            return Ok(Target::Call {
-                title: format!("Reverted call {}", target.contract),
-                call: call.clone(),
-                block: "latest".into(),
-                target: target.address.clone(),
+        if let Some(call) = &view.reverted_call {
+            // A reverted creation has no address yet: the tab is still unbound.
+            let name = state.documents.get(state.active_document as usize).and_then(|doc| doc.contract_name()).unwrap_or("contract").to_string();
+            return Ok(match (&view.target, call.get("to")) {
+                (Some(target), Some(_)) => Target::Call { title: format!("Reverted call {}", target.contract), call: call.clone(), block: "latest".into(), target: target.address.clone() },
+                _ => Target::Call { title: format!("Reverted deploy {name}"), call: call.clone(), block: "latest".into(), target: String::new() },
             });
         }
     }
@@ -267,13 +296,43 @@ fn programs(state: &DesktopState) -> Vec<Program> {
         .collect()
 }
 
+/// Runtime the trace tasks spawn on; set by `wire`.
+static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Traces an unsent call (from the control API). Nothing is signed or sent.
+pub fn load_call(weak: Weak<MainWindow>, held: State, call: Value, block: String) {
+    let Some(runtime) = RUNTIME.get().cloned() else { return };
+    let target = call["to"].as_str().unwrap_or_default().to_string();
+    let title = if target.is_empty() { "Creation call".to_string() } else { format!("Call to {}…{}", &target[..6], &target[target.len() - 4..]) };
+    start(weak, held, runtime, Target::Call { title, call, block, target });
+}
+
 pub fn load(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, input: String) {
-    let prepared = {
+    let target = {
         let mut state = held.lock().unwrap();
         if state.transition_pending() || !state.workspace_ready || state.trace_busy {
             return;
         }
         match pick_target(&state, &input) {
+            Ok(target) => target,
+            Err(error) => {
+                state.trace_status = error;
+                drop(state);
+                super::paint(&weak, &held);
+                return;
+            }
+        }
+    };
+    start(weak, held, runtime, target);
+}
+
+fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, target: Target) {
+    let prepared = {
+        let mut state = held.lock().unwrap();
+        if state.transition_pending() || !state.workspace_ready || state.trace_busy {
+            return;
+        }
+        match Ok::<Target, String>(target) {
             Ok(target) => {
                 // Remembered so a re-fork can debug the same transaction again.
                 state.trace_input = match &target {
@@ -305,13 +364,16 @@ pub fn load(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle
             }
             state.trace_busy = false;
             match result {
-                Ok((session, path, note)) => {
+                Ok((mut session, path, note)) => {
                     state.trace_status = match path {
                         Ok(path) => format!("Saved to {}", shown_path(&path)),
                         Err(error) => format!("Not saved: {error}"),
                     };
                     if !note.is_empty() {
                         state.trace_status = format!("{note} {}", state.trace_status);
+                    }
+                    if let Some(cause) = open_at_cause(&state, &mut session) {
+                        state.trace_status = format!("{cause} {}", state.trace_status);
                     }
                     state.trace = Some(session);
                     state.open_activity(4);

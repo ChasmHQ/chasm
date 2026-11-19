@@ -16,6 +16,19 @@ nothing, so every step command has a reverse.
   or pick it from *Recent transactions on this node*.
 - **The newest action:** leave the Debug bar empty and press **Debug**.
 
+## When a trace reverted
+
+The status line names where the failure started:
+
+- the deepest frame that reverted on its own, not the outer frames that only passed the revert up;
+- its function, from the running contract's ABI or any workspace or verified ABI;
+- the reason: `Error("…")`, `Panic(code)` with its meaning, or a custom error decoded from any known ABI.
+
+The cursor opens on that step. A deploy that fails its gas estimate is traced as a creation call. Its message names the rule when it is one:
+- creation code over 49,152 bytes (EIP-3860);
+- runtime code over 24,576 bytes (EIP-170);
+- out of gas.
+
 ## Where recordings are saved
 
 Every transaction or call you debug is saved in the project:
@@ -119,6 +132,8 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 | `sload <slot>` | | Storage value of a slot touched so far |
 | `args` | | Decoded arguments of the call |
 | `writes` | | Storage writes up to the cursor, by slot |
+| `locals` | | Solidity locals of the function at the cursor |
+| `gas`, `gas lines` | | Gas per call frame, or per source line |
 | `where`, `help` | | Current position, command list |
 
 ## State panes
@@ -138,7 +153,7 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 
 AI clients with the `debug` scope use the same commands:
 
-- `debugger.trace` with `{"hash": "0x…"}`, or `null` to debug the newest action.
+- `debugger.trace` with `{"hash": "0x…"}`, or `null` to debug the newest action, or `{"call": {"to", "data", "value", "from", "block"}}` to trace a call that was never sent (omit `to` for a creation). Nothing is signed.
 - `debugger.trace.step` with `action` set to one of:
   - `continue`, `back`
   - `step`, `step-back`
@@ -149,7 +164,8 @@ AI clients with the `debug` scope use the same commands:
 - `debugger.trace.breakpoint` with `{"line": n}`.
 - `debugger.trace.console` with `{"line": "n"}`; output is in `debugger.state` `trace.console`.
 - `ui.panel` with `pane` = `trace_ops`, `trace_state` or `trace_console` and `action` = `dock` (with `zone`), `float` or `hide`; `action` = `preset` with `pane` = `tracing` applies the sevm layout. `app.state` lists each pane's placement under `layout.panes`.
-- `debugger.trace.view` with any of `opcodes`, `state`, `console`, `compact` (booleans) and `opcodes_width`, `state_width`, `console_height` (px).
+- `debugger.trace.view` with any of `opcodes`, `state`, `console`, `compact` (booleans), `tab` (0 Stack, 1 Memory, 2 Storage, 3 Calls, 4 Variables, 5 Gas) and `opcodes_width`, `state_width`, `console_height` (px). `debugger.state` `trace.variables` and `trace.gas` are filled while their tab is shown.
+- `debugger.capture.save` and `debugger.capture.open` with `{"name": "<file>.json"}` for the offline engine's captures (see below).
 - `debugger.trace.open_saved` with `{"name": "<file>.json"}`, a name from `debugger.state` `trace.saved`.
 - The `debugger.state` query returns the trace position under `debugger.trace`.
 

@@ -22,6 +22,7 @@ the `ui/` folder and the npm build are gone.
 - Step into, over and out, and single instructions, each with a reverse step; internal function calls nest correctly.
 - Breakpoints, opcode search, and a Variables tab with decoded arguments and named storage writes.
 - Resizable, hideable and compact panes that also float or dock like any other pane, a sevm-style layout preset, and a sevm-style console (`s`, `n`, `si`, `fin`, `c`, `rc`, `b`, `p`, `x`, `sload`, `find`, `args`, `writes`).
+- A reverted trace names the frame where the failure started and decodes its custom error from any known ABI. Failed deploys are debuggable and name the EIP-170/3860 size rules. `debugger.trace` traces unsent calls.
 - Solidity locals of the function at the cursor (Variables tab, console `locals`).
 - Gas profile per call frame and per source line (Gas tab, console `gas`).
 - Offline-engine replays are saved as captures in `.chasm/captures/` and reopen offline.

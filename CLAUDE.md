@@ -22,7 +22,7 @@ Prerequisites: Rust, Foundry (`anvil`, `cast`, `forge`) in PATH, and Git (to ins
 cargo build              # debug build
 cargo run -- ./contracts # open a workspace folder
 cargo test               # unit and UI tests (no network)
-cargo build --release
+cargo build --release    # target/release/chasm.exe; PATH points here on the dev machine
 ```
 
 **Memory:**
@@ -54,12 +54,12 @@ contracts/           sample workspace (Bank.sol)
 |---|---|
 | App shell, render loop, project boot | `mod.rs` (`launch`, `boot`, `wire`, `render`, `paint`), `session.rs` (`DesktopState`) |
 | Docking panes and layout | `layout.rs`, `panels.rs` |
-| Contracts: requests, results, storage | `native_contract.rs`, `contract_service.rs` (signing, preflight, revert decoding), `call_result.rs`, `request_form.rs`, `storage_layout.rs`, `deployment.rs` |
+| Contracts: requests, results, storage, deploy in place | `native_contract.rs`, `contract_service.rs` (signing, preflight, revert decoding), `call_result.rs`, `request_form.rs`, `storage_layout.rs`, `deployment.rs`, `templates.rs` (ERC20/ERC721/Ownable) |
 | Explorer, History, Timeline | `chain_read.rs`, `history.rs` + `native_history.rs`, `chain_tools.rs` + `native_chain.rs`, `address_book.rs` |
-| Step debugger (the main one) | `trace_debug.rs` (session, stepping, slot naming), `native_trace.rs` (record/save/render), `trace_console.rs` |
-| Offline sevm engine | `native_debugger.rs`, `debug_session.rs`, `debug_transport.rs`, `console.rs` |
+| Step debugger (the main one) | `trace_debug.rs` (session, stepping, slot naming), `native_trace.rs` (record/save/render, fork replay node), `trace_console.rs`, `trace_locals.rs` (Solidity locals from the AST), `gas_profile.rs`, `sourcify.rs` (verified source on forks) |
+| Offline sevm engine | `native_debugger.rs`, `debug_session.rs`, `debug_transport.rs`, `console.rs`, `captures.rs` (saved captures) |
 | Macros | `macro_model.rs`, `macro_form.rs`, `macro_runner.rs`, `macro_backend.rs`, `macro_adapter.rs`, `native_macro.rs` |
-| Compiler, libraries, fork | `toolchain.rs` + `native_toolchain.rs` |
+| Compiler, libraries, fork (RPC presets, chain names) | `toolchain.rs` + `native_toolchain.rs` |
 | Palette, notices | `native_palette.rs`, `notice_action.rs` |
 | AI control API | `control.rs` (tiers, hub), `control_http.rs` (HTTP + MCP), `application.rs` (commands, queries, catalog), `native_control.rs` (runs commands on the UI thread) |
 | Wallet | `keystore.rs`, `owned_node.rs`, `mutation_gate.rs` |
@@ -70,6 +70,8 @@ All under `.chasm/`, which `.gitignore` excludes:
 - `chasm.toml`: `remappings`, `[compiler] solc`, `[network] fork_url / fork_block`.
 - `history.jsonl`: every Send/Simulate (public addresses only).
 - `traces/*.json`: recorded step-debugger sessions; they reopen without the node.
+- `sources/<chain>/<address>.json`: Sourcify answers (verified or not) for forked contracts.
+- `captures/*.json`: offline-engine replays (`chasm-fork-capture`), reopened offline.
 - `desktop-settings.json`: the layout. Macro libraries live alongside it.
 
 Libraries install once per machine into `~/.chasm/lib/<id>@<tag>` (git
@@ -78,7 +80,7 @@ shallow clone). solc binaries are managed by svm.
 ## Rules that must not break
 
 - **Private keys never leave the wallet code.** No control-API command or query may return or accept a key, mnemonic, password or signed payload. `control.rs` has tests that every query is free of the Anvil key. Keep them passing.
-- **Signing only against the owned node, chain id 31337.** Forks keep `--chain-id 31337` so a signed transaction is never valid on a real network.
+- **Signing only against the owned node, chain id 31337.** Forks keep `--chain-id 31337` so a signed transaction is never valid on a real network. The debugger's replay node (`AnvilNode::start_replay`) keeps the real chain id but is only traced, never signed on.
 - **Chain mutations hold the mutation gate** (`state.mutation_gate.try_acquire()`): deploy, send, snapshot, revert, cheats, macro runs.
 - **Revert/Timeline:** a revert must call `apply_revert` / `revert_to_point` so deployments made after the snapshot are dropped and the network epoch advances.
 - Provider error messages from RPC are untrusted; `contract_service::validate_and_redact_rpc` keeps only ABI-shaped revert data.
@@ -89,7 +91,8 @@ shallow clone). solc binaries are managed by svm.
 - An element cannot set both `height` and `min-height` (or `width` and `min-width`).
 - Ids inside an `if` cannot be referenced from outside it.
 - Rebuilding a `ModelRc` every paint recreates its `LineEdit`s and drops keyboard focus. Reuse the model with `mod.rs::keep_rows`.
-- Feed widths that depend on the viewport from Rust (`PanelData.viewport-width`) to avoid binding loops.
+- Feed widths that depend on the viewport from Rust (`PanelData.viewport-width`, `TraceData.window-width/height`) to avoid binding loops.
+- Work that walks every trace step (gas profile, locals) runs only while its tab is shown; locals resume from checkpoints.
 - Read-only text uses `SelectableText` (`text-cursor-width: 0`).
 
 ## Testing through the control API
@@ -98,17 +101,18 @@ Debug builds accept `--control-token-file <file>`. It enables the local API,
 pairs one Full-tier client and writes the endpoint and token to the file:
 
 ```bash
-./target/debug/chasm.exe ./contracts --control-token-file /tmp/token.txt
-python tests/live/run.py /tmp/token.txt
+python tests/live/run.py            # starts its own debug build on a copy of contracts/
+python tests/live/run.py stress     # slow; timing budgets
 ```
 
-- `GET /api/v1/catalog` lists every command and query, with schemas.
+- `POST /api/v1/query` with `{"query":"app.catalog"}` lists actions for the current workspace. `GET /api/v1/schema` returns the command and query schemas.
 - Commands are POSTed to `/api/v1/command` with the current `context` from `app.state`.
 - Useful queries:
   - `app.state`, `contracts.view`;
   - `debugger.state` (step debugger under `debugger.trace`);
-  - `history.list`, `toolchain.state`;
+  - `history.list`, `toolchain.state` (fork chain, public RPCs);
   - `ui.screenshot` (PNG).
+- `app.state.layout.panes` lists where every pane sits; `ui.panel` docks, floats, hides or applies a preset.
 - Chain work is asynchronous; poll `app.state.busy` until it settles.
 
 See `AI_CONTROL.md` for the tier table and `DEBUGGER.md` for the step
@@ -116,6 +120,6 @@ debugger's commands and keys.
 
 ## Workflow
 
-- Branch `UI` holds the native redesign. Do not push or merge without asking.
+- Branch `UI` holds the native redesign and tracks `origin/native-ui`. Never merge into `main`; ask before every push. `origin/UI` is a different line of work (rust/revm, python sevm) and is not merged.
 - Plans and progress: `NEXT_PLAN.md` (current); earlier plans are in `docs/archive/`.
 - Each change gets its tests and a live check through the API, then its own commit.
