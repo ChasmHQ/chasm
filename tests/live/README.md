@@ -32,6 +32,7 @@ key is stored here.
 | `gas`, `locals` | gas profile per call and line; Solidity locals (`i`, `result`, calldata array) |
 | `captures` | offline replay saved to `.chasm/captures/`, uploaded and replayed |
 | `external_build` | a via-IR, optimizer, no-metadata contract with an immutable, deployed by `cast`, maps to source with matching `[compiler]` settings |
+| `build_source` | Auto follows `foundry.toml`; a duplicate library names both copies |
 | `revert_explained` | a keeper revert names `MiniToken.transfer` and its custom error; an oversized deploy names EIP-170; unsent calls trace through the API |
 | `fork` | mainnet fork, real transaction replay matches the receipt, Sourcify source |
 | `stress` (only when named) | 20-field form, 200k-step trace, 30 deployments, 500 History rows, 128-step macro, three zooms |

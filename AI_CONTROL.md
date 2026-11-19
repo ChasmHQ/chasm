@@ -116,7 +116,7 @@ Commands added for the native app (all in `app.catalog`):
 | Offline captures | `debugger.capture.save`, `debugger.capture.open {name}`; `debugger.state.captures` |
 | Panes | `ui.panel {pane, action: dock \| float \| hide \| maximize \| reset \| preset, zone?}`; trace panes are `trace_ops`, `trace_state`, `trace_console`; presets `contracts`, `debugging`, `investigation`, `tracing`; `app.state.layout.panes` |
 | History, timeline, cheats | `history.list`, `history.action`, `chain.timeline.revert`, `chain.cheat` |
-| Compiler, libraries, fork | `toolchain.state` (incl. `network.forkChain`, `publicRpcs`), `toolchain.action {open, lock_solc, install, use, remove, network}` |
+| Compiler, libraries, fork | `toolchain.state` (incl. `network.forkChain`, `publicRpcs`), `toolchain.action {open, lock_solc, install, use, remove, network, settings, build_source}`; `toolchain.state.build` shows the active source |
 | Palette, notices | `ui.palette`, `ui.notice.action` |
 
 Forked transactions replay on a separate Anvil node with the real chain id; nothing is signed there. Pending controller confirmations block relevant actions across native hosts. See [CLAUDE.md](CLAUDE.md) for the code layout.
