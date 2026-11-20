@@ -145,6 +145,16 @@ struct TransactionPlan {
     expected_source: Option<super::macro_runner::SourceIdentity>,
 }
 
+/// A signer value that is an address, not a key: the owned Anvil node sends
+/// for it (`anvil_impersonateAccount` + `eth_sendTransaction`). Nothing is
+/// signed and no key exists; only the local node on chain 31337 accepts it.
+pub const IMPERSONATE_PREFIX: &str = "impersonate:";
+
+/// The address an impersonation signer acts as.
+pub fn impersonated(key: &str) -> Option<ethers::types::Address> {
+    key.strip_prefix(IMPERSONATE_PREFIX)?.parse().ok()
+}
+
 pub async fn send(
     request: Request,
     key: String,
@@ -393,11 +403,20 @@ async fn submit_transaction_guarded(
             "The node identity changed before signing. No transaction was submitted.".into(),
         );
     }
-    let signer = key
-        .parse::<ethers::signers::LocalWallet>()
-        .map_err(|_| "The selected signer is invalid.".to_string())?
-        .with_chain_id(31337u64);
-    let from = signer.address();
+    let acting = impersonated(&key);
+    let signer = match acting {
+        Some(_) => None,
+        None => Some(
+            key.parse::<ethers::signers::LocalWallet>()
+                .map_err(|_| "The selected signer is invalid.".to_string())?
+                .with_chain_id(31337u64),
+        ),
+    };
+    let from = match (&signer, acting) {
+        (Some(signer), _) => signer.address(),
+        (None, Some(address)) => address,
+        (None, None) => unreachable!(),
+    };
     let mut transaction = unsigned_transaction(&plan, from);
     let mut public_transaction = public_transaction(&plan, from);
     let nonce = rpc(
@@ -434,6 +453,9 @@ async fn submit_transaction_guarded(
     if !owned.authorizes_loopback(8545) {
         return Err("The owned node exited before signing. No transaction was submitted.".into());
     }
+    let Some(signer) = signer else {
+        return submit_impersonated(plan, from, public_transaction, &pre_submit_source, owned, guard).await;
+    };
     let signature = signer
         .sign_transaction(&typed)
         .await
@@ -483,6 +505,50 @@ async fn submit_transaction_guarded(
         return Ok(receipt_unavailable(plan, Some(submitted), "Submission was not confirmed with the expected transaction hash. Check the transaction before retrying."));
     }
     plan.context.request["submissionResponse"] = submitted;
+    await_receipt(plan, hash, &pre_submit_source).await
+}
+
+/// Sends `transaction` as `from` through the owned node without a key, then
+/// waits for its receipt like a signed send. Impersonation is switched off
+/// again whatever happens.
+async fn submit_impersonated(
+    mut plan: TransactionPlan,
+    from: ethers::types::Address,
+    transaction: Value,
+    pre_submit_source: &Value,
+    owned: std::sync::Arc<super::owned_node::OwnedNode>,
+    guard: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<CallResult, String> {
+    let address = format!("{from:#x}");
+    if !guard() || !owned.authorizes_loopback(8545) {
+        return Err("The execution context changed before submission. No transaction was submitted.".into());
+    }
+    verify(&plan.rpc, pre_submit_source).await.map_err(|_| "The node identity changed before submission. No transaction was submitted.")?;
+    let started = rpc(&plan.rpc, "anvil_impersonateAccount", json!([address])).await?;
+    if started.get("error").is_some_and(|error| !error.is_null()) {
+        return Err("The node refused to impersonate this address. No transaction was submitted.".into());
+    }
+    plan.context.request = json!({"method":"eth_sendTransaction","impersonated":address,"transaction":transaction,"submissionState":"unknown"});
+    let submitted = rpc(&plan.rpc, "eth_sendTransaction", json!([transaction])).await;
+    let _ = rpc(&plan.rpc, "anvil_stopImpersonatingAccount", json!([address])).await;
+    let submitted = match submitted {
+        Ok(response) => response,
+        Err(_) => return Ok(receipt_unavailable(plan, None, "Submission outcome is unknown; the transaction may have been accepted. Check the chain before retrying.")),
+    };
+    if let Some(error) = submitted.get("error").filter(|error| !error.is_null()) {
+        return Err(format!("The node did not accept the transaction from {address}: {}. Nothing was sent. An impersonated address needs ETH for gas (Explorer > Timeline > Deal).", error["message"].as_str().unwrap_or("unknown error")));
+    }
+    let Some(hash) = submitted.get("result").and_then(Value::as_str).filter(|value| valid_hash(value)).map(str::to_string) else {
+        return Ok(receipt_unavailable(plan, Some(submitted), "Submission returned no transaction hash. Check the chain before retrying."));
+    };
+    plan.context.request["transactionHash"] = json!(hash);
+    plan.context.request["submissionResponse"] = submitted;
+    await_receipt(plan, hash, pre_submit_source).await
+}
+
+/// Polls for the receipt of a submitted transaction and checks it belongs to
+/// the same node it was sent to.
+async fn await_receipt(mut plan: TransactionPlan, hash: String, pre_submit_source: &Value) -> Result<CallResult, String> {
     let mut last_receipt = None;
     for _ in 0..60 {
         let receipt = match rpc(&plan.rpc, "eth_getTransactionReceipt", json!([hash])).await {
@@ -981,7 +1047,7 @@ fn bare_revert_cause(error: &Value, creation: Option<usize>) -> String {
         return "out of gas: the call used all the gas the node allows. Look for an unbounded loop or a very large copy".into();
     }
     if kind == Some("insufficient_funds") {
-        return "the sender cannot pay the value plus gas".into();
+        return "the sender cannot pay the value plus gas (give it ETH with Explorer > Timeline > Deal)".into();
     }
     if kind == Some("nonce") {
         return "the sender's nonce does not match the node".into();
@@ -1037,6 +1103,9 @@ async fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
         "eth_gasPrice",
         "eth_estimateGas",
         "eth_sendRawTransaction",
+        "eth_sendTransaction",
+        "anvil_impersonateAccount",
+        "anvil_stopImpersonatingAccount",
         "eth_getTransactionReceipt",
         "anvil_nodeInfo",
         "debug_traceCall",

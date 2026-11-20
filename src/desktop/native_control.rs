@@ -595,6 +595,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
         Command::Deploy {} => logic.invoke_deploy_contract(),
         Command::Compile {} => logic.invoke_recompile(),
         Command::UseDevAccount { index } => logic.invoke_use_anvil_key(*index as i32),
+        Command::Impersonate { address } => logic.invoke_impersonate(address.as_str().into()),
         Command::Snapshot {} => logic.invoke_snapshot(),
         Command::Revert {} => logic.invoke_revert(),
         Command::Mine {} => logic.invoke_roll(),

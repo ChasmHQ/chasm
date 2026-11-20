@@ -117,6 +117,9 @@ pub enum Command {
     Compile {},
     #[serde(rename = "wallet.dev_account")]
     UseDevAccount { index: u8 },
+    /// Send as this address through the owned node (impersonation); no key.
+    #[serde(rename = "wallet.impersonate")]
+    Impersonate { address: String },
     #[serde(rename = "chain.snapshot")]
     Snapshot {},
     #[serde(rename = "chain.revert")]
@@ -310,7 +313,7 @@ impl Command {
     /// the signer or runs a macro; `debug` drives the debugger worker.
     pub fn scope(&self) -> &'static str {
         match self {
-            Self::Send {} | Self::Deploy {} | Self::Compile {} | Self::UseDevAccount { .. }
+            Self::Send {} | Self::Deploy {} | Self::Compile {} | Self::UseDevAccount { .. } | Self::Impersonate { .. }
             | Self::Snapshot {} | Self::Revert {} | Self::Mine {} | Self::Warp {}
             | Self::RunMacro { .. } | Self::TimelineRevert { .. } | Self::Cheat { .. } | Self::Toolchain { .. } | Self::Template { .. } => "act",
             Self::DebugLaunch { .. } | Self::DebugStart {} | Self::DebugNavigate { .. }
@@ -375,6 +378,7 @@ impl Command {
             Self::Deploy {} => "contracts.deploy",
             Self::Compile {} => "workspace.compile",
             Self::UseDevAccount { .. } => "wallet.dev_account",
+            Self::Impersonate { .. } => "wallet.impersonate",
             Self::Snapshot {} => "chain.snapshot",
             Self::Revert {} => "chain.revert",
             Self::Mine {} => "chain.mine",
@@ -763,6 +767,11 @@ pub fn validate(state: &DesktopState, command: &Command) -> Result<(), AppError>
                 return Err(invalid("Use Anvil development account 0, 1 or 2 while no wallet operation runs."));
             }
         }
+        Command::Impersonate { address } => {
+            if address.parse::<ethers::types::Address>().is_err() || !state.can_start_wallet_operation() {
+                return Err(invalid("Give an exact 20-byte address while no wallet operation runs."));
+            }
+        }
         Command::Revert {} => {
             if state.snapshot_id.is_empty() {
                 return Err(AppError::new("not_ready", "Take a snapshot first."));
@@ -932,7 +941,7 @@ pub fn query(state: &DesktopState, query: &Query) -> Value {
         Query::State => json!({
             "schemaVersion":1, "context":context(state), "workspaceReady":state.workspace_ready,
             "opening":state.project_opening, "activity":state.activity,
-            "wallet":{"address":state.wallet_address,"unlocked":state.wallet_key.is_some()},
+            "wallet":{"address":state.wallet_address,"unlocked":state.wallet_key.is_some(),"impersonated":state.impersonating()},
             "layout":{"sidebarWidth":state.sidebar_width,"collapsed":state.sidebar_collapsed,"zoomPercent":(state.zoom*100.0).round() as u16,
                 "panes":state.layout.panes.iter().map(|pane| json!({"pane":pane.id.stable_key(),"placement":pane.placement})).collect::<Vec<_>>()},
             "documents":state.documents.iter().enumerate().map(|(i, doc)| json!({"id":document_id(state,i),"title":doc.title,"kind":doc.kind,"active":state.active_document==i as i32})).collect::<Vec<_>>(),
@@ -1156,6 +1165,7 @@ pub fn command_schema() -> Value {
         ("contracts.deploy", object(json!({}), vec![])),
         ("workspace.compile", object(json!({}), vec![])),
         ("wallet.dev_account", object(json!({"index":{"type":"integer","minimum":0,"maximum":2}}), vec!["index"])),
+        ("wallet.impersonate", object(json!({"address":{"type":"string","maxLength":42,"description":"Send as this address (a governor, a whale, a contract) without its key: the owned node on chain 31337 impersonates it. It needs ETH for gas (chain.cheat deal). tx.origin becomes this address, even for a contract."}}), vec!["address"])),
         ("chain.snapshot", object(json!({}), vec![])),
         ("chain.revert", object(json!({}), vec![])),
         ("chain.mine", object(json!({}), vec![])),

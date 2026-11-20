@@ -198,10 +198,11 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
             .signers
             .key(alias)
             .ok_or(runner::FailureCode::Unavailable)?;
-        let wallet = key
-            .parse::<ethers::signers::LocalWallet>()
-            .map_err(|_| runner::FailureCode::Unavailable)?;
-        if !format!("{:#x}", wallet.address()).eq_ignore_ascii_case(expected) {
+        let address = match super::contract_service::impersonated(&key) {
+            Some(address) => address,
+            None => key.parse::<ethers::signers::LocalWallet>().map_err(|_| runner::FailureCode::Unavailable)?.address(),
+        };
+        if !format!("{address:#x}").eq_ignore_ascii_case(expected) {
             return Err(runner::FailureCode::Unauthorized);
         }
         Ok(key)

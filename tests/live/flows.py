@@ -418,6 +418,56 @@ def call_jobs():
     check("the result landed in the sending document", "Transaction status: Success" in query("contracts.view")["simple"])
 
 
+
+def impersonate():
+    """Send as an address without its key: refused without gas, then a deposit as it lands."""
+    actor = "0x000000000000000000000000000000000000bEEF"
+    bank = next(d for d in query("app.state")["documents"] if d["title"] == "Bank")
+    command("ui.document.select", id=bank["id"])
+    command("wallet.impersonate", address=actor)
+    wallet = query("app.state")["wallet"]
+    check("the wallet acts as the address", wallet["address"] == actor.lower() and wallet["impersonated"], str(wallet))
+
+    def deposit():
+        command("contracts.function.select", id=function_id("deposit"))
+        command("contracts.request.edit", value=str(10**17))
+        out = command("contracts.send")
+        for _ in range(120):
+            job = next((j for j in query("jobs.list")["jobs"] if j["id"] == out["jobId"]), None)
+            if job and job["status"] != "running":
+                return job
+            time.sleep(0.5)
+        return job
+
+    job = deposit()
+    check("without ETH the node refuses and says why", job["status"] == "failed" and "cannot pay the value plus gas" in job.get("summary", "") and not job.get("transactionHash"), str(job))
+    command("chain.cheat", action="deal", address=actor, value="1")
+    settle()
+    job = deposit()
+    check("after a deal the deposit is sent as the address", job["status"] == "ok" and job.get("transactionHash", "").startswith("0x"), str(job))
+    tx = rpc("eth_getTransactionByHash", [job["transactionHash"]])
+    check("the transaction is from the impersonated address", tx["from"].lower() == actor.lower(), tx["from"])
+    command("contracts.function.select", id=function_id("balanceOf"))
+    command("contracts.request.edit", arguments=json.dumps([actor]))
+    out = command("contracts.simulate")
+    for _ in range(60):
+        if not query("contracts.view")["busy"]:
+            break
+        time.sleep(0.5)
+    check("its balance in the bank", query("contracts.view")["simple"].splitlines()[-1].endswith(str(10**17)), query("contracts.view")["simple"][-120:])
+    entry = query("history.list")["entries"][0]
+    check("history records who sent it", entry["from"].lower() == actor.lower(), str(entry)[:200])
+    # A contract address works too (the Bank itself acts as a depositor).
+    bank_address = query("contracts.view")["address"]
+    command("wallet.impersonate", address=bank_address)
+    command("chain.cheat", action="deal", address=bank_address, value="1")
+    settle()
+    job = deposit()
+    check("a contract address can act too", job["status"] == "ok", str(job))
+    command("wallet.dev_account", index=0)
+    check("back to a dev key", not query("app.state")["wallet"]["impersonated"])
+
+
 def template():
     """New ERC20 from a template; install OpenZeppelin when missing; deploy it."""
     command("contracts.template", kind="erc20", name="LiveToken")
@@ -1076,4 +1126,4 @@ def scenario():
     check("compare reports the path and the effect difference", ("Same path" in compared or "First divergence" in compared) and "Storage effects differ" in compared and f"balanceOf[{OWNER}]" in compared, compared)
     print("  | " + " || ".join(compared.strip().splitlines())[:300])
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, call_jobs, template, panes, gas, storage_names, scenario, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, call_jobs, impersonate, template, panes, gas, storage_names, scenario, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]

@@ -1255,6 +1255,31 @@ impl DesktopState {
         self.push_log(format!("Using Anvil dev key #{index} (local only)"));
     }
 
+    /// Sends as `address` through the owned node, without a key. The node
+    /// accepts it only on the local chain (31337); nothing is signed.
+    pub fn impersonate(&mut self, address: &str) {
+        if !self.can_start_wallet_operation() {
+            return;
+        }
+        let Ok(parsed) = address.trim().parse::<ethers::types::Address>() else {
+            self.notice = "Act as: enter an exact 20-byte address.".into();
+            return;
+        };
+        let address = format!("{parsed:#x}");
+        self.wallet_generation = self.wallet_generation.wrapping_add(1);
+        self.wallet_source = None;
+        self.wallet_key = Some(format!("{}{address}", super::contract_service::IMPERSONATE_PREFIX));
+        self.wallet_address = address.clone();
+        self.notice = format!("Acting as {address}. Sends from it are impersonated by the local node: it needs ETH for gas (Explorer > Timeline > Deal), and tx.origin is this address even if it is a contract, which a real chain never allows.");
+        self.status_left = format!("Acting as {address} (impersonated)");
+        self.push_log(format!("Acting as {address} (impersonated, local node only)"));
+    }
+
+    /// Whether the active signer is an impersonated address.
+    pub fn impersonating(&self) -> bool {
+        self.wallet_key.as_deref().is_some_and(|key| super::contract_service::impersonated(key).is_some())
+    }
+
     /// Deployments of the current network context, as timeline keys.
     pub fn current_deployment_keys(&self) -> HashSet<(String, String)> {
         self.deployments
@@ -2946,6 +2971,23 @@ mod session_contract_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn impersonation_is_an_address_not_a_key() {
+        let mut state = DesktopState::new(PathBuf::from("."), 1.0);
+        state.active = true;
+        state.workspace_ready = true;
+        state.impersonate("not an address");
+        assert!(state.notice.contains("20-byte") && state.wallet_key.is_none());
+        state.impersonate("0x000000000000000000000000000000000000BEEF");
+        assert_eq!(state.wallet_address, "0x000000000000000000000000000000000000beef");
+        assert!(state.impersonating());
+        assert_eq!(super::super::contract_service::impersonated(state.wallet_key.as_deref().unwrap()).map(|address| format!("{address:#x}")).as_deref(), Some("0x000000000000000000000000000000000000beef"));
+        assert!(state.notice.contains("tx.origin"));
+        state.use_anvil_key(0);
+        assert!(!state.impersonating(), "a dev key replaces the impersonated address");
+        assert!(super::super::contract_service::impersonated("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80").is_none());
+    }
 
     fn state_with_contracts() -> DesktopState {
         let mut state = DesktopState::new(PathBuf::from("."), 1.0);

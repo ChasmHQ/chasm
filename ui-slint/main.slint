@@ -99,6 +99,8 @@ export global AppData {
     in property <string> selected-name;
     in property <string> selected-keystore;
     in property <string> wallet-address;
+    in property <bool> wallet-impersonated;
+    in-out property <string> impersonate-input;
     in-out property <string> wallet-password;
     in-out property <string> keystore-name;
     in-out property <string> template-name;
@@ -199,6 +201,7 @@ export global Logic {
     callback revert();
     callback trace();
     callback use-anvil-key(int);
+    callback impersonate(string);
     callback remove-deployment(int);
     callback open-deployment-menu(int);
     callback sidebar-resized(length);
@@ -353,7 +356,7 @@ component WalletWorkspace inherits ScrollView {
         spacing: 0.5rem;
         alignment: start;
         SelectableText { text: "Wallet"; color: Theme.text; font-size: 1rem; font-weight: 600; }
-        SelectableText { text: AppData.wallet-address == "" ? "No account unlocked." : "Unlocked address: \{AppData.wallet-address}"; color: AppData.wallet-address == "" ? Theme.muted : Theme.ok; font-size: 0.8125rem; wrap: word-wrap; }
+        SelectableText { text: AppData.wallet-address == "" ? "No account unlocked." : AppData.wallet-impersonated ? "Acting as \{AppData.wallet-address} (impersonated by the local node, no key)" : "Unlocked address: \{AppData.wallet-address}"; color: AppData.wallet-address == "" ? Theme.muted : AppData.wallet-impersonated ? Theme.warn : Theme.ok; font-size: 0.8125rem; wrap: word-wrap; }
         SelectableText { text: "Anvil development accounts"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
         SelectableText { text: "Public test accounts for the local Anvil node only."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
         HorizontalLayout {
@@ -361,6 +364,13 @@ component WalletWorkspace inherits ScrollView {
             IconButton { icon: @image-url("icons/play.svg"); label: "Anvil dev key #0"; enabled: !AppData.wallet-busy && !AppData.deploy-busy; clicked => { Logic.use-anvil-key(0); } }
             IconButton { icon: @image-url("icons/play.svg"); label: "Anvil dev key #1"; enabled: !AppData.wallet-busy && !AppData.deploy-busy; clicked => { Logic.use-anvil-key(1); } }
             IconButton { icon: @image-url("icons/play.svg"); label: "Anvil dev key #2"; enabled: !AppData.wallet-busy && !AppData.deploy-busy; clicked => { Logic.use-anvil-key(2); } }
+        }
+        SelectableText { text: "Act as an address"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
+        SelectableText { text: "Send as any address (a governor, a whale, a contract) without its key: the local node impersonates it. Works only on the workspace node (chain 31337). Give it ETH for gas with Explorer > Timeline > Deal. tx.origin becomes this address even for a contract, which a real chain never allows."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 0.5rem;
+            LineEdit { text <=> AppData.impersonate-input; placeholder-text: "0x… address to act as"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 1; accepted => { Logic.impersonate(self.text); } }
+            IconButton { icon: @image-url("icons/wallet.svg"); label: "Act as"; enabled: !AppData.wallet-busy && !AppData.deploy-busy && AppData.impersonate-input != ""; clicked => { Logic.impersonate(AppData.impersonate-input); } }
         }
         SelectableText { text: "Keystore files"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
         SelectableText { text: AppData.keystore-folder; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; min-width: 0px; }

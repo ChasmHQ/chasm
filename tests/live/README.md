@@ -27,6 +27,7 @@ key is stored here.
 | `history`, `timeline` | saved calls, Repeat/Debug/To macro; snapshots, cheats, revert to a point |
 | `toolchain`, `template` | lock solc, install/use/remove a library, Test RPC without showing the URL; ERC20 template compiled and deployed |
 | `call_jobs` | Send on a tab without a deployment fails with `not_ready` and starts no job; a real Send returns a `jobId` that finishes with a hash and lands in its own document |
+| `impersonate` | act as an address: refused without gas, deposit after a deal is from that address, history records it, a contract address works too |
 | `palette`, `macro` | Ctrl+K; a macro built from form commands |
 | `inline_deploy` | deploy from the contract tab, call and debug in five clicks |
 | `panes` | trace panes dock, float and hide |

@@ -6,6 +6,7 @@ Chasm is now a native Rust + Slint desktop app. The Axum + React web UI,
 the `ui/` folder and the npm build are gone.
 
 ### Workspace
+- **Act as an address** (Wallet, `wallet.impersonate {address}`): send, deploy and run macros as any address (a governor, a whale, a contract) without its key. The workspace node impersonates it (`anvil_impersonateAccount` + `eth_sendTransaction`), only on chain 31337 and with the same node checks as signed sends. It needs ETH for gas (Timeline > Deal). `app.state.wallet.impersonated` and History show it. tx.origin becomes the address even for a contract, which a real chain never allows.
 - A macro result says what reached the chain: how many transactions were confirmed (each separately, so the run is not atomic), what stays applied when it stops early, unknown submissions, and whether a revert was verified. A dry run says that nothing was sent and that it does not simulate the writes.
 - Rate-limited public RPCs: the fork node retries with backoff (`--retries 8 --fork-retry-backoff 1000 --timeout 45000`), and Chasm's own upstream reads (Test RPC, Sourcify, replay block lookup) retry HTTP 429/503 following `Retry-After`, at most 5 attempts and 20 s of waiting. Sends are never retried.
 - `toolchain.state.network` states both chain ids: `sourceChainId` (the forked chain) and `executionChainId` (31337, where workspace transactions run and are signed), with a note on `block.chainid`.

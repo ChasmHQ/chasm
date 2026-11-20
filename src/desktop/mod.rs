@@ -557,6 +557,14 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     on_void!(ui, state, on_open_wallet, |state: &mut DesktopState| state.open_wallet_doc());
     on_void!(ui, state, on_open_deploy, |state: &mut DesktopState| { state.open_inline_deploy(); });
     on_int!(ui, state, on_use_anvil_key, |state: &mut DesktopState, index| state.use_anvil_key(index));
+    {
+        let weak = ui.as_weak();
+        let held = state.clone();
+        ui.global::<Logic>().on_impersonate(move |address| {
+            held.lock().unwrap().impersonate(address.as_str());
+            paint(&weak, &held);
+        });
+    }
     on_int!(ui, state, on_remove_deployment, |state: &mut DesktopState, index| { state.remove_deployment(index); state.deployment_menu = -1; });
     on_int!(ui, state, on_open_deployment_menu, |state: &mut DesktopState, index| state.deployment_menu = index);
     on_length!(ui, state, on_sidebar_drag_started, |state: &mut DesktopState, pointer_x| state.start_sidebar_drag(pointer_x));
@@ -1681,6 +1689,7 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_selected_function(state.selected_function);
     data.set_selected_keystore(state.selected_keystore.clone().into());
     data.set_wallet_address(state.wallet_address.clone().into());
+    data.set_wallet_impersonated(state.impersonating());
     data.set_deploy_output(state.deploy_output.clone().into());
     data.set_call_output(state.call_output.clone().into());
     data.set_storage_output(state.storage_output.clone().into());
