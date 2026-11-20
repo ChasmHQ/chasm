@@ -95,6 +95,70 @@ def build_server(driver: DebugDriver | None = None) -> MCPServer:
         )
 
     @server.tool()
+    async def chasm_start_replay(
+        tx_hash: str | None = None,
+        rpc_env: str | None = None,
+        contracts: str | None = None,
+        offline: str | None = None,
+        capture: str | None = None,
+        timeout: float | None = None,
+    ) -> dict:
+        """Replay a mined transaction locally; RPC is read-only and named by env var.
+
+        `offline` loads a capture instead. `contracts` imports exact compiler build-info.
+        Replaces this server's session; simultaneous terminal attachment is unsupported.
+        """
+        return await _run(
+            driver,
+            "start_replay",
+            tx_hash=tx_hash,
+            rpc_env=rpc_env,
+            contracts=contracts,
+            offline=offline,
+            capture=capture,
+            timeout=timeout,
+        )
+
+    @server.tool()
+    async def chasm_start_fork(
+        block_number: int,
+        rpc_env: str,
+        to: str,
+        caller: str,
+        data: str = "0x",
+        value: int = 0,
+        gas: int = 3_000_000,
+        gas_price: int | None = None,
+        nonce: int | None = None,
+        contracts: str | None = None,
+        timeout: float | None = None,
+    ) -> dict:
+        """Run a driver transaction on a local mainnet fork; requires nonce and gas_price.
+
+        No funding or write RPC. Replaces this server's session, not a terminal session.
+        """
+        return await _run(
+            driver,
+            "start_fork",
+            block_number,
+            rpc_env,
+            to,
+            caller,
+            data=data,
+            value=value,
+            gas=gas,
+            gas_price=gas_price,
+            nonce=nonce,
+            contracts=contracts,
+            timeout=timeout,
+        )
+
+    @server.tool()
+    async def chasm_fork_info() -> dict:
+        """Return the fork anchor, separate baseline report, and experiment divergence."""
+        return await _run(driver, "fork_info")
+
+    @server.tool()
     async def chasm_stop_session() -> dict:
         """Stop and dispose the active debug session (chain state is discarded)."""
         return await _run(driver, "stop")

@@ -19,6 +19,8 @@ def read_frame_locals(
     frame: EvmFrame,
     computation: Any,
     internal_index: int | None = None,
+    *,
+    unavailable_reason: str | None = None,
 ) -> list[LocalValue]:
     """Every local visible in one Solidity frame, decoded.
 
@@ -54,6 +56,12 @@ def read_frame_locals(
     if loc is None or loc.is_generated:
         return []
     offset = loc.entry.start
+    if unavailable_reason:
+        return [
+            _unavailable(var, unavailable_reason)
+            for var in index.visible(fn.ast_id, offset)
+            if var.name
+        ]
 
     stack = computation._stack.values
     sp = len(stack)

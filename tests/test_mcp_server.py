@@ -370,7 +370,7 @@ def test_parity_verdicts(lab):
     from chasm_debugger.compile.model import _strip_metadata
 
     body = _strip_metadata(art.deployed_bytecode)
-    alt_meta = bytes([0xA2, 0x64, 0x69, 0x70, 0x66, 0x73])
+    alt_meta = bytes.fromhex("a164736f6c634300081b")
     tail = compare_runtime(art, body + alt_meta + len(alt_meta).to_bytes(2, "big"))
     assert tail["match"] is True
     # One flipped byte inside the code is, at its offset.

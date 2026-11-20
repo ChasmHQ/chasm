@@ -21,6 +21,7 @@ pub struct AccountSpec {
     pub address: Address,
     pub code: Bytes,
     pub balance: U256,
+    pub nonce: u64,
     pub storage: Vec<(U256, U256)>,
 }
 
@@ -30,6 +31,7 @@ impl AccountSpec {
             address,
             code: code.into(),
             balance: U256::ZERO,
+            nonce: 0,
             storage: Vec::new(),
         }
     }

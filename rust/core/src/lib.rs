@@ -1,5 +1,10 @@
 mod engine;
+mod fork;
 mod protocol;
+
+pub use fork::{
+    ForkAnchor, ForkBlock, ForkConfig, ForkError, ForkWitness, RemoteDb, transaction_from_json,
+};
 
 pub use engine::{
     CHEATCODE_ADDRESS, CONSOLE_ADDRESS, DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine,

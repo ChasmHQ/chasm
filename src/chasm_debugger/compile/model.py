@@ -10,6 +10,10 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 
+from eth_hash.auto import keccak
+
+from .metadata import strip_metadata
+
 
 class CompileError(RuntimeError):
     """solc rejected the input. Carries the raw diagnostics."""
@@ -72,6 +76,7 @@ class Project:
     optimized: bool = False
     # solc import remappings (Foundry projects); needed to recompile for evaluation.
     remappings: list[str] = field(default_factory=list)
+    compiler_settings: dict = field(default_factory=dict)
 
     _code_index: dict[bytes, str] = field(default_factory=dict, repr=False)
 
@@ -127,18 +132,7 @@ class Project:
 
 
 def _strip_metadata(code: bytes) -> bytes:
-    """Drop solc's trailing CBOR metadata blob.
-
-    Layout is `<code> <cbor> <uint16 be length of cbor>`. The length is only trusted
-    when it lands inside the buffer, so non-solc code passes through untouched.
-    """
-    if len(code) < 2:
-        return code
-    meta_len = int.from_bytes(code[-2:], "big")
-    total = meta_len + 2
-    if 0 < total <= len(code):
-        return code[: len(code) - total]
-    return code
+    return strip_metadata(code)
 
 
 def _code_fingerprint(code: bytes, artifact: Artifact | None) -> bytes:
@@ -172,8 +166,15 @@ def compare_runtime(artifact: Artifact, reference: bytes) -> dict:
     """
     compiled = _masked_body(artifact.deployed_bytecode, artifact)
     other = _masked_body(reference, artifact)
+    identity = {
+        "exact_match": artifact.deployed_bytecode == reference,
+        "compiled_code_hash": "0x" + keccak(artifact.deployed_bytecode).hex(),
+        "reference_code_hash": "0x" + keccak(reference).hex(),
+        "comparison": "source-map-body",
+    }
     if compiled == other:
         return {
+            **identity,
             "match": True,
             "difference": "none",
             "compiled_size": len(artifact.deployed_bytecode),
@@ -185,6 +186,7 @@ def compare_runtime(artifact: Artifact, reference: bytes) -> dict:
         min(len(compiled), len(other)),
     )
     return {
+        **identity,
         "match": False,
         "difference": "code",
         "compiled_size": len(artifact.deployed_bytecode),

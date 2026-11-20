@@ -9,8 +9,12 @@ Where things live:
   assembly/      Yul typed at the prompt, run against the live frame
   cheatcodes/    the Foundry cheatcode and console.log intercept
   compile/       solc, the artifact model, and Foundry project resolution
+  fork/          pinned Cancun replay, strict baselines and offline captures
   locals/        recovering Solidity locals from the EVM stack
   tui/           the Textual fullscreen frontend
+  web/           web worker operations, validation and bounded pane values
+  mcp_server/    structured tools and the shared frontend driver
+  web_service.py protocol-only JSONL web debugger worker
   console.py     the plain-text frontend (`--console`)
 
   artifacts.py   forge-shaped `out/chasm/<File.sol>/<Contract>.json`

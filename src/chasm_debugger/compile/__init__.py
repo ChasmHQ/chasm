@@ -1,7 +1,6 @@
 """Solidity compilation and the artifact model.
 
-solcx only, by decision: everything downstream depends only on the `Artifact` dataclass,
-so a Foundry `out/*.json` importer could be added later by producing the same dataclass.
+Compilation and embedded build-info imports produce the same artifact model.
 
 Where things live:
 
@@ -13,6 +12,8 @@ Where things live:
   versions.py         picking the solc version from the sources' pragmas
   foundry_config.py   foundry.toml, remappings, project sources, dependencies
   build.py            `compile_project` / `compile_foundry_project`
+  importer.py         embedded build-info import without compilation
+  metadata.py         validated solc CBOR tails
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from .foundry_config import (
     resolve_dependencies,
     unresolved_prefixes,
 )
+from .importer import load_build_info, project_from_build_info
 from .model import Artifact, CompileError, Project, SourceFile, compare_runtime
 from .solc import DEFAULT_SOLC_VERSION, compile_standard, ensure_solc
 from .solcbin import platform_key
@@ -51,7 +53,9 @@ __all__ = [
     "compile_standard",
     "ensure_solc",
     "find_foundry_root",
+    "load_build_info",
     "platform_key",
+    "project_from_build_info",
     "read_foundry_config",
     "resolve_dependencies",
     "resolve_solc_version",

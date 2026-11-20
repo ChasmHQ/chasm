@@ -82,7 +82,10 @@ def _third_party_imports() -> dict[str, set[str]]:
                 elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                     modules = [node.module.split(".")[0]]
                 for module in modules:
-                    if module != "chasm" and module not in sys.stdlib_module_names:
+                    if (
+                        module != "chasm_debugger"
+                        and module not in sys.stdlib_module_names
+                    ):
                         found.setdefault(module, set()).add(path)
     return found
 

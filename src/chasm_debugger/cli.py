@@ -183,7 +183,242 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds to wait for the target to reach contract code (default: 120)",
     )
 
+    for name in ("replay", "fork"):
+        command = sub.add_parser(name, help=f"debug a local mainnet {name}")
+        if name == "replay":
+            command.add_argument("tx_hash", nargs="?", help="mined transaction hash")
+            command.add_argument(
+                "--offline", metavar="BUNDLE", help="replay a saved capture without RPC"
+            )
+            command.add_argument(
+                "--capture",
+                metavar="PATH",
+                help="save the validated baseline and witness",
+            )
+        else:
+            command.add_argument(
+                "--block", type=_quantity, required=True, help="fork block number"
+            )
+            command.add_argument("--to", help="driver transaction recipient")
+            command.add_argument(
+                "--from", dest="caller", help="driver transaction sender"
+            )
+            command.add_argument("--data", default="0x", help="driver calldata hex")
+            command.add_argument(
+                "--value", type=_quantity, default=0, help="driver value in wei"
+            )
+            command.add_argument(
+                "--gas", type=_quantity, default=3_000_000, help="driver gas limit"
+            )
+            command.add_argument(
+                "--gas-price", type=_quantity, help="driver gas price in wei; required"
+            )
+            command.add_argument("--nonce", type=_quantity, help="driver sender nonce")
+        command.add_argument(
+            "--rpc-env", help="environment variable containing the read-only RPC URL"
+        )
+        command.add_argument(
+            "-c", "--contracts", help="exact compiler build-info file or directory"
+        )
+        command.add_argument(
+            "--console", action="store_true", help="use the standard plain text frontend"
+        )
+        command.add_argument(
+            "--no-mouse", action="store_true", help="disable TUI mouse reporting"
+        )
+        command.add_argument(
+            "-x",
+            "--exec",
+            action="append",
+            default=[],
+            metavar="CMD",
+            help="startup debugger command; repeatable",
+        )
+        command.add_argument(
+            "--timeout",
+            type=float,
+            default=120.0,
+            help="seconds to wait for the first stop",
+        )
+
     return parser
+
+
+def _quantity(text: str) -> int:
+    try:
+        value = int(text, 16 if text.lower().startswith("0x") else 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a decimal or hex integer") from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError("expected a non-negative integer")
+    return value
+
+
+def _rpc_from_env(name: str | None) -> str:
+    if not name:
+        raise ValueError("supply --rpc-env with the name of an RPC environment variable")
+    value = os.environ.get(name)
+    if not value:
+        raise ValueError("the RPC environment variable is not set or is empty")
+    return value
+
+
+def _mainnet_project(contracts: str | None) -> Any:
+    if contracts:
+        from .compile.importer import load_build_info
+
+        return load_build_info(contracts)
+    from .compile import Project
+
+    return Project(sources={}, artifacts={}, asts={}, solc_version="")
+
+
+def _prepare_mainnet(
+    kind: str,
+    *,
+    rpc_env: str | None = None,
+    tx_hash: str | None = None,
+    block: int | None = None,
+    offline: str | None = None,
+    capture: str | None = None,
+) -> tuple[Any, Any]:
+    from .fork import (
+        BaselineResult,
+        load_capture,
+        prepare_fork,
+        prepare_replay,
+        save_capture,
+    )
+
+    baseline: BaselineResult | None
+    if capture and kind != "replay":
+        raise ValueError("capture requires a replay baseline")
+    if offline:
+        if kind != "replay" or rpc_env or tx_hash:
+            raise ValueError(
+                "--offline cannot be combined with a transaction hash or --rpc-env"
+            )
+        plan = load_capture(offline)
+        if not plan.target:
+            raise ValueError("the capture has no replay transaction")
+        baseline = plan.run_baseline()
+    else:
+        if kind == "replay" and not tx_hash:
+            raise ValueError("replay needs a transaction hash or --offline BUNDLE")
+        if kind == "fork" and block is None:
+            raise ValueError("fork needs a block number")
+        rpc_url = _rpc_from_env(rpc_env)
+        try:
+            if kind == "replay":
+                assert tx_hash is not None
+                plan = prepare_replay(rpc_url, tx_hash)
+                baseline = plan.run_baseline()
+            else:
+                assert block is not None
+                plan = prepare_fork(rpc_url, block)
+                baseline = None
+        except Exception as exc:
+            raise ValueError(
+                str(exc).replace(rpc_url, "[RPC endpoint redacted]")
+            ) from None
+    if capture:
+        assert baseline is not None
+        save_capture(capture, plan, baseline)
+    return plan, baseline
+
+
+def _fork_transaction(
+    *,
+    to: str | None,
+    caller: str | None,
+    data: str = "0x",
+    value: int = 0,
+    gas: int = 3_000_000,
+    gas_price: int | None = None,
+    nonce: int | None = None,
+) -> dict[str, Any]:
+    if not to or not caller:
+        raise ValueError("fork needs a driver transaction: supply --to and --from")
+    if gas_price is None or nonce is None:
+        raise ValueError(
+            "supply --nonce and --gas-price for the fork driver; neither is guessed"
+        )
+    for address in (to, caller):
+        if not address.startswith("0x") or len(address) != 42:
+            raise ValueError("driver addresses must be 20-byte 0x-prefixed hex")
+        try:
+            bytes.fromhex(address[2:])
+        except ValueError:
+            raise ValueError("driver addresses must be 20-byte 0x-prefixed hex") from None
+    try:
+        if not data.startswith("0x"):
+            raise ValueError
+        bytes.fromhex(data[2:])
+    except ValueError:
+        raise ValueError("driver data must be 0x-prefixed even-length hex") from None
+    if min(value, gas_price, nonce or 0) < 0 or gas <= 0:
+        raise ValueError(
+            "driver quantities must be non-negative and gas must be positive"
+        )
+    return {
+        "to": to,
+        "caller": caller,
+        "data": data,
+        "value": hex(value),
+        "gas_limit": gas,
+        "gas_price": hex(gas_price),
+        "max_priority_fee_per_gas": None,
+        "access_list": [],
+        "blob_hashes": [],
+        "max_fee_per_blob_gas": None,
+        "nonce": nonce,
+        "chain_id": 1,
+        "tx_type": 0,
+        "commit": True,
+    }
+
+
+def cmd_mainnet(args: argparse.Namespace) -> int:
+    from rich.console import Console
+
+    console = Console()
+    try:
+        target = None
+        if args.command == "fork":
+            target = _fork_transaction(
+                to=args.to,
+                caller=args.caller,
+                data=args.data,
+                value=args.value,
+                gas=args.gas,
+                gas_price=args.gas_price,
+                nonce=args.nonce,
+            )
+        project = _mainnet_project(args.contracts)
+        plan, baseline = _prepare_mainnet(
+            args.command,
+            rpc_env=args.rpc_env,
+            tx_hash=getattr(args, "tx_hash", None),
+            block=getattr(args, "block", None),
+            offline=getattr(args, "offline", None),
+            capture=getattr(args, "capture", None),
+        )
+        session = DebugSession.from_fork_plan(
+            project, plan, target=target, baseline=baseline
+        )
+        if baseline is not None:
+            console.print("Baseline replay report", markup=False)
+            console.print(baseline.report, markup=False)
+        return _debug(console, project, None, args, session=session)
+    except Exception as exc:
+        endpoint = os.environ.get(args.rpc_env or "", "")
+        message = (
+            str(exc).replace(endpoint, "[RPC endpoint redacted]")
+            if endpoint
+            else str(exc)
+        )
+        console.print(f"{args.command} failed: {message}", markup=False)
+        return 1
 
 
 def cmd_doctor(_args: argparse.Namespace) -> int:
@@ -445,6 +680,7 @@ def _debug(
     restart_factory: Any = None,
     restart_argv: list[str] | None = None,
     session_class: Any = DebugSession,
+    session: Any = None,
 ) -> int:
     """Shared tail: start the target on the VM thread and hand off to a frontend.
 
@@ -452,7 +688,7 @@ def _debug(
     past deployment and `setUp` and opens at the first one; `continue` then stops at each
     subsequent test in turn. `restart_factory` binds the `reset` / `run` commands.
     """
-    session = session_class(project)
+    session = session if session is not None else session_class(project)
     evaluator = Evaluator(project)
     session.set_eval_hook(make_eval_hook(evaluator))
     if restart_factory is not None:
@@ -543,6 +779,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(args)
     if args.command == "mcp":
         return cmd_mcp(args)
+    if args.command in {"replay", "fork"}:
+        return cmd_mainnet(args)
     parser.print_help()
     return 1
 

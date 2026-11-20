@@ -122,6 +122,7 @@ class CommandProcessor:
             # The snapshot was copied at the pause, so a write to memory, the stack or a
             # local is invisible until it is re-read. Do that here, once, for every
             # mutating command rather than in each of them.
+            self.session.mark_diverged()
             self.session.refresh_snapshot()
         return result
 

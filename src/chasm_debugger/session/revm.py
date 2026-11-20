@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import traceback
@@ -256,6 +257,9 @@ class RevmDebugSession:
         project: Project,
         breakpoints: BreakpointSet | None = None,
         stop_at_start: bool = True,
+        *,
+        chain_factory: Callable[[], Any] | None = None,
+        transaction_driver: Any = None,
     ) -> None:
         self.project = project
         self.breakpoints = breakpoints or BreakpointSet()
@@ -268,7 +272,15 @@ class RevmDebugSession:
         self.stop_at_start = stop_at_start
         self.stop_on_revert = True
 
-        self._chain = RevmChain()
+        self._chain_factory = chain_factory or RevmChain
+        self._transaction_driver = transaction_driver
+        self._chain = self._chain_factory()
+        self.fork_anchor: dict[str, Any] | None = None
+        self.fork_report: dict[str, Any] | None = None
+        self.baseline_report: dict[str, Any] | None = None
+        self.experiment_result: dict[str, Any] | None = None
+        self.diverged = False
+        self._raw_entry_pending = False
         self._state = _RevmState(self)
         self._deployed: dict[str, Any] = {}
         self._frames: list[EvmFrame] = []
@@ -301,6 +313,75 @@ class RevmDebugSession:
         self.exit_error: str | None = None
         self.last_revert: str | None = None
 
+    @classmethod
+    def from_fork_plan(
+        cls,
+        project: Project,
+        plan: Any,
+        *,
+        target: dict[str, Any] | None = None,
+        baseline: Any = None,
+    ) -> RevmDebugSession:
+        request = dict(target if target is not None else plan.target or {})
+        if not request:
+            raise SessionError("fork sessions need a driver transaction with a target")
+        session = cls(project, chain_factory=plan.new_chain)
+        session.fork_report = dict(plan.report)
+        session.fork_anchor = dict(session.fork_report.get("anchor", plan.identity))
+        report = (
+            baseline.report
+            if baseline is not None
+            else getattr(plan, "baseline_report", None)
+        )
+        session.baseline_report = dict(report) if report is not None else None
+
+        def driver() -> None:
+            session.experiment_result = session.transact_envelope(
+                request, stop_at_entry=True
+            )
+
+        def restart_factory(argv: list[str]) -> Any:
+            if argv:
+                raise SessionError("fork/replay restart does not accept script arguments")
+            return driver
+
+        session._transaction_driver = driver
+        session.set_restart_factory(restart_factory, [])
+        return session
+
+    def mark_diverged(self) -> None:
+        if self.fork_anchor is not None:
+            self.diverged = True
+
+    def fork_info(self) -> dict[str, Any] | None:
+        if self.fork_anchor is None:
+            return None
+        frame = self.current_frame
+        parity = None
+        if frame is not None and frame.artifact is not None and not frame.is_create:
+            from ..compile import compare_runtime
+
+            parity = compare_runtime(frame.artifact, frame.disassembly.code)
+        mapped = bool(frame is not None and frame.artifact is not None)
+        locals_supported = mapped and not (
+            self.project.optimized
+            or getattr(self.project, "compiler_settings", {}).get("viaIR", False)
+        )
+        return {
+            "anchor": dict(self.fork_anchor),
+            "report": dict(self.fork_report or {}),
+            "baseline": self.baseline_report,
+            "diverged": self.diverged,
+            "source": {
+                "mode": "mapped" if mapped else "raw",
+                "contract": frame.artifact_name if frame is not None else None,
+                "parity": parity,
+                "locals_supported": locals_supported,
+            },
+            "experiment_result": _json_value(self.experiment_result),
+            "attachment": "exclusive; terminal and MCP do not attach simultaneously",
+        }
+
     def set_eval_hook(self, hook: Any) -> None:
         self._eval_hook = hook
 
@@ -312,7 +393,9 @@ class RevmDebugSession:
         self._restart_factory = factory
         self._restart_argv = list(initial_argv)
 
-    def start(self, target: Any) -> None:
+    def start(self, target: Any = None) -> None:
+        if target is None:
+            target = self._transaction_driver
         if self._thread is not None:
             raise SessionError("session already started")
         if not hasattr(target, "run_revm") and not callable(target):
@@ -376,6 +459,8 @@ class RevmDebugSession:
             self._thread.join(timeout=timeout)
 
     def restart(self, argv: list[str] | None = None, timeout: float = 120.0) -> Any:
+        if self.fork_anchor is not None and argv:
+            raise SessionError("fork/replay restart does not accept script arguments")
         if self._restart_factory is None:
             raise SessionError(
                 "no restart target; the session was not started by `chasm run`"
@@ -427,13 +512,19 @@ class RevmDebugSession:
         if argv is not None:
             self._restart_argv = list(argv)
         target = self._restart_factory(self._restart_argv)
-        if getattr(target, "fresh_chain", False):
+        if self.fork_anchor is not None or getattr(target, "fresh_chain", False):
             self.reset_chain()
+        self.diverged = False
+        self.experiment_result = None
         self.start(target)
         return self.wait(timeout=timeout)
 
     def reset_chain(self) -> None:
-        self._chain = RevmChain()
+        self._chain = self._chain_factory()
+        self.cheats = CheatState()
+        self.diverged = False
+        self.experiment_result = None
+        self._raw_entry_pending = False
         self._deployed.clear()
         self._frames.clear()
         self._last_raw = None
@@ -484,6 +575,20 @@ class RevmDebugSession:
             artifact = self.code.artifact_for(data, is_create=True)
             if artifact is not None:
                 self._deployed[created.lower()] = artifact
+        return result
+
+    def transact_envelope(
+        self, request: dict[str, Any], *, stop_at_entry: bool = False
+    ) -> dict[str, Any]:
+        if stop_at_entry:
+            self._raw_entry_pending = True
+            self._mode = StepMode.STEPI
+            self._pending_count = 1
+        self._sync_breakpoints()
+        self._chain.transact_json(json.dumps(request))
+        result = self._drive_transaction()
+        if result.get("type") == "failed":
+            raise SessionError(result.get("error") or "local transaction failed")
         return result
 
     def _require_success(self, result: dict[str, Any], what: str, artifact: Any) -> None:
@@ -722,7 +827,10 @@ class RevmDebugSession:
         snapshot: FrameSnapshot,
         hits: tuple[int, ...],
     ) -> bool:
-        if snapshot.stop_reason == "watchpoint":
+        if self._raw_entry_pending:
+            self._raw_entry_pending = False
+            return True
+        if snapshot.stop_reason == "watchpoint" or hits:
             return True
         if (
             self._opening_stop_pending
@@ -1102,6 +1210,24 @@ class RevmDebugSession:
                     watched_mnemonics.add("SSTORE")
             elif watchpoint.kind == "memory":
                 watched_mnemonics.update(_MEMORY_WRITE_MNEMONICS)
+        # Discover raw callees before resuming past their first opcode.
+        if self._raw_entry_pending or self.fork_anchor is not None:
+            points.add((_ANY_ADDRESS, 0))
+        points.update(
+            (_ANY_ADDRESS, pc)
+            for breakpoint in self.breakpoints.breakpoints.values()
+            if breakpoint.enabled and breakpoint.kind == BP_PC and not breakpoint.contract
+            for pc in breakpoint.pcs
+        )
+        for frame in self._frames:
+            for instruction in frame.disassembly.instructions:
+                if instruction.mnemonic in watched_mnemonics or any(
+                    breakpoint.enabled
+                    and breakpoint.kind == BP_OPCODE
+                    and breakpoint.opcode == instruction.mnemonic
+                    for breakpoint in self.breakpoints.breakpoints.values()
+                ):
+                    points.add((_ANY_ADDRESS, instruction.pc))
         for artifact in self.project.artifacts.values():
             for code, is_create in (
                 (artifact.deployed_bytecode, False),
@@ -1170,11 +1296,20 @@ class RevmDebugSession:
         computation: Any,
         internal_index: int | None = None,
     ) -> list[Any]:
+        unsupported = self.fork_anchor is not None and (
+            self.project.optimized
+            or getattr(self.project, "compiler_settings", {}).get("viaIR", False)
+        )
         return framelocals.read_frame_locals(
             self.locals,
             frame,
             computation,
             internal_index,
+            unavailable_reason=(
+                "optimized/viaIR local reconstruction is unsupported"
+                if unsupported
+                else None
+            ),
         )
 
     def evaluate_code(
@@ -1215,6 +1350,22 @@ class RevmDebugSession:
         frame_index: int | None = None,
         **kwargs: Any,
     ) -> Any:
+        result = self._inspect(op, *args, frame_index=frame_index, **kwargs)
+        if (
+            op.startswith("write_")
+            or op in {"set_gas", "set_pc", "cheat", "assembly"}
+            or (op == "evaluate" and kwargs.get("keep", False))
+        ):
+            self.mark_diverged()
+        return result
+
+    def _inspect(
+        self,
+        op: str,
+        *args: Any,
+        frame_index: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
         if self.finished or self.last_snapshot is None:
             raise SessionError("not stopped; nothing to inspect")
         index = len(self._frames) - 1 if frame_index is None else frame_index
@@ -1238,12 +1389,13 @@ class RevmDebugSession:
             }
         if op == "disassembly":
             before, after = (*args, 6, 18)[:2]
-            pc = max(0, frame.computation.code.program_counter - 1)
+            current_pc = max(0, frame.computation.code.program_counter - 1)
+            pc = int(args[2]) if len(args) > 2 and args[2] is not None else current_pc
             return [
                 {
                     "pc": instruction.pc,
                     "text": instruction.render(),
-                    "current": instruction.pc == pc,
+                    "current": instruction.pc == current_pc,
                     "line": _line_at(frame, instruction.pc),
                     "jumpdest": instruction.pc in frame.disassembly.jumpdests,
                 }
@@ -1638,6 +1790,16 @@ class RevmDebugSession:
     @contextmanager
     def suspended(self):
         yield
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        return "0x" + value.hex()
+    if isinstance(value, dict):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return value
 
 
 def _memory_write_range(snapshot: FrameSnapshot) -> tuple[int, int] | None:

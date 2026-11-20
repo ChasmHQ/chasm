@@ -46,8 +46,16 @@ One debug session is active at a time. Starting a new target replaces it.
 | Tool | Meaning |
 |---|---|
 | `chasm_start_session` | compile and start a web3.py driver script or a `.t.sol` Foundry test. Extra `args` go to scripts, and `match`/`match_contract` select tests. Returns the first stop report |
+| `chasm_start_replay` | reconstruct a supported historical transaction using `tx_hash` and `rpc_env`, or load an `offline` capture. Optional `contracts` imports exact build-info and `capture` creates a new bundle |
+| `chasm_start_fork` | run a local driver at `block_number` with `rpc_env`, `to`, `caller`, explicit `nonce` and `gas_price` |
+| `chasm_fork_info` | anchor, baseline receipt comparison, source parity, divergence and current experiment result |
 | `chasm_stop_session` | dispose the session (chain state is discarded) |
 | `chasm_restart_session` | re-run from scratch: fresh chain, breakpoints kept, optional new script args |
+
+Mainnet sessions execute locally and use read-only upstream RPC. Historical support is
+Ethereum L1 Cancun, not arbitrary Ethereum history. Baseline receipts and counterfactual
+results are separate. Restart rebuilds the same anchor and transaction prefix. Terminal
+and MCP do not attach simultaneously. See [fork and replay limits](fork.md).
 
 ### Navigation
 

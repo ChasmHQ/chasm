@@ -145,7 +145,7 @@ def _chasm_version() -> str:
     from importlib.metadata import PackageNotFoundError, version
 
     try:
-        return version("chasm")
+        return version("chasm-debugger")
     except PackageNotFoundError:  # pragma: no cover - running from a source tree
         return "unknown"
 

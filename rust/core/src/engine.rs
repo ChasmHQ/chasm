@@ -1,3 +1,4 @@
+use crate::fork::{ForkConfig, RemoteDb, transaction_from_json};
 use crate::protocol::{
     ChainConfig, CommandValue, DebugCommand, DebugEvent, Evaluation, Finished, FrameContext,
     FrameKind, HostCall, LogEntry, OpcodeExecution, PauseReason, PrankConfig, SessionConfig,
@@ -5,13 +6,18 @@ use crate::protocol::{
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use revm::{
-    Context, ExecuteCommitEvm, InspectEvm, Inspector, MainBuilder, MainContext,
+    Context, ExecuteCommitEvm, ExecuteEvm, InspectEvm, Inspector, MainBuilder, MainContext,
     context::{BlockEnv, CfgEnv, TxEnv},
     context_interface::{
-        ContextTr, CreateScheme, JournalTr, journaled_state::account::JournaledAccountTr,
+        ContextTr, CreateScheme, JournalTr, LocalContextTr,
+        journaled_state::account::JournaledAccountTr,
     },
-    database::InMemoryDB,
+    database::CacheDB,
     handler::instructions::EthInstructions,
+    handler::{
+        CallFrame, EthFrame, EthPrecompiles, FrameData, Handler, ItemOrResult, MainnetHandler,
+        system_call::SYSTEM_ADDRESS,
+    },
     interpreter::{
         CallInput, CallInputs, CallOutcome, CallScheme, FrameInput, Gas, InstructionContext,
         InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
@@ -36,16 +42,19 @@ pub const DEFAULT_CALLER: Address = address!("2000000000000000000000000000000000
 pub const CHEATCODE_ADDRESS: Address = address!("7109709ECfa91a80626fF3989D68f67F5b1DD12D");
 pub const CONSOLE_ADDRESS: Address = address!("000000000000000000636F6e736F6c652e6c6f67");
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+const BEACON_ROOTS_ADDRESS: Address = address!("000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
 const STATE_IDLE: u8 = 0;
 const STATE_RUNNING: u8 = 1;
 const STATE_PAUSED: u8 = 2;
 const STATE_STOPPED: u8 = 3;
 
-type ChasmContext = Context<BlockEnv, TxEnv, CfgEnv, InMemoryDB>;
+type ChasmContext = Context<BlockEnv, TxEnv, CfgEnv, CacheDB<RemoteDb>>;
 
 enum EngineCommand {
     Transact(TransactionRequest),
+    TransactEnv(TxEnv, bool),
+    BeaconRoot(Bytes),
     SetBreakpoints(Vec<crate::Breakpoint>),
     Debug(DebugCommand),
     Abort,
@@ -79,6 +88,7 @@ struct ChasmInspector {
     state: Arc<AtomicU8>,
     abort_requested: bool,
     steps_until_pause: Option<usize>,
+    strict: bool,
 }
 
 impl ChasmInspector {
@@ -202,13 +212,12 @@ impl ChasmInspector {
                     }
                 }
                 EngineCommand::Debug(DebugCommand::ReadStorage(key)) => {
-                    let checkpoint = context.journal_mut().checkpoint();
-                    let result = context
+                    let mut isolated = context.clone();
+                    let result = isolated
                         .journal_mut()
                         .sload(interpreter.input.target_address(), key)
                         .map(|value| CommandValue::Word(value.data))
                         .map_err(|error| SessionError::InvalidCommand(format!("{error:?}")));
-                    context.journal_mut().checkpoint_revert(checkpoint);
                     result
                 }
                 EngineCommand::Debug(DebugCommand::WriteStorage { key, value }) => context
@@ -288,7 +297,9 @@ impl ChasmInspector {
                         .collect();
                     Ok(CommandValue::Number(self.breakpoints.len() as u64))
                 }
-                EngineCommand::Transact(_) => Err(SessionError::InvalidCommand(
+                EngineCommand::Transact(_)
+                | EngineCommand::TransactEnv(_, _)
+                | EngineCommand::BeaconRoot(_) => Err(SessionError::InvalidCommand(
                     "a transaction is already running".to_owned(),
                 )),
                 EngineCommand::Abort => {
@@ -359,7 +370,9 @@ impl ChasmInspector {
                 EngineCommand::Debug(_) => Err(SessionError::InvalidCommand(
                     "the engine is waiting for a host-call response".to_owned(),
                 )),
-                EngineCommand::Transact(_) => Err(SessionError::InvalidCommand(
+                EngineCommand::Transact(_)
+                | EngineCommand::TransactEnv(_, _)
+                | EngineCommand::BeaconRoot(_) => Err(SessionError::InvalidCommand(
                     "a transaction is already running".to_owned(),
                 )),
                 EngineCommand::Abort => {
@@ -425,6 +438,22 @@ fn call_result(inputs: &CallInputs, output: Bytes, revert: bool) -> CallOutcome 
 }
 
 fn execute_state_command(
+    context: &mut ChasmContext,
+    command: StateCommand,
+) -> Result<CommandValue, SessionError> {
+    if matches!(
+        command,
+        StateCommand::ReadBalance(_)
+            | StateCommand::ReadCode(_)
+            | StateCommand::ReadNonce(_)
+            | StateCommand::ReadStorage { .. }
+    ) {
+        return execute_state_command_inner(&mut context.clone(), command);
+    }
+    execute_state_command_inner(context, command)
+}
+
+fn execute_state_command_inner(
     context: &mut ChasmContext,
     command: StateCommand,
 ) -> Result<CommandValue, SessionError> {
@@ -591,9 +620,22 @@ fn execute_evaluation(
     gas_limit: u64,
     keep: bool,
 ) -> Result<Evaluation, SessionError> {
-    let checkpoint = context.journal_mut().checkpoint();
-    let mut nested = Interpreter::new(
-        SharedMemory::new(),
+    if gas_limit > 30_000_000 || interpreter.input.depth() >= 1023 {
+        return Err(SessionError::InvalidCommand(
+            "unsupported_evaluation: gas/depth bound exceeded".to_owned(),
+        ));
+    }
+    let mut isolated = context.clone();
+    // LocalContext clones share their memory arena; eval must not alias live calldata/memory.
+    isolated.local = Default::default();
+    isolated
+        .journaled_state
+        .database
+        .db
+        .limit_reads_until(std::time::Instant::now() + Duration::from_secs(8));
+    let checkpoint = isolated.journal_mut().checkpoint();
+    let nested = Interpreter::new(
+        SharedMemory::new_with_buffer(isolated.local.shared_memory_buffer().clone()),
         ExtBytecode::new(Bytecode::new_raw(code)),
         InputsImpl {
             target_address: interpreter.input.target_address(),
@@ -603,31 +645,109 @@ fn execute_evaluation(
             call_value: value,
             depth: interpreter.input.depth() + 1,
         },
-        false,
-        SpecId::CANCUN,
+        interpreter.runtime_flag.is_static,
+        context.cfg.spec,
         gas_limit,
     );
-    let instructions =
-        EthInstructions::<EthInterpreter, ChasmContext>::new_mainnet_with_spec(SpecId::CANCUN);
-    let action = nested.run_plain(
-        instructions.instruction_table(),
-        instructions.gas_table(),
-        context,
-    );
-    let result = action.into_result_return().ok_or_else(|| {
-        SessionError::InvalidCommand("speculative execution suspended on a nested call".to_owned())
-    });
-    let evaluation = result.map(|result| Evaluation {
+    let frame = EthFrame {
+        data: FrameData::Call(CallFrame {
+            return_memory_range: 0..0,
+        }),
+        input: FrameInput::Empty,
+        depth: interpreter.input.depth() + 1,
+        checkpoint,
+        interpreter: nested,
+        is_finished: false,
+    };
+    let result = run_evaluation_frames(&mut isolated, frame)?;
+    let evaluation = Evaluation {
         success: result.result.is_ok(),
         gas_used: result.gas.total_gas_spent(),
         output: result.output,
-    });
-    if keep && evaluation.as_ref().is_ok_and(|result| result.success) {
-        context.journal_mut().checkpoint_commit();
-    } else {
-        context.journal_mut().checkpoint_revert(checkpoint);
+    };
+    if keep && evaluation.success {
+        isolated.journaled_state.database.db.clear_read_limit();
+        context.journaled_state = isolated.journaled_state;
     }
-    evaluation
+    Ok(evaluation)
+}
+
+fn run_evaluation_frames(
+    context: &mut ChasmContext,
+    root: EthFrame,
+) -> Result<InterpreterResult, SessionError> {
+    use revm::context_interface::{ContextError, local::OutFrame};
+    let invalid = |error: ContextError<crate::ForkError>| {
+        SessionError::InvalidCommand(format!("evaluation_failed: {error:?}"))
+    };
+    let instructions =
+        EthInstructions::<EthInterpreter, ChasmContext>::new_mainnet_with_spec(context.cfg.spec);
+    let mut precompiles = EthPrecompiles::new(context.cfg.spec);
+    let mut frames = vec![root];
+    let started = std::time::Instant::now();
+    let mut transitions = 0usize;
+    loop {
+        transitions += 1;
+        if transitions > 4096 || started.elapsed() > Duration::from_secs(8) {
+            return Err(SessionError::InvalidCommand(
+                "unsupported_evaluation: frame/time budget exceeded".to_owned(),
+            ));
+        }
+        let frame = frames.last_mut().expect("evaluation root exists");
+        let action = frame.interpreter.run_plain(
+            instructions.instruction_table(),
+            instructions.gas_table(),
+            context,
+        );
+        if let Err(error) = std::mem::replace(&mut context.error, Ok(())) {
+            return Err(invalid(error));
+        }
+        let next = frame
+            .process_next_action::<_, ContextError<crate::ForkError>>(context, action)
+            .map_err(invalid)?;
+        let result = match next {
+            ItemOrResult::Item(init) => {
+                if frames.len() >= 64 || init.depth >= 1024 {
+                    return Err(SessionError::InvalidCommand(
+                        "unsupported_evaluation: nested depth bound exceeded".to_owned(),
+                    ));
+                }
+                if let FrameInput::Call(inputs) = &init.frame_input {
+                    if matches!(inputs.bytecode_address, CHEATCODE_ADDRESS | CONSOLE_ADDRESS) {
+                        return Err(SessionError::InvalidCommand(
+                            "unsupported_evaluation: host callbacks are unavailable".to_owned(),
+                        ));
+                    }
+                }
+                let mut child = EthFrame::default();
+                match EthFrame::init_with_context(
+                    OutFrame::new_init(&mut child),
+                    context,
+                    &mut precompiles,
+                    init,
+                )
+                .map_err(invalid)?
+                {
+                    ItemOrResult::Item(_) => {
+                        frames.push(child);
+                        continue;
+                    }
+                    ItemOrResult::Result(result) => result,
+                }
+            }
+            ItemOrResult::Result(result) => {
+                frames.pop();
+                result
+            }
+        };
+        if let Some(parent) = frames.last_mut() {
+            parent
+                .return_result::<_, ContextError<crate::ForkError>>(context, result)
+                .map_err(invalid)?;
+        } else {
+            return Ok(result.into_interpreter_result());
+        }
+    }
 }
 
 fn execute_opcode(
@@ -661,15 +781,16 @@ fn execute_opcode(
             depth: interpreter.input.depth(),
         },
         interpreter.runtime_flag.is_static,
-        SpecId::CANCUN,
+        context.cfg.spec,
         interpreter.gas.remaining(),
     );
     nested.return_data = interpreter.return_data.clone();
     nested.stack.data_mut().extend(arguments.into_iter().rev());
 
-    let checkpoint = context.journal_mut().checkpoint();
+    let original = context.clone();
+    context.journal_mut().checkpoint();
     let instructions =
-        EthInstructions::<EthInterpreter, ChasmContext>::new_mainnet_with_spec(SpecId::CANCUN);
+        EthInstructions::<EthInterpreter, ChasmContext>::new_mainnet_with_spec(context.cfg.spec);
     let result = (|| {
         let static_gas = instructions.gas_table()[opcode as usize] as u64;
         if !nested.gas.record_regular_cost(static_gas) {
@@ -683,6 +804,9 @@ fn execute_opcode(
                 host: context,
             })
             .map_err(|error| SessionError::InvalidCommand(format!("{error:?}")))?;
+        if let Err(error) = std::mem::replace(&mut context.error, Ok(())) {
+            return Err(SessionError::InvalidCommand(format!("{error:?}")));
+        }
         if nested.bytecode.action().is_some() {
             return Err(SessionError::InvalidCommand(
                 "opcode execution cannot enter or end a frame".to_owned(),
@@ -708,7 +832,7 @@ fn execute_opcode(
         interpreter.memory.set(0, &live_memory);
         interpreter.memory.set(0, &nested_memory);
     } else {
-        context.journal_mut().checkpoint_revert(checkpoint);
+        *context = original;
     }
     result
 }
@@ -837,7 +961,7 @@ impl Inspector<ChasmContext> for ChasmInspector {
             .action
             .as_ref()
             .and_then(InterpreterAction::instruction_result);
-        if result.is_some_and(Self::is_out_of_gas) {
+        if !self.strict && result.is_some_and(Self::is_out_of_gas) {
             let checkpoint = self
                 .instruction_checkpoint
                 .take()
@@ -874,7 +998,7 @@ impl Inspector<ChasmContext> for ChasmInspector {
     }
 
     fn call(&mut self, context: &mut ChasmContext, inputs: &mut CallInputs) -> Option<CallOutcome> {
-        if matches!(inputs.bytecode_address, CHEATCODE_ADDRESS | CONSOLE_ADDRESS) {
+        if !self.strict && matches!(inputs.bytecode_address, CHEATCODE_ADDRESS | CONSOLE_ADDRESS) {
             return Some(self.host_call(context, inputs));
         }
         self.apply_prank(context, inputs);
@@ -887,6 +1011,7 @@ pub struct DebugEngine {
     events: Receiver<DebugEvent>,
     state: Arc<AtomicU8>,
     worker: Option<JoinHandle<()>>,
+    backing: RemoteDb,
 }
 
 impl DebugEngine {
@@ -910,13 +1035,58 @@ impl DebugEngine {
     }
 
     pub fn new(config: ChainConfig) -> Self {
+        Self::spawn(config, RemoteDb::default(), None)
+    }
+
+    pub fn fork(config: ForkConfig) -> Result<Self, SessionError> {
+        let invalid = |error: crate::ForkError| SessionError::InvalidCommand(error.to_string());
+        let backing = RemoteDb::new(&config).map_err(invalid)?;
+        let block = config.block_env().map_err(invalid)?;
+        Ok(Self::spawn(ChainConfig::default(), backing, Some(block)))
+    }
+
+    pub fn export_fork(&self) -> Result<String, SessionError> {
+        self.backing
+            .export()
+            .map_err(|error| SessionError::InvalidCommand(error.to_string()))
+    }
+
+    pub fn transact_json(&self, request: &str) -> Result<(), SessionError> {
+        let (tx, commit) = transaction_from_json(request)
+            .map_err(|error| SessionError::InvalidCommand(error.to_string()))?;
+        self.submit(EngineCommand::TransactEnv(tx, commit))
+    }
+
+    pub fn apply_beacon_root(&self, root: Bytes) -> Result<(), SessionError> {
+        if root.len() != 32 {
+            return Err(SessionError::InvalidCommand(
+                "beacon root must contain 32 bytes".to_owned(),
+            ));
+        }
+        if self.state.load(Ordering::Acquire) != STATE_IDLE {
+            return Err(SessionError::InvalidCommand(
+                "beacon root requires idle engine".to_owned(),
+            ));
+        }
+        self.command(EngineCommand::BeaconRoot(root)).map(|_| ())
+    }
+
+    fn spawn(config: ChainConfig, backing: RemoteDb, block: Option<BlockEnv>) -> Self {
         let (command_tx, command_rx) = unbounded();
         let (event_tx, event_rx) = unbounded();
         let state = Arc::new(AtomicU8::new(STATE_IDLE));
         let worker_state = Arc::clone(&state);
         let worker_events = event_tx.clone();
+        let worker_backing = backing.clone();
         let worker = std::thread::spawn(move || {
-            if let Err(error) = run_worker(config, command_rx, event_tx, &worker_state) {
+            if let Err(error) = run_worker(
+                config,
+                worker_backing,
+                block,
+                command_rx,
+                event_tx,
+                &worker_state,
+            ) {
                 let _ = worker_events.send(DebugEvent::Failed(error));
             }
             worker_state.store(STATE_STOPPED, Ordering::Release);
@@ -926,10 +1096,15 @@ impl DebugEngine {
             events: event_rx,
             state,
             worker: Some(worker),
+            backing,
         }
     }
 
     pub fn transact(&self, transaction: TransactionRequest) -> Result<(), SessionError> {
+        self.submit(EngineCommand::Transact(transaction))
+    }
+
+    fn submit(&self, action: EngineCommand) -> Result<(), SessionError> {
         self.state
             .compare_exchange(
                 STATE_IDLE,
@@ -943,7 +1118,7 @@ impl DebugEngine {
                 }
                 _ => SessionError::EngineStopped,
             })?;
-        match self.command(EngineCommand::Transact(transaction)) {
+        match self.command(action) {
             Ok(_) => Ok(()),
             Err(error) => {
                 self.state.store(STATE_IDLE, Ordering::Release);
@@ -1116,7 +1291,7 @@ impl DebugEngine {
             .map_err(|_| SessionError::EngineStopped)?;
         match reply_rx.recv_timeout(COMMAND_TIMEOUT) {
             Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err(SessionError::NotPaused),
+            Err(RecvTimeoutError::Timeout) => Err(SessionError::Timeout(COMMAND_TIMEOUT)),
             Err(RecvTimeoutError::Disconnected) => Err(SessionError::EngineStopped),
         }
     }
@@ -1139,16 +1314,20 @@ pub type PrototypeSession = DebugEngine;
 
 fn run_worker(
     config: ChainConfig,
+    backing: RemoteDb,
+    block: Option<BlockEnv>,
     commands: Receiver<Command>,
     events: Sender<DebugEvent>,
     state: &Arc<AtomicU8>,
 ) -> Result<(), String> {
-    let mut db = InMemoryDB::default();
+    let strict = backing.is_fork();
+    let mut db = CacheDB::new(backing);
     for account in config.accounts {
         db.insert_account_info(
             account.address,
             AccountInfo {
                 balance: account.balance,
+                nonce: account.nonce,
                 code: Some(Bytecode::new_raw(account.code)),
                 ..Default::default()
             },
@@ -1177,26 +1356,37 @@ fn run_worker(
         state: Arc::clone(state),
         abort_requested: false,
         steps_until_pause: None,
+        strict,
     };
-    let context = Context::mainnet().with_db(db).modify_cfg_chained(|cfg| {
-        cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN);
-        cfg.disable_nonce_check = true;
-    });
+    let context = Context::mainnet()
+        .with_db(db)
+        .with_block(block.unwrap_or_default())
+        .modify_cfg_chained(|cfg| {
+            cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN);
+            cfg.chain_id = if strict { 1 } else { cfg.chain_id };
+            cfg.disable_nonce_check = !strict;
+        });
     let mut evm = context.build_mainnet_with_inspector(inspector);
 
     while let Ok(command) = commands.recv() {
-        match command.action {
+        let action = match command.action {
             EngineCommand::Transact(transaction) => {
-                evm.inspector.origin = transaction.caller;
                 let commit = transaction.commit;
-                let tx = match transaction_env(transaction) {
-                    Ok(tx) => tx,
+                match transaction_env(transaction) {
+                    Ok(tx) => EngineCommand::TransactEnv(tx, commit),
                     Err(error) => {
                         state.store(STATE_IDLE, Ordering::Release);
                         let _ = command.reply.send(Err(SessionError::InvalidCommand(error)));
                         continue;
                     }
-                };
+                }
+            }
+            other => other,
+        };
+        match action {
+            EngineCommand::TransactEnv(tx, commit) => {
+                evm.inspector.origin = tx.caller;
+                let original = evm.ctx.clone();
                 evm.inspector.abort_requested = false;
                 let _ = command.reply.send(Ok(CommandValue::None));
                 let outcome = evm.inspect_tx(tx).map_err(|error| format!("{error:?}"));
@@ -1209,18 +1399,50 @@ fn run_worker(
                         let finished = finished_event(&outcome.result, &outcome.state);
                         if commit {
                             evm.commit(outcome.state);
+                        } else {
+                            evm.ctx = original;
                         }
                         events
                             .send(DebugEvent::Finished(finished))
                             .map_err(|_| "debug event receiver closed".to_owned())?;
                     }
                     Err(error) => {
+                        evm.ctx = original;
                         events
                             .send(DebugEvent::Failed(error))
                             .map_err(|_| "debug event receiver closed".to_owned())?;
                     }
                 }
             }
+            EngineCommand::BeaconRoot(root) => {
+                let original = evm.ctx.clone();
+                // REVM's default system gas includes post-Cancun reservoir gas; EIP-4788 uses exactly 30M.
+                evm.ctx.tx = TxEnv {
+                    caller: SYSTEM_ADDRESS,
+                    kind: TxKind::Call(BEACON_ROOTS_ADDRESS),
+                    data: root,
+                    gas_limit: 30_000_000,
+                    ..Default::default()
+                };
+                let result = MainnetHandler::default().run_system_call(&mut evm).map_err(
+                    |error: revm::context::result::EVMError<crate::ForkError>| {
+                        SessionError::InvalidCommand(format!("{error:?}"))
+                    },
+                );
+                match result {
+                    Ok(_) => {
+                        let changes = evm.finalize();
+                        evm.commit(changes);
+                        evm.ctx.tx = original.tx;
+                        let _ = command.reply.send(Ok(CommandValue::None));
+                    }
+                    Err(error) => {
+                        evm.ctx = original;
+                        let _ = command.reply.send(Err(error));
+                    }
+                }
+            }
+            EngineCommand::Transact(_) => unreachable!(),
             EngineCommand::Debug(DebugCommand::State(state_command)) => {
                 let result = execute_state_command(&mut evm.ctx, state_command);
                 let _ = command.reply.send(result);

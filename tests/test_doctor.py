@@ -29,6 +29,15 @@ def machine(monkeypatch):
     return monkeypatch
 
 
+def test_version_uses_debugger_distribution_metadata(monkeypatch):
+    names = []
+    monkeypatch.setattr(
+        "importlib.metadata.version", lambda name: names.append(name) or "0.1.0"
+    )
+    assert doctor._chasm_version() == "0.1.0"
+    assert names == ["chasm-debugger"]
+
+
 def _value(lines, label):
     return next(line for line in lines if line.label == label).value
 

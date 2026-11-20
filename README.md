@@ -32,6 +32,7 @@ Chasm is an interactive, gdb-style Solidity/EVM debugger on REVM, built for red-
   - [Work without source](#work-without-source)
   - [Find a gadget](#find-a-gadget)
   - [Debug from an AI client (MCP)](#debug-from-an-ai-client-mcp)
+  - [Replay pinned mainnet state locally](#replay-pinned-mainnet-state-locally)
   - [Compile a project](#compile-a-project)
   - [Check the environment](#check-the-environment)
 - [Reference](#reference)
@@ -71,6 +72,9 @@ Chasm has the following subcommands:
 - `run`: debug a Foundry test, or a web3.py driver script.
 - `compile`: compile the contracts and report what chasm sees.
 - `doctor`: report the compiler, runtimes and caches chasm found on this machine.
+- `replay`: reconstruct a supported historical mainnet transaction or load an offline capture.
+- `fork`: run a local driver transaction against pinned historical mainnet state.
+- `mcp`: expose debugger sessions to AI clients over stdio.
 
 For detailed information on each command and its options, run:
 
@@ -512,8 +516,10 @@ Implemented: `warp roll fee chainId coinbase deal etch store load prank startPra
 stopPrank addr sign assume label`, plus the `vm.assert*` family. `console.log` prints as you
 step.
 
-Not yet supported: `expectRevert`, `expectEmit`, `expectCall`, `mockCall`, `ffi`, forking,
-and fuzz or invariant argument generation.
+Not yet supported: `expectRevert`, `expectEmit`, `expectCall`, `mockCall`, `ffi`,
+and fuzz or invariant argument generation. Historical Ethereum L1 Cancun forks and replay
+are available through the separate `fork` and `replay` commands. See [mainnet replay](docs/fork.md)
+for the supported interval and source/evaluation limits.
 
 ### Run Yul at the prompt
 
@@ -593,6 +599,23 @@ through recorded opcodes. The server also checks compiled runtime bytecode again
 deployment and exports structLog traces. See [docs/mcp.md](docs/mcp.md) for the tool list
 and client configuration.
 
+### Replay pinned mainnet state locally
+
+The `replay` command reconstructs parent state, applies the block-start beacon-root call,
+and executes the transaction prefix before debugging the target. Upstream RPC is read-only.
+State changes remain local. Initial historical support is Ethereum L1 Cancun, not current
+Prague-or-later transactions. A receipt match is not a state-root or consensus proof.
+
+Try the source-free offline example without an RPC endpoint:
+
+```bash
+uv run chasm replay --offline examples/mainnet/synthetic-replay.json --console -x 'info registers' -x c
+```
+
+This fixture is synthetic, not a captured mainnet transaction. See [docs/fork.md](docs/fork.md)
+for online configuration, build-info imports, MCP lifecycle, capture limits and supported
+experiment behavior. Chasm browser integration remains separate from this engine work.
+
 ### Compile a project
 
 `chasm compile` runs the same build the debugger does and reports what it produced, which is
@@ -663,6 +686,7 @@ an `overrides` line so a stale environment variable cannot hide.
 | [docs/foundry.md](docs/foundry.md) | projects, library install, the build cache, cheatcodes |
 | [docs/mcp.md](docs/mcp.md) | the MCP server for AI clients: tools, data shapes, configuration |
 | [docs/headless.md](docs/headless.md) | REVM engine protocol for external frontends |
+| [docs/fork.md](docs/fork.md) | historical mainnet forks, replay validation, captures and limits |
 
 ## Development
 

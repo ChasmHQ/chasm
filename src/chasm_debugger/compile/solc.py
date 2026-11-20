@@ -7,6 +7,7 @@ the stack-slot heuristic local-variable support depends on.
 
 from __future__ import annotations
 
+import copy
 import os
 from collections.abc import Sequence
 from typing import Any
@@ -93,12 +94,12 @@ def compile_standard(
     evm_version: str | None = None,
     output_selection: dict | None = None,
     remappings: Sequence[str] | None = None,
+    compiler_settings: dict | None = None,
 ) -> dict:
     """Thin solc standard-JSON wrapper. Raises CompileError with parsed diagnostics."""
-    settings: dict[str, Any] = {
-        "optimizer": {"enabled": bool(optimize)},
-        "outputSelection": output_selection or _OUTPUT_SELECTION,
-    }
+    settings: dict[str, Any] = copy.deepcopy(compiler_settings or {})
+    settings.setdefault("optimizer", {"enabled": bool(optimize)})
+    settings["outputSelection"] = output_selection or _OUTPUT_SELECTION
     if remappings:
         settings["remappings"] = list(remappings)
     if evm_version:

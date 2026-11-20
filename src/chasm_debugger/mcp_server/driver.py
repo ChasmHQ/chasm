@@ -55,6 +55,8 @@ class DebugDriver:
         self._target_kind: str | None = None  # "script" | "foundry"
         self._prev_snapshot: FrameSnapshot | None = None
         self._provenance_next = False
+        self._fork_plan: Any = None
+        self._fork_baseline: Any = None
         self.notices: list[str] = []
 
     # -- lifecycle ---------------------------------------------------------
@@ -82,8 +84,15 @@ class DebugDriver:
         timeout: float | None = None,
         reference_runtime_hex: str | None = None,
         provenance: bool = False,
+        safe_foundry: bool = False,
+        pause_at_entry: bool = True,
+        breakpoints: list[str] | None = None,
     ) -> dict[str, Any]:
         """Compile and start a debug target; replaces any existing session.
+
+        For a Foundry test, `breakpoints` (`File.sol:LINE`, `*PC` or a function
+        name) are set before the first step. `pause_at_entry=False` runs from
+        the test's first line to the first of them, or to the end.
 
         `provenance=true` records every executed opcode from the start, enabling
         `chasm_why_stack` and `chasm_export_trace` without a second pass.
@@ -104,7 +113,14 @@ class DebugDriver:
             if target.endswith(".sol"):
                 self._target_kind = "foundry"
                 report = self._start_foundry(
-                    target, solc, optimize, match, match_contract
+                    target,
+                    solc,
+                    optimize,
+                    match,
+                    match_contract,
+                    safe=safe_foundry,
+                    pause_at_entry=pause_at_entry,
+                    breakpoints=breakpoints or [],
                 )
             else:
                 self._target_kind = "script"
@@ -125,6 +141,178 @@ class DebugDriver:
                     )
                 report["parity"] = verdict
             return report
+
+    def start_replay(
+        self,
+        tx_hash: str | None = None,
+        rpc_env: str | None = None,
+        contracts: str | None = None,
+        offline: str | None = None,
+        capture: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        return self._start_mainnet(
+            "replay",
+            tx_hash=tx_hash,
+            rpc_env=rpc_env,
+            contracts=contracts,
+            offline=offline,
+            capture=capture,
+            timeout=timeout,
+        )
+
+    def start_fork(
+        self,
+        block_number: int,
+        rpc_env: str,
+        to: str,
+        caller: str,
+        data: str = "0x",
+        value: int = 0,
+        gas: int = 3_000_000,
+        gas_price: int | None = None,
+        nonce: int | None = None,
+        contracts: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        from ..cli import _fork_transaction
+
+        try:
+            target = _fork_transaction(
+                to=to,
+                caller=caller,
+                data=data,
+                value=value,
+                gas=gas,
+                gas_price=gas_price,
+                nonce=nonce,
+            )
+        except ValueError as exc:
+            raise DriverError(str(exc)) from None
+        return self._start_mainnet(
+            "fork",
+            rpc_env=rpc_env,
+            block=block_number,
+            target=target,
+            contracts=contracts,
+            timeout=timeout,
+        )
+
+    def _start_mainnet(
+        self,
+        kind: str,
+        *,
+        tx_hash: str | None = None,
+        rpc_env: str | None = None,
+        block: int | None = None,
+        contracts: str | None = None,
+        offline: str | None = None,
+        capture: str | None = None,
+        timeout: float | None = None,
+        target: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from ..cli import _mainnet_project, _prepare_mainnet
+
+        with self._lock:
+            self.stop()
+            self.notices = []
+            if timeout is not None:
+                self.timeout = timeout
+            try:
+                project = _mainnet_project(contracts)
+                plan, baseline = _prepare_mainnet(
+                    kind,
+                    tx_hash=tx_hash,
+                    rpc_env=rpc_env,
+                    block=block,
+                    offline=offline,
+                    capture=capture,
+                )
+                session = DebugSession.from_fork_plan(
+                    project, plan, target=target, baseline=baseline
+                )
+                self._target_kind = kind
+                self._target_path = tx_hash if kind == "replay" else f"block {block}"
+                self._provenance_next = False
+                report = self._wire(project, None, session=session)
+                self._fork_plan = plan
+                self._fork_baseline = baseline
+                return report
+            except Exception as exc:
+                self.stop()
+                endpoint = os.environ.get(rpc_env or "", "")
+                message = (
+                    str(exc).replace(endpoint, "[RPC endpoint redacted]")
+                    if endpoint
+                    else str(exc)
+                )
+                raise DriverError(message) from None
+
+    def fork_info(self) -> dict[str, Any]:
+        with self._lock:
+            session, _ = self._require()
+            info = session.fork_info()
+            if info is None:
+                raise DriverError("the active session is not a fork or replay")
+            return info
+
+    def capabilities(self) -> dict[str, Any]:
+        with self._lock:
+            session, processor = self._require()
+            snap = session.last_snapshot
+            mapped = bool(
+                snap
+                and snap.contract_name
+                and processor.project.artifact(snap.contract_name)
+            )
+            source = bool(snap and snap.has_source)
+            locals_supported = mapped and not (
+                processor.project.optimized
+                or getattr(processor.project, "compiler_settings", {}).get("viaIR", False)
+            )
+            result: dict[str, Any] = {
+                "source": source,
+                "solidity": mapped,
+                "locals": locals_supported,
+                "mutate": bool(snap and not session.finished),
+                "restart": self._target_kind in {"replay", "fork"},
+            }
+            if not mapped:
+                result["reason"] = (
+                    "raw bytecode; matching build-info is required for Solidity evaluation"
+                )
+            elif not locals_supported:
+                result["reason"] = "optimized/viaIR local reconstruction is unsupported"
+            elif not source:
+                result["reason"] = "no source mapping at the current pc"
+            return result
+
+    def export_capture(self) -> dict[str, Any]:
+        from ..fork.capture import capture_bundle
+        from ..fork.execution import export_witness
+
+        with self._lock:
+            session, _ = self._require()
+            if self._fork_plan is None or self._fork_baseline is None:
+                raise DriverError("capture export requires a replay baseline")
+
+            def merge(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+                combined = dict(base)
+                for key, value in extra.items():
+                    previous = combined.get(key)
+                    combined[key] = (
+                        merge(previous, value)
+                        if isinstance(previous, dict) and isinstance(value, dict)
+                        else value
+                    )
+                return combined
+
+            witness = merge(self._fork_baseline.witness, export_witness(session._chain))
+            return capture_bundle(
+                self._fork_plan,
+                self._fork_baseline,
+                witness=witness,
+            )
 
     def _start_script(
         self,
@@ -187,6 +375,10 @@ class DebugDriver:
         optimize: bool,
         match: str | None,
         match_contract: str | None,
+        *,
+        safe: bool = False,
+        pause_at_entry: bool = True,
+        breakpoints: list[str] | None = None,
     ) -> dict[str, Any]:
         from ..foundry import (
             compile_test,
@@ -196,15 +388,54 @@ class DebugDriver:
             select_tests,
         )
 
-        prepared = prepare_project(sol, assume_yes=True, allow_install=True)
+        if safe and os.name == "nt" and sol.startswith("\\\\?\\"):
+            # Solidity source keys introduce forward slashes, which verbatim roots reject.
+            if sol[4:8].upper() == "UNC\\":
+                normalized = "\\\\" + sol[8:]
+            elif len(sol) > 6 and sol[5:7] == ":\\":
+                normalized = sol[4:]
+            else:
+                raise DriverError("unsupported Windows device path for a Foundry target")
+            if not os.path.samefile(sol, normalized):
+                raise DriverError(
+                    "normalized Foundry path does not identify the approved target"
+                )
+            sol = normalized
+        root = find_foundry_root(sol)
+        if safe and root is None:
+            raise DriverError("web Foundry mode requires an existing foundry.toml")
+        if safe:
+            from ..compile.foundry_config import read_foundry_config
+            from ..compile.solcbin import find
+
+            assert root is not None
+            solc = solc or read_foundry_config(root).solc_version
+            if not solc or find(solc) is None:
+                raise DriverError(
+                    "web Foundry mode requires a pinned, installed native solc"
+                )
+            compile_root, install_missing = root, False
+        else:
+            prepared = prepare_project(sol, assume_yes=True, allow_install=True)
+            compile_root, install_missing = prepared.root, prepared.may_install
         try:
-            project = compile_test(
-                sol,
-                prepared.root,
-                solc_version=solc,
-                install_missing=prepared.may_install,
-                on_notice=self._notice,
-            )
+            if safe:
+                project = compile_foundry_project(
+                    compile_root,
+                    target_file=os.path.abspath(sol),
+                    solc_version=solc,
+                    install_missing=False,
+                    use_cache=False,
+                    on_notice=self._notice,
+                )
+            else:
+                project = compile_test(
+                    sol,
+                    compile_root,
+                    solc_version=solc,
+                    install_missing=install_missing,
+                    on_notice=self._notice,
+                )
         except CompileError as exc:
             raise DriverError(f"compile failed: {exc}") from exc
         targets = discover_tests(project)
@@ -225,6 +456,8 @@ class DebugDriver:
             project,
             driver_fn,
             stop_functions=[f"{t.contract}.{t.function}" for t in selected],
+            breakpoints=breakpoints or [],
+            pause_at_entry=pause_at_entry,
         )
 
     def _wire(
@@ -234,8 +467,11 @@ class DebugDriver:
         stop_functions: list[str] | None = None,
         restart_factory: Any = None,
         restart_argv: list[str] | None = None,
+        session: Any = None,
+        breakpoints: list[str] | None = None,
+        pause_at_entry: bool = True,
     ) -> dict[str, Any]:
-        session = DebugSession(project)
+        session = session if session is not None else DebugSession(project)
         evaluator = Evaluator(project)
         session.set_eval_hook(make_eval_hook(evaluator))
         if restart_factory is not None:
@@ -248,44 +484,76 @@ class DebugDriver:
                 continue
             if first_contract is None:
                 first_contract, _, first_fn = name.partition(".")
+        entry_points = list(session.breakpoints.breakpoints)
         if getattr(self, "_provenance_next", False):
             session.provenance.enabled = True
-        session.start(target)
-        first = session.wait(timeout=self.timeout)
-        if first is None:
-            session.detach()
-            raise DriverError("timed out waiting for the target to reach contract code")
-        # Advance past the unavoidable constructor stop to the first test body.
-        if first_fn is not None:
-            for _ in range(64):
-                snap = session.last_snapshot
-                fn = getattr(snap, "function", None)
-                if (
-                    fn is not None
-                    and getattr(fn, "name", None) == first_fn
-                    and getattr(fn, "contract", None) == first_contract
-                ):
-                    break
-                advanced = session.resume(StepMode.RUN, count=1, timeout=self.timeout)
-                if advanced is not None:
-                    first = advanced
-                if isinstance(advanced, Finished):
-                    break
         self._session = session
         self._processor = CommandProcessor(session, evaluator)
         self._prev_snapshot = None
-        return self._report(first)
+        # Launch breakpoints, set before the first step. One that does not
+        # resolve is reported, not fatal: the rest still apply.
+        for spec in breakpoints or []:
+            try:
+                row = self.set_breakpoint(spec)
+                self._notice(f"breakpoint {row['id']}: {row['description']}")
+            except Exception as exc:
+                self._notice(f"breakpoint {spec!r} not set: {exc}")
+        try:
+            session.start(target)
+            first = session.wait(timeout=self.timeout)
+            if first is None:
+                raise DriverError(
+                    "timed out waiting for the target to reach contract code"
+                )
+            # Skip constructor stops before the selected test body.
+            if first_fn is not None:
+                for _ in range(64):
+                    snap = session.last_snapshot
+                    fn = getattr(snap, "function", None)
+                    if (
+                        fn is not None
+                        and getattr(fn, "name", None) == first_fn
+                        and getattr(fn, "contract", None) == first_contract
+                    ):
+                        break
+                    advanced = session.resume(StepMode.RUN, count=1, timeout=self.timeout)
+                    if advanced is not None:
+                        first = advanced
+                    if isinstance(advanced, Finished):
+                        break
+            if isinstance(first, Finished) and not first.ok:
+                raise DriverError(first.error or "target failed during startup")
+            if not pause_at_entry and not isinstance(first, Finished):
+                # The entry stops only found the test body; run on from there.
+                for number in entry_points:
+                    session.breakpoints.remove(number)
+                advanced = session.resume(StepMode.RUN, count=1, timeout=self.timeout)
+                if advanced is not None:
+                    first = advanced
+            if isinstance(first, Finished):
+                self._notice(
+                    "the test ran to the end without stopping"
+                    + ("; no breakpoint was reached" if breakpoints else "")
+                    + (" and passed" if first.ok else f" and failed: {first.error}")
+                )
+            return self._report(first)
+        except Exception:
+            self.stop()
+            raise
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
-            if self._session is None:
-                return {"stopped_session": False}
-            self._session.detach()
+            session = self._session
             self._session = None
             self._processor = None
             self._target_path = None
             self._target_kind = None
             self._prev_snapshot = None
+            self._fork_plan = None
+            self._fork_baseline = None
+            if session is None:
+                return {"stopped_session": False}
+            session.detach()
             return {"stopped_session": True}
 
     def restart(self, args: list[str] | None = None) -> dict[str, Any]:
@@ -335,6 +603,10 @@ class DebugDriver:
         }
         if self.notices:
             report["notices"] = self.notices[-8:]
+        if session is not None and session.fork_anchor is not None:
+            report["fork"] = session.fork_info()
+            report["baseline"] = session.baseline_report
+            report["diverged"] = session.diverged
         if event is None or isinstance(event, Finished):
             report.update(
                 stopped=False,
@@ -344,6 +616,18 @@ class DebugDriver:
                 exit_traceback=getattr(event, "traceback", None),
                 last_revert=getattr(session, "last_revert", None) if session else None,
             )
+            if session is not None:
+                outcome = session.experiment_result
+                report["execution"] = (
+                    {
+                        key: "0x" + bytes(outcome[key]).hex()
+                        if isinstance(outcome.get(key), (bytes, bytearray))
+                        else outcome.get(key)
+                        for key in ("success", "gas_used", "output", "error")
+                    }
+                    if outcome is not None
+                    else None
+                )
             return report
         snap = getattr(event, "snapshot", None)
         if snap is None:
@@ -477,27 +761,47 @@ class DebugDriver:
             return result
 
     def read_storage(
-        self, slots: list[int] | None = None, decode: bool = True
+        self,
+        slots: list[int] | None = None,
+        decode: bool = True,
+        limit: int | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             session, processor = self._require()
             snap = self._require_snapshot()
             decoded_by_slot: dict[int, dict[str, Any]] = {}
             items: list[dict[str, Any]] = []
+            decoder = None
             if decode:
                 decoder = processor.decoder(snap.contract_name)
                 if decoder:
+                    reads = 0
 
                     def reader(slot: int) -> int:
+                        nonlocal reads
+                        reads += 1
+                        if limit is not None and reads > 1024:
+                            raise DriverError(
+                                "storage decode read budget exceeded; request raw slots"
+                            )
                         return int(session.inspect("read_storage", slot))
 
-                    for var, value in decoder.read_all(reader):
+                    variables = (
+                        decoder.variables
+                        if limit is None
+                        else decoder.variables[: max(1, limit)]
+                    )
+                    for var in variables:
+                        try:
+                            display = decoder.read_variable(reader, var).display
+                        except Exception as exc:
+                            display = f"<error: {exc}>"
                         row = {
                             "slot": var.slot,
                             "offset": var.offset,
                             "name": var.name,
                             "type": var.type_label,
-                            "value": value.display,
+                            "value": display,
                         }
                         decoded_by_slot[var.slot] = row
                         items.append(row)
@@ -509,7 +813,12 @@ class DebugDriver:
                         continue
                     raw = int(session.inspect("read_storage", slot))
                     items.append({"slot": slot, "hex": hex_word(raw)})
-            return {"address": hex_short(snap.address), "items": items}
+            result: dict[str, Any] = {"address": hex_short(snap.address), "items": items}
+            if limit is not None:
+                result["truncated"] = bool(
+                    decode and decoder and len(decoder.variables) > limit
+                )
+            return result
 
     def get_backtrace(self) -> dict[str, Any]:
         snap = self._require_snapshot()
@@ -521,12 +830,19 @@ class DebugDriver:
             rows = processor.read_locals()
             return {"locals": rows}
 
-    def get_arguments(self) -> dict[str, Any]:
+    def get_arguments(self, max_calldata: int | None = None) -> dict[str, Any]:
         with self._lock:
             session, processor = self._require()
             snap = self._require_snapshot()
             info = session.inspect("frame_info")
             calldata = bytes(info["calldata"])
+            if max_calldata is not None and len(calldata) > max_calldata:
+                return {
+                    "decoded": False,
+                    "calldata_hex": "0x" + calldata[:max_calldata].hex(),
+                    "total": len(calldata),
+                    "truncated": True,
+                }
             art = (
                 processor.project.artifact(snap.contract_name)
                 if snap.contract_name
@@ -561,7 +877,7 @@ class DebugDriver:
                 max(1, min(after, MAX_DISASM_ROWS)),
                 around_pc,
             )
-            return {"rows": rows, "note": "row.current marks the window centre"}
+            return {"rows": rows, "note": "row.current marks the execution pc"}
 
     def read_source(
         self,
@@ -572,11 +888,9 @@ class DebugDriver:
         with self._lock:
             _, processor = self._require()
             snap = processor.snapshot
-            source_key = file or (
-                snap.source_key
-                if snap and snap.source_key
-                else next(iter(processor.project.sources))
-            )
+            source_key = file or (snap.source_key if snap else None)
+            if source_key is None:
+                raise DriverError("source unavailable for the current raw-bytecode frame")
             lines = processor.source_lines(source_key)
             if not lines:
                 raise DriverError(f"no source for {source_key}")
@@ -620,7 +934,9 @@ class DebugDriver:
                 lines.append({"file": name, "line": line, "gas": gas, "text": text})
             return {"by_opcode": dict(by_opcode), "by_source_line": lines}
 
-    def get_logs(self) -> dict[str, Any]:
+    def get_logs(
+        self, limit: int | None = None, data_limit: int | None = None
+    ) -> dict[str, Any]:
         with self._lock:
             session, processor = self._require()
             self._require_snapshot()
@@ -647,12 +963,21 @@ class DebugDriver:
                 {
                     "address": hex_short(address),
                     "topics": [f"0x{t:064x}" for t in topics],
-                    "data": "0x" + bytes(data).hex(),
+                    "data": "0x"
+                    + bytes(data[:data_limit] if data_limit is not None else data).hex(),
                     "event": event_name(topics),
+                    **(
+                        {"truncated": True, "data_size": len(data)}
+                        if data_limit is not None and len(data) > data_limit
+                        else {}
+                    ),
                 }
-                for address, topics, data in raw
+                for address, topics, data in (raw if limit is None else raw[:limit])
             ]
-            return {"logs": items}
+            result: dict[str, Any] = {"logs": items}
+            if limit is not None:
+                result.update(total=len(raw), truncated=len(raw) > limit)
+            return result
 
     # -- symbols -----------------------------------------------------------
 
@@ -871,10 +1196,20 @@ class DebugDriver:
             "condition": getattr(bp, "condition", None),
         }
 
-    def list_breakpoints(self) -> dict[str, Any]:
+    def list_breakpoints(self, structured: bool = False) -> dict[str, Any]:
         session, _ = self._require()
-        rows = session.breakpoints.listing()
-        return {"breakpoints": rows}
+        if structured:
+            points: list[Any] = [
+                *session.breakpoints.breakpoints.values(),
+                *session.breakpoints.watchpoints.values(),
+            ]
+            return {
+                "breakpoints": [
+                    {**self._breakpoint_row(bp), "enabled": bp.enabled}
+                    for bp in sorted(points, key=lambda bp: bp.number)
+                ]
+            }
+        return {"breakpoints": session.breakpoints.listing()}
 
     def delete_breakpoint(self, id: int) -> dict[str, Any]:
         session, _ = self._require()
@@ -895,8 +1230,11 @@ class DebugDriver:
         return {"ok": True, "lines": [_plain(line) for line in result.lines]}
 
     def evaluate(self, expression: str, keep: bool = False) -> dict[str, Any]:
-        _, processor = self._require()
+        session, processor = self._require()
         res = processor.evaluate(expression, keep=keep)
+        if keep:
+            session.mark_diverged()
+            session.refresh_snapshot()
         out: dict[str, Any] = {
             "expression": res.expression,
             "type": res.type_name,
@@ -911,6 +1249,7 @@ class DebugDriver:
     def set_gas(self, value: int) -> dict[str, Any]:
         session, _ = self._require()
         result = int(session.inspect("set_gas", int(value)))
+        session.refresh_snapshot()
         return {
             "gas_remaining": result,
             "note": (
@@ -922,6 +1261,7 @@ class DebugDriver:
     def set_stack_slot(self, index: int, value: int) -> dict[str, Any]:
         session, _ = self._require()
         result = int(session.inspect("write_stack", int(index), int(value)))
+        session.refresh_snapshot()
         return {"index": int(index), "value": hex_word(result)}
 
     def write_memory(self, offset: int, hex_data: str) -> dict[str, Any]:
@@ -931,11 +1271,13 @@ class DebugDriver:
             raise DriverError(f"not hex data: {hex_data!r}")
         data = bytes.fromhex(cleaned)
         session.inspect("write_memory", int(offset), data)
+        session.refresh_snapshot()
         return {"offset": int(offset), "size": len(data)}
 
     def write_storage(self, slot: int, value: int) -> dict[str, Any]:
         session, _ = self._require()
         result = int(session.inspect("write_storage", int(slot), int(value)))
+        session.refresh_snapshot()
         return {"slot": int(slot), "value": hex_word(result)}
 
     def set_pc(self, pc: int) -> dict[str, Any]:
@@ -944,6 +1286,7 @@ class DebugDriver:
             result = int(session.inspect("set_pc", int(pc)))
         except SessionError as exc:
             raise DriverError(f"{exc} (only JUMPDEST targets are reachable)") from exc
+        session.refresh_snapshot()
         return {"pc": result}
 
     def command(self, line: str) -> dict[str, Any]:

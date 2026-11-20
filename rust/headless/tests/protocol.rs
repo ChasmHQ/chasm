@@ -1,6 +1,6 @@
+use chasm_revm_headless::{PROTOCOL_VERSION, serve};
 use revm::primitives::keccak256;
 use serde_json::{Value, json};
-use chasm_revm_headless::{PROTOCOL_VERSION, serve};
 use std::{
     io::{Cursor, Read, Write},
     process::{Command, Stdio},
@@ -30,6 +30,28 @@ fn run(requests: &[String]) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[test]
+fn fork_protocol_uses_same_strict_offline_backend() {
+    let anchor = json!({"chain_id":1,"number":100,"hash":format!("0x{}","aa".repeat(32)),"genesis_hash":"0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"});
+    let config = json!({"rpc_url":null,"anchor":anchor,"block":{"number":101,"timestamp":1710338135u64,"beneficiary":TARGET,"gas_limit":30_000_000,"base_fee":"0x1","prevrandao":format!("0x{}","bb".repeat(32)),"excess_blob_gas":0},"strict":true,"witness":{"version":1,"anchor":anchor,"accounts":{CALLER:{"balance":"0xffffffffffffffff","nonce":0,"code":"0x"},TARGET:{"balance":"0x0","nonce":0,"code":"0x00"}},"storage":{},"block_hashes":{},"headers":{}}});
+    let transaction = json!({"caller":CALLER,"to":TARGET,"data":"0x","value":"0x0","gas_limit":30_000,"nonce":0,"chain_id":1,"tx_type":0,"gas_price":"0x2","max_priority_fee_per_gas":null,"access_list":[],"blob_hashes":[],"max_fee_per_blob_gas":null,"commit":true});
+    let responses = run(&[
+        request(1, "fork_open", config),
+        request(2, "fork_transact", transaction),
+        request(3, "wait_event", json!({})),
+        request(4, "state", json!({"op":"read_nonce","address":CALLER})),
+        request(5, "export_fork", json!({})),
+        request(6, "shutdown", json!({})),
+    ]);
+    assert_eq!(responses[0]["result"]["opened"], true);
+    assert_eq!(responses[2]["result"]["type"], "finished");
+    assert_eq!(responses[2]["result"]["success"], true);
+    assert_eq!(responses[3]["result"], 1);
+    assert_eq!(responses[4]["result"]["version"], 1);
+    assert_eq!(responses[4]["result"]["accounts"][CALLER]["nonce"], 0);
+    assert!(!responses[4]["result"].to_string().contains("rpc_url"));
 }
 
 #[test]

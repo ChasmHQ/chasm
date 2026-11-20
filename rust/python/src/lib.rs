@@ -1,3 +1,8 @@
+use chasm_revm_core::{
+    AccountSpec, Breakpoint, CHEATCODE_ADDRESS, CONSOLE_ADDRESS, ChainConfig, CommandValue,
+    DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine, DebugEvent, FrameContext, FrameKind, PauseReason,
+    PrankConfig, SessionConfig, SessionError, Snapshot, StateCommand, TransactionRequest,
+};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
@@ -6,11 +11,6 @@ use pyo3::{
 use revm::{
     bytecode::OpCode,
     primitives::{Address, B256, Bytes, U256},
-};
-use chasm_revm_core::{
-    AccountSpec, Breakpoint, CHEATCODE_ADDRESS, CONSOLE_ADDRESS, ChainConfig, CommandValue,
-    DEFAULT_CALLER, DEFAULT_TARGET, DebugEngine, DebugEvent, FrameContext, FrameKind, PauseReason,
-    PrankConfig, SessionConfig, SessionError, Snapshot, StateCommand, TransactionRequest,
 };
 use std::{io, str::FromStr, time::Duration};
 
@@ -220,10 +220,18 @@ struct RevmChain {
 #[pymethods]
 impl RevmChain {
     #[new]
-    fn new() -> Self {
+    #[pyo3(signature = (fork_config=None))]
+    fn new(fork_config: Option<&str>) -> PyResult<Self> {
+        if let Some(config) = fork_config {
+            let config = chasm_revm_core::ForkConfig::from_json(config)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            return Ok(Self {
+                inner: DebugEngine::fork(config).map_err(python_error)?,
+            });
+        }
         let mut caller = AccountSpec::new(DEFAULT_CALLER, Bytes::new());
         caller.balance = U256::MAX;
-        Self {
+        Ok(Self {
             inner: DebugEngine::new(ChainConfig {
                 accounts: vec![
                     caller,
@@ -232,7 +240,22 @@ impl RevmChain {
                 ],
                 breakpoints: Vec::new(),
             }),
-        }
+        })
+    }
+
+    fn transact_json(&self, py: Python<'_>, request: &str) -> PyResult<()> {
+        py.detach(|| self.inner.transact_json(request))
+            .map_err(python_error)
+    }
+
+    fn export_fork(&self, py: Python<'_>) -> PyResult<String> {
+        py.detach(|| self.inner.export_fork()).map_err(python_error)
+    }
+
+    fn apply_beacon_root(&self, py: Python<'_>, root: &Bound<'_, PyBytes>) -> PyResult<()> {
+        let root = Bytes::copy_from_slice(root.as_bytes());
+        py.detach(|| self.inner.apply_beacon_root(root))
+            .map_err(python_error)
     }
 
     fn set_breakpoints(

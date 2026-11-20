@@ -1,11 +1,11 @@
-use revm::primitives::{Address, B256, Bytes, U256};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
 use chasm_revm_core::{
     AccountSpec, Breakpoint, ChainConfig, CommandValue, DEFAULT_CALLER, DebugCommand, DebugEngine,
     DebugEvent, FrameContext, FrameKind, PauseReason, PrankConfig, SessionConfig, SessionError,
     Snapshot, StateCommand, TransactionKind, TransactionRequest,
 };
+use revm::primitives::{Address, B256, Bytes, U256};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use std::{
     fmt,
     io::{self, BufRead, Write},
@@ -108,6 +108,8 @@ struct AccountParams {
     code: String,
     #[serde(default)]
     balance: Option<String>,
+    #[serde(default)]
+    nonce: u64,
     #[serde(default)]
     storage: Vec<StorageParams>,
 }
@@ -409,6 +411,10 @@ impl ProtocolServer {
                     "methods": [
                         "hello",
                         "open",
+                        "fork_open",
+                        "fork_transact",
+                        "export_fork",
+                        "apply_beacon_root",
                         "start",
                         "transact",
                         "wait_event",
@@ -432,6 +438,43 @@ impl ProtocolServer {
                         "shutdown"
                     ]
                 }))
+            }
+            "fork_open" => {
+                if self.engine.is_some() {
+                    return Err(ProtocolError::new(
+                        SESSION_STATE_ERROR,
+                        "a debug session is already active",
+                    ));
+                }
+                let config = chasm_revm_core::ForkConfig::from_json(&params.to_string())
+                    .map_err(|error| ProtocolError::invalid_params(error.to_string()))?;
+                self.engine = Some(DebugEngine::fork(config).map_err(engine_error)?);
+                self.persistent = true;
+                Ok(json!({"opened":true}))
+            }
+            "fork_transact" => {
+                self.engine()?
+                    .transact_json(&params.to_string())
+                    .map_err(engine_error)?;
+                Ok(json!({"started":true}))
+            }
+            "export_fork" => {
+                empty_params(params)?;
+                let witness = self.engine()?.export_fork().map_err(engine_error)?;
+                serde_json::from_str(&witness)
+                    .map_err(|_| ProtocolError::new(ENGINE_ERROR, "invalid native witness"))
+            }
+            "apply_beacon_root" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct RootParams {
+                    root: String,
+                }
+                let params: RootParams = parse_params(params)?;
+                self.engine()?
+                    .apply_beacon_root(decode_bytes(&params.root)?)
+                    .map_err(engine_error)?;
+                Ok(Value::Null)
             }
             "open" => self.open(parse_params(params)?),
             "start" => self.start(parse_params(params)?),
@@ -489,7 +532,10 @@ impl ProtocolServer {
             }
             "state" => {
                 let params: StateParams = parse_params(params)?;
-                self.execute(DebugCommand::State(state_command(params)?))
+                self.engine()?
+                    .state(state_command(params)?)
+                    .map(command_value_json)
+                    .map_err(engine_error)
             }
             "evaluate" => {
                 let params: EvaluateParams = parse_params(params)?;
@@ -734,6 +780,7 @@ fn account_spec(params: AccountParams) -> Result<AccountSpec, ProtocolError> {
             .map(parse_word)
             .transpose()?
             .unwrap_or(U256::ZERO),
+        nonce: params.nonce,
         storage: params
             .storage
             .into_iter()

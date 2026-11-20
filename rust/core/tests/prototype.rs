@@ -1,11 +1,11 @@
-use revm::{
-    bytecode::opcode,
-    primitives::{Address, B256, Bytes, U256, address, keccak256},
-};
 use chasm_revm_core::{
     AccountSpec, Breakpoint, CHEATCODE_ADDRESS, ChainConfig, CommandValue, DEFAULT_CALLER,
     DEFAULT_TARGET, DebugEngine, DebugEvent, FrameKind, PauseReason, PrankConfig, PrototypeSession,
     SessionConfig, StateCommand, TransactionRequest,
+};
+use revm::{
+    bytecode::opcode,
+    primitives::{Address, B256, Bytes, U256, address, keccak256},
 };
 use std::time::Duration;
 
@@ -386,6 +386,7 @@ fn persists_state_across_create_and_call_transactions() {
             address: DEFAULT_CALLER,
             code: Bytes::new(),
             balance: U256::MAX,
+            nonce: 0,
             storage: Vec::new(),
         }],
         breakpoints: Vec::new(),
@@ -456,6 +457,7 @@ fn describes_contract_creation_frames() {
             address: DEFAULT_CALLER,
             code: Bytes::new(),
             balance: U256::MAX,
+            nonce: 0,
             storage: Vec::new(),
         }],
         breakpoints: vec![Breakpoint {

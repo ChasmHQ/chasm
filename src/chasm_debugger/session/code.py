@@ -5,13 +5,14 @@ source map, its disassembly, and the pc -> declaration table that makes local-va
 observation affordable (the hook does one dict lookup per instruction instead of resolving
 a source location).
 
-The cache key is a prefix of the code plus its length, which is enough to tell deployed
-contracts apart, and creation code is keyed separately because it has its own source map.
+Creation and runtime code use separate full-code hashes because their source maps differ.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+from eth_hash.auto import keccak
 
 from ..compile import Artifact, Project
 from ..disasm import Disassembly
@@ -20,7 +21,7 @@ from ..srcmap import LineIndex, PcMap
 
 
 def _key(code: bytes, is_create: bool) -> bytes:
-    return bytes(code[:64]) + len(code).to_bytes(4, "big") + (b"C" if is_create else b"R")
+    return keccak(bytes(code)) + (b"C" if is_create else b"R")
 
 
 class CodeIndex:

@@ -17,7 +17,7 @@ to `9`, resumes, and reads the committed storage from the finish event:
 
 ```bash
 $ uv run chasm-engine < examples/headless-session.jsonl
-{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","step","read_storage","write_storage","state","evaluate","evaluate_call","execute_opcode","set_prank","respond_host","resume","close","shutdown"],"protocol":"chasm-debugger/1","transport":"jsonl-stdio"}}
+{"id":1,"jsonrpc":"2.0","result":{"methods":["hello","open","fork_open","fork_transact","export_fork","apply_beacon_root","start","transact","wait_event","snapshot","set_breakpoints","set_stack","write_memory","set_gas","set_pc","step","read_storage","write_storage","state","evaluate","evaluate_call","execute_opcode","set_prank","respond_host","resume","close","shutdown"],"protocol":"chasm-debugger/1","transport":"jsonl-stdio"}}
 {"id":2,"jsonrpc":"2.0","result":{"started":true}}
 {"id":3,"jsonrpc":"2.0","result":{"snapshot":{"address":"0x1000000000000000000000000000000000000001","calldata":"0x","caller":"0x2000000000000000000000000000000000000002","code_address":"0x1000000000000000000000000000000000000001","depth":0,"frames":[{"address":"0x1000000000000000000000000000000000000001","calldata":"0x","caller":"0x2000000000000000000000000000000000000002","code":"0x600160005500","code_address":"0x1000000000000000000000000000000000000001","depth":0,"gas_limit":79000,"gas_remaining":78994,"is_static":false,"kind":"call","opcode":85,"pc":4,"value":"0x0"}],"gas_limit":79000,"gas_refund":0,"gas_remaining":78994,"gas_used":6,"is_static":false,"memory":"0x","memory_size":0,"mnemonic":"SSTORE","opcode":85,"origin":"0x2000000000000000000000000000000000000002","pc":4,"reason":"breakpoint","stack":["0x0","0x1"],"step":3,"value":"0x0"},"type":"paused"}}
 {"id":4,"jsonrpc":"2.0","result":"0x9"}
@@ -53,6 +53,10 @@ after sending its response.
 |---|---|---|
 | `hello` | `{}` | Protocol version, transport, and method names |
 | `open` | Initial `accounts` and `breakpoints` | `{"opened":true}` |
+| `fork_open` | Strict fork configuration with pinned `anchor`, `block`, optional `rpc_url` and `witness` | `{"opened":true}` |
+| `fork_transact` | Full supported historical transaction envelope | `{"started":true}` |
+| `export_fork` | `{}` | Endpoint-free base-state witness |
+| `apply_beacon_root` | `{"root":"0x..."}` with a 32-byte root | `null` after the local EIP-4788 system call |
 | `start` | Session configuration below | `{"started":true}` |
 | `transact` | `caller`, optional `to`, `data`, `value`, `gas_limit`, and `commit` | `{"started":true}` |
 | `wait_event` | `{"timeout_ms":5000}` | A paused, finished, or failed event |
@@ -74,6 +78,14 @@ after sending its response.
 | `resume` | `{}` | `null` |
 | `close` | `{}` | `null` |
 | `shutdown` | `{}` | `null`, followed by process exit |
+
+`fork_open` uses the same engine and navigation methods, with no automatic caller funding
+or special-address host interception. Its supported scope is Ethereum L1 Cancun. The native
+backend reads only hash-pinned state and keeps all writes local. `fork_transact` includes
+nonce, transaction type, fees, access list and blob fields rather than using local fixture
+defaults. The caller is responsible for applying the beacon transition and ordered prefix.
+Use the Python replay coordinator when receipt validation and capture metadata are needed.
+See [fork and replay](fork.md) for the support and provider-trust boundaries.
 
 Omitting `to` from `transact` executes a CREATE transaction and reports the new address as
 `created_address` in the finish event. Supplying `to` executes a CALL. Persistent chains

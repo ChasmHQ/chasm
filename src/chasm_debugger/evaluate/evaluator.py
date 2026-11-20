@@ -127,6 +127,12 @@ class Evaluator:
         parameters: str = "",
     ) -> dict:
         self.compile_count += 1
+        settings = self.project.compiler_settings
+        if settings.get("viaIR"):
+            raise EvalError("Solidity evaluation of viaIR build-info is not supported")
+        compile_options: dict[str, Any] = (
+            {"compiler_settings": settings} if settings else {}
+        )
         return compile_standard(
             self._sources_with(
                 artifact, expression, return_type, probe=probe, parameters=parameters
@@ -139,6 +145,7 @@ class Evaluator:
                 artifact.source_key: {artifact.name: ["evm.deployedBytecode.object"]}
             },
             remappings=self.project.remappings or None,
+            **compile_options,
         )
 
     def _contract_nodes(self) -> dict[int, dict]:
@@ -314,6 +321,14 @@ class Evaluator:
                 "use the low-level views ($stack, $storage, x/) instead"
             )
 
+        if (
+            getattr(session, "fork_anchor", None) is not None
+            and artifact.immutable_references
+        ):
+            raise EvalError(
+                "fork Solidity evaluation with immutable fields is not supported; "
+                "use raw state views"
+            )
         blocked = unbindable_reference(expression, bindings)
         if blocked:
             raise EvalError(blocked)
