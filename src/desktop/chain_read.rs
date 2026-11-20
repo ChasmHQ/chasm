@@ -50,6 +50,8 @@ const ALLOWED_METHODS: &[&str] = &[
     "eth_getCode",
     "eth_getStorageAt",
     "eth_call",
+    // Read-only node info, for the fork block when block 0 is pruned.
+    "anvil_nodeInfo",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -699,11 +701,21 @@ struct ChainIdentity {
 async fn load_identity(http: &reqwest::Client, url: &str) -> Result<ChainIdentity, ReadError> {
     let raw = rpc_call(http, url, "eth_chainId", json!([])).await?;
     let chain_id = quantity_to_decimal(&quantity_field(&raw, "chain id")?)?;
-    let raw = rpc_call(http, url, "eth_getBlockByNumber", json!(["0x0", false])).await?;
+    let mut raw = rpc_call(http, url, "eth_getBlockByNumber", json!(["0x0", false])).await?;
+    let mut anchored = false;
+    if raw.is_null() {
+        // Pruned block 0: a fork node's fork block pins the identity instead.
+        if let Ok(info) = rpc_call(http, url, "anvil_nodeInfo", json!([])).await {
+            if let Some(block) = info["forkConfig"]["forkBlockNumber"].as_u64() {
+                raw = rpc_call(http, url, "eth_getBlockByNumber", json!([format!("{block:#x}"), false])).await?;
+                anchored = true;
+            }
+        }
+    }
     let genesis = raw.as_object().ok_or_else(|| {
-        ReadError::new(ReadErrorCode::BadResponse, "node returned no genesis block")
+        ReadError::new(ReadErrorCode::BadResponse, "node serves neither block 0 nor a fork block")
     })?;
-    if genesis.get("number") != Some(&json!("0x0")) {
+    if !anchored && genesis.get("number") != Some(&json!("0x0")) {
         return Err(ReadError::new(
             ReadErrorCode::BadResponse,
             "genesis block number is not 0x0",

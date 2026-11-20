@@ -233,6 +233,70 @@ pub fn chain_name(id: u64) -> String {
         .unwrap_or_else(|| format!("chain {id}"))
 }
 
+/// One line per check of a fork RPC, before it is saved. Only the host is
+/// named: provider keys often sit in the URL path.
+pub async fn test_rpc(url: &str, block: &str) -> Result<Vec<String>, String> {
+    let url = url.trim();
+    let parsed = reqwest::Url::parse(url).map_err(|_| "Enter an http(s) RPC URL.".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("The fork RPC must be an http(s) URL.".into());
+    }
+    let block = block.trim();
+    let fork_block = if block.is_empty() { None } else { Some(block.parse::<u64>().map_err(|_| "Enter the fork block as a whole number.".to_string())?) };
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(|error| error.to_string())?;
+    let call = |method: &'static str, params: serde_json::Value| {
+        let client = client.clone();
+        let url = url.to_string();
+        async move {
+            let value: serde_json::Value = client
+                .post(&url)
+                .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}))
+                .send()
+                .await
+                .map_err(|_| "no answer".to_string())?
+                .json()
+                .await
+                .map_err(|_| "not JSON-RPC".to_string())?;
+            match value.get("error").filter(|error| !error.is_null()) {
+                Some(error) => Err(format!("refused (code {})", error["code"].as_i64().unwrap_or_default())),
+                None => Ok(value["result"].clone()),
+            }
+        }
+    };
+    let host = parsed.host_str().unwrap_or("the RPC");
+    let quantity = |value: &serde_json::Value| value.as_str().and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok());
+    let mut lines = Vec::new();
+    let chain = call("eth_chainId", serde_json::json!([])).await;
+    let Some(chain) = chain.as_ref().ok().and_then(quantity) else {
+        return Err(format!("{host} did not answer eth_chainId ({}). Check the URL.", chain.err().unwrap_or_else(|| "invalid answer".into())));
+    };
+    lines.push(format!("ok  chain: {}", chain_name(chain)));
+    let head = call("eth_blockNumber", serde_json::json!([])).await.ok().as_ref().and_then(quantity);
+    match head {
+        Some(head) => lines.push(format!("ok  head: block {head}")),
+        None => lines.push("no  head: eth_blockNumber failed".into()),
+    }
+    if let Some(number) = fork_block {
+        let found = call("eth_getBlockByNumber", serde_json::json!([format!("{number:#x}"), false])).await;
+        match found {
+            Ok(block) if !block.is_null() => lines.push(format!("ok  fork block {number} is available")),
+            Ok(_) => lines.push(format!("no  fork block {number}: not served (pruned, or after the head)")),
+            Err(error) => lines.push(format!("no  fork block {number}: {error}")),
+        }
+    }
+    match call("eth_getBlockByNumber", serde_json::json!(["0x0", false])).await {
+        Ok(genesis) if !genesis.is_null() => lines.push("ok  block 0 is served: identity pins to the genesis hash".into()),
+        _ => lines.push("--  block 0 is not served: Chasm pins to the fork block instead".into()),
+    }
+    // Historical state at the fork block is what an archive node provides.
+    let at = fork_block.map(|number| format!("{number:#x}")).unwrap_or_else(|| "latest".into());
+    match call("eth_getBalance", serde_json::json!(["0x0000000000000000000000000000000000000000", at])).await {
+        Ok(_) => lines.push("ok  state at the fork block is readable".into()),
+        Err(error) => lines.push(format!("no  state at the fork block: {error} (an archive RPC is needed for old blocks)")),
+    }
+    Ok(lines)
+}
+
 /// Validate and save the fork setting. Only HTTP(S) URLs without spaces are
 /// accepted; an empty URL switches back to a local chain.
 pub fn save_network(workspace: &Path, url: &str, block: &str) -> Result<crate::config::NetworkConfig, String> {

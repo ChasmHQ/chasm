@@ -1,6 +1,6 @@
 # Plan: find the cause of any revert in one flow (2026-11-19)
 
-Status: R1, R2.1, R2.2, R2.4, R3 and R6.3 done; next R6.1–6.2.
+Status: R1, R2.1, R2.2, R2.4, R3 and R6 done; next R4.
 
 This plan comes from a review of a real fork session. The step debugger
 works: a contract Chasm compiled itself stepped by source line, through
@@ -177,5 +177,5 @@ Every step ships with unit tests and its live check, gets its own commit on
 | R3 | done: `call_tree.rs` (frames, kinds, outcomes, ranges), Calls tab with frame jump, `calls` / `frame n`, per-frame `args` via attached or unique ABIs (ambiguous selectors list candidates), `b *pc`, `b op`, `b entry`; `call_tree` live flow |
 | R4 | not started |
 | R5 | not started |
-| R6 | R6.3 duplicate-library message done (`duplicate_library_hint`); R6.1–6.2 next |
+| R6 | done: identity pins to the fork block (`anvil_nodeInfo`, marked `chasmAnchor`) when block 0 is pruned; Test RPC (`toolchain::test_rpc`, action `test_rpc`) checks chain id, head, fork block, block 0 and state at the fork block, naming only the host. `debug_traceCall` is not probed: the replay node is a local Anvil, which always serves it. R6.3 duplicate-library message (`duplicate_library_hint`); checks in the `toolchain` live flow |
 | R7 | not started |

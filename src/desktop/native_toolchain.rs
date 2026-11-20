@@ -216,6 +216,25 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
         }
     });
     let weak = ui.as_weak();
+    ui.global::<ToolchainLogic>().on_test_rpc({
+        let weak = weak.clone();
+        let rt = runtime.clone();
+        move |url, block| {
+            status(&weak, "Testing the RPC…".into(), true);
+            let weak = weak.clone();
+            let (url, block) = (url.to_string(), block.to_string());
+            rt.spawn(async move {
+                let result = toolchain::test_rpc(&url, &block).await;
+                let _ = slint::invoke_from_event_loop(move || {
+                    let text = match result {
+                        Ok(lines) => format!("RPC test:\n{}", lines.join("\n")),
+                        Err(error) => error,
+                    };
+                    status(&weak, text, false);
+                });
+            });
+        }
+    });
     ui.global::<ToolchainLogic>().on_preset(move |index| {
         let Some((name, url, _)) = usize::try_from(index).ok().and_then(|index| toolchain::PUBLIC_RPCS.get(index)) else { return };
         if let Some(ui) = weak.upgrade() {

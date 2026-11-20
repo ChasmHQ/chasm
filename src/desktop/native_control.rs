@@ -506,6 +506,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
                 "remove" => logic.invoke_remove(library.into()),
                 "network" => logic.invoke_save_network(fork_url.clone().unwrap_or_default().into(), fork_block.clone().unwrap_or_default().into()),
                 "build_source" => logic.invoke_build_source(source.clone().unwrap_or_default().into()),
+                "test_rpc" => logic.invoke_test_rpc(fork_url.clone().unwrap_or_default().into(), fork_block.clone().unwrap_or_default().into()),
                 "settings" => logic.invoke_save_settings(
                     match optimizer { Some(true) => 1, Some(false) => 2, None => 0 },
                     optimizer_runs.map(|runs| runs.to_string()).unwrap_or_default().into(),

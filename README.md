@@ -73,6 +73,7 @@ macros, and fork a live chain to debug real transactions.
 - **Fork a live chain** at the latest or a chosen block: pick Ethereum, Base, Arbitrum, Optimism, Polygon or Sepolia, or paste any EVM RPC. The status bar names the forked chain.
   - Paste a real transaction hash to replay and step through it. Verified contracts show their source, fetched from Sourcify.
   - The fork keeps chain id 31337, so nothing you sign is valid on the real network.
+  - **Test RPC** checks the URL first (chain, head, fork block, archive state) and shows only its host.
 
 ### Project
 - **Compiler.** Auto (per file pragma), or one solc version locked in `.chasm/chasm.toml`, downloaded when missing. Optimizer, runs, via-IR, EVM version and metadata hash are set there too. When they match how deployed code was built, the debugger shows its source. Immutables, linked libraries and code without a metadata hash still match.

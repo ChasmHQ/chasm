@@ -50,6 +50,7 @@ export global ToolchainLogic {
     // optimizer: 0 default, 1 on, 2 off.
     callback save-settings(int, string, bool, string, string);
     callback build-source(string);
+    callback test-rpc(string, string);
 }
 
 component Small inherits ActionControl {
@@ -96,6 +97,7 @@ export component ToolchainWorkspace inherits ScrollView {
             spacing: 0.375rem;
             LineEdit { text <=> ToolchainData.fork-url; placeholder-text: "https://… RPC to fork, empty for a local chain"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 3; }
             LineEdit { text <=> ToolchainData.fork-block; placeholder-text: "block (latest)"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 1; }
+            IconButton { icon: @image-url("icons/search.svg"); label: "Test RPC"; enabled: !ToolchainData.busy && ToolchainData.fork-url != ""; clicked => { ToolchainLogic.test-rpc(ToolchainData.fork-url, ToolchainData.fork-block); } }
             IconButton { icon: @image-url("icons/refresh.svg"); label: "Save and reopen project"; primary: true; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.save-network(ToolchainData.fork-url, ToolchainData.fork-block); } }
         }
         if ToolchainData.fork-saved != ToolchainData.fork-running: SelectableText { text: "Saved setting: \{ToolchainData.fork-saved}. It applies when the project reopens."; color: Theme.warn; font-size: 0.75rem; wrap: word-wrap; }

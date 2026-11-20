@@ -206,6 +206,16 @@ def toolchain():
     lib = next(l for l in query("toolchain.state")["libraries"] if l["id"] == "solmate")
     check("remove drops the remapping, keeps the download", lib["used"] is None and lib["installed"], str(lib))
     compiled()
+    # Test RPC checks a node before it is saved as the fork; here, the local node.
+    command("toolchain.action", action="test_rpc", fork_url="http://127.0.0.1:8545/?key=secret-path", fork_block="0")
+    for _ in range(30):
+        status = query("toolchain.state")["status"]
+        if status.startswith(("RPC test", "Enter", "The fork")) or "did not answer" in status:
+            break
+        time.sleep(0.5)
+    check("Test RPC reports each check", "ok  chain" in status and "fork block 0 is available" in status and "block 0 is served" in status, status)
+    check("Test RPC never shows the URL path", "secret-path" not in status, status)
+    check("Test RPC saves nothing", query("toolchain.state")["network"]["forkHost"] is None, str(query("toolchain.state")["network"]))
 
 
 def palette():

@@ -36,6 +36,8 @@ the `ui/` folder and the npm build are gone.
 - Local chain cheats: time, blocks, balance, nonce, storage slot and code.
 - Fork a live chain at the latest or a chosen block (chain id stays 31337), from public RPC presets or any URL. The status bar names the forked chain.
 - Verified contracts on a fork show their source in the debugger, from Sourcify, cached per project.
+- **Test RPC** in Network checks a fork URL before it is saved: chain id, head, the fork block, block 0 and state at the fork block, one line each. Only the host is shown.
+- An RPC that prunes block 0 still forks: the identity pins to the fork block instead of the genesis block.
 - A real transaction from the forked chain replays on a separate node at its parent block, with its block context and the real chain id, without reopening the project.
 
 ### Project

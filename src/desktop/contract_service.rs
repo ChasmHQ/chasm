@@ -838,9 +838,24 @@ async fn identity_at(url: &str, block: &str) -> Result<Value, String> {
         parse_quantity_text(block)?;
     }
     let chain = rpc(url, "eth_chainId", json!([])).await?;
-    let genesis = rpc(url, "eth_getBlockByNumber", json!(["0x0", false])).await?;
+    let mut genesis = rpc(url, "eth_getBlockByNumber", json!(["0x0", false])).await?;
+    if genesis.get("result").is_none_or(Value::is_null) {
+        // Some RPCs prune block 0. A fork's first block anchors it instead.
+        if let Some(anchor) = anchor_block(url).await {
+            genesis = rpc(url, "eth_getBlockByNumber", json!([format!("{anchor:#x}"), false])).await?;
+            if let Some(result) = genesis.get_mut("result").and_then(Value::as_object_mut) {
+                result.insert("chasmAnchor".into(), json!(true));
+            }
+        }
+    }
     let header = rpc(url, "eth_getBlockByNumber", json!([block, false])).await?;
     identity_from_responses(block, &chain, &genesis, &header)
+}
+
+/// The fork block of an Anvil node, as its first own block, or None.
+async fn anchor_block(url: &str) -> Option<u64> {
+    let info = rpc(url, "anvil_nodeInfo", json!([])).await.ok()?;
+    info["result"]["forkConfig"]["forkBlockNumber"].as_u64()
 }
 
 fn identity_from_responses(
@@ -860,9 +875,10 @@ fn identity_from_responses(
     let genesis_result = genesis
         .get("result")
         .and_then(Value::as_object)
-        .ok_or("The genesis block is unavailable.")?;
-    if parse_quantity(genesis_result.get("number").unwrap_or(&Value::Null)).ok()
-        != Some(U256::zero())
+        .ok_or("The node serves neither block 0 nor a fork block to pin its identity. Use an RPC with full block history.")?;
+    let anchored = genesis_result.get("chasmAnchor") == Some(&json!(true));
+    if !anchored
+        && parse_quantity(genesis_result.get("number").unwrap_or(&Value::Null)).ok() != Some(U256::zero())
     {
         return Err("The node returned an invalid genesis block number.".into());
     }
@@ -1022,6 +1038,7 @@ async fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
         "eth_estimateGas",
         "eth_sendRawTransaction",
         "eth_getTransactionReceipt",
+        "anvil_nodeInfo",
         "debug_traceCall",
         "debug_traceTransaction",
     ];
@@ -1202,6 +1219,11 @@ mod tests {
             &header
         )
         .is_err());
+        // A fork block marked as the anchor stands in for a pruned block 0.
+        let anchored = json!({"result":{"number":"0x9","hash":hash,"chasmAnchor":true}});
+        assert!(identity_from_responses("0x10", &chain, &anchored, &header).is_ok());
+        let error = identity_from_responses("0x10", &chain, &json!({"result":null}), &header).unwrap_err();
+        assert!(error.contains("neither block 0 nor a fork block"), "{error}");
         assert!(identity_from_responses(
             "0x10",
             &chain,

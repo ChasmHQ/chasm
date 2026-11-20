@@ -25,7 +25,7 @@ key is stored here.
 | `bank` | deploy, deposit, trace, snapshot/revert; no query leaks the Anvil key |
 | `revert`, `steps` | revert reason before sending; step into/over/out and their reverses |
 | `history`, `timeline` | saved calls, Repeat/Debug/To macro; snapshots, cheats, revert to a point |
-| `toolchain`, `template` | lock solc, install/use/remove a library; ERC20 template compiled and deployed |
+| `toolchain`, `template` | lock solc, install/use/remove a library, Test RPC without showing the URL; ERC20 template compiled and deployed |
 | `palette`, `macro` | Ctrl+K; a macro built from form commands |
 | `inline_deploy` | deploy from the contract tab, call and debug in five clicks |
 | `panes` | trace panes dock, float and hide |
