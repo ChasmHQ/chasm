@@ -6,6 +6,8 @@ Chasm is now a native Rust + Slint desktop app. The Axum + React web UI,
 the `ui/` folder and the npm build are gone.
 
 ### Workspace
+- Rate-limited public RPCs: the fork node retries with backoff (`--retries 8 --fork-retry-backoff 1000 --timeout 45000`), and Chasm's own upstream reads (Test RPC, Sourcify, replay block lookup) retry HTTP 429/503 following `Retry-After`, at most 5 attempts and 20 s of waiting. Sends are never retried.
+- `toolchain.state.network` states both chain ids: `sourceChainId` (the forked chain) and `executionChainId` (31337, where workspace transactions run and are signed), with a note on `block.chainid`.
 - The offline engine's workspace build-info is built with the same build source, settings and **locked solc** as the workspace, and records them (`chasmSettings`). A workspace that needs several solc versions names them instead of failing with a unit count.
 - `locals` says why there are none: code that matches no build, Sourcify source without an AST, a step without source mapping, or a via-IR/optimized build.
 - **Open verified contract** (Explorer, `contracts.import`): on a fork, any verified address opens as a bound tab with its Sourcify ABI and storage layout, without building it. A proxy uses its implementation's ABI. Imports are reloaded from the cache when the project opens.

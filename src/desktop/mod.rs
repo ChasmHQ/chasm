@@ -34,6 +34,7 @@ mod foundry_import;
 mod trace_condition;
 mod trace_compare;
 mod proxy;
+mod retry;
 mod contract_import;
 mod gas_profile;
 mod trace_locals;

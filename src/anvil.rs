@@ -54,6 +54,7 @@ impl AnvilNode {
         self.ensure_not_running()?;
         let mut cmd = self.base_command();
         cmd.arg("--fork-url").arg(fork_url).arg("--fork-block-number").arg(block.to_string());
+        cmd.args(FORK_RETRY_ARGS);
         let child = cmd.spawn()?;
         self.adopt(child)
     }
@@ -169,8 +170,13 @@ impl AnvilNode {
     }
 }
 
+/// How Anvil treats a slow or rate-limited fork RPC: retries with backoff
+/// (public RPCs answer 429 under load) and a per-request timeout.
+const FORK_RETRY_ARGS: [&str; 6] = ["--retries", "8", "--fork-retry-backoff", "1000", "--timeout", "45000"];
+
 fn apply_fork_args(cmd: &mut Command, fork_url: &str, fork_block: Option<u64>) {
     cmd.arg("--fork-url").arg(fork_url);
+    cmd.args(FORK_RETRY_ARGS);
     // Keep the local chain id: signing is restricted to 31337, so a fork can
     // never produce a transaction that is valid on the real network.
     cmd.arg("--chain-id").arg("31337");
@@ -263,6 +269,12 @@ mod tests {
             [
                 "--fork-url",
                 "https://example.test/rpc",
+                "--retries",
+                "8",
+                "--fork-retry-backoff",
+                "1000",
+                "--timeout",
+                "45000",
                 "--chain-id",
                 "31337",
                 "--fork-block-number",
@@ -272,6 +284,7 @@ mod tests {
 
         let mut cmd = Command::new("anvil");
         apply_fork_args(&mut cmd, "https://example.test/rpc", None);
-        assert_eq!(args(&cmd), ["--fork-url", "https://example.test/rpc", "--chain-id", "31337"]);
+        assert_eq!(args(&cmd)[..2], ["--fork-url", "https://example.test/rpc"]);
+        assert_eq!(args(&cmd)[8..], ["--chain-id", "31337"]);
     }
 }

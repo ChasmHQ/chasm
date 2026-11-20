@@ -298,6 +298,7 @@ def fork():
     check("chain id stays 31337", rpc("eth_chainId") == "0x7a69")
     network = query("toolchain.state")["network"]
     check("fork names the real chain", network["forkChain"] == "Ethereum (1)", str(network))
+    check("source and execution chain ids are both stated", network.get("sourceChainId") == 1 and network.get("executionChainId") == 31337, str(network))
     check("USDC code readable on the fork", len(rpc("eth_getCode", [usdc, "latest"])) > 1000)
     head_before = rpc("eth_blockNumber")
     command("debugger.trace", hash=tx["hash"])

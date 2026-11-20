@@ -30,7 +30,7 @@ pub async fn lookup(client: &reqwest::Client, workspace: &Path, chain: u64, addr
         }
     }
     let url = format!("{API}/{chain}/{address}?fields=runtimeBytecode,sources,sourceIds,compilation,abi,storageLayout");
-    let response = client.get(&url).send().await.map_err(|error| format!("Sourcify is unreachable: {error}"))?;
+    let response = super::retry::send(|| client.get(&url)).await.map_err(|error| format!("Sourcify is unreachable: {error}"))?;
     let value = match response.status().as_u16() {
         200 => {
             let body: Value = response.json().await.map_err(|error| format!("Sourcify returned invalid JSON: {error}"))?;
@@ -50,6 +50,7 @@ pub async fn lookup(client: &reqwest::Client, workspace: &Path, chain: u64, addr
             })
         }
         404 => json!({"verified": false}),
+        429 => return Err(format!("Sourcify is rate limiting requests (HTTP 429) for {address}; try again in a minute.")),
         status => return Err(format!("Sourcify answered HTTP {status} for {address}.")),
     };
     if let Some(dir) = path.parent() {

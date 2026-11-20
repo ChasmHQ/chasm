@@ -248,15 +248,12 @@ pub async fn test_rpc(url: &str, block: &str) -> Result<Vec<String>, String> {
         let client = client.clone();
         let url = url.to_string();
         async move {
-            let value: serde_json::Value = client
-                .post(&url)
-                .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}))
-                .send()
-                .await
-                .map_err(|_| "no answer".to_string())?
-                .json()
-                .await
-                .map_err(|_| "not JSON-RPC".to_string())?;
+            let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
+            let response = super::retry::send(|| client.post(&url).json(&body)).await.map_err(|_| "no answer".to_string())?;
+            if response.status().as_u16() == 429 {
+                return Err("rate limited (HTTP 429) even after retries; use a provider URL with a key".to_string());
+            }
+            let value: serde_json::Value = response.json().await.map_err(|_| "not JSON-RPC".to_string())?;
             match value.get("error").filter(|error| !error.is_null()) {
                 Some(error) => Err(format!("refused (code {})", error["code"].as_i64().unwrap_or_default())),
                 None => Ok(value["result"].clone()),

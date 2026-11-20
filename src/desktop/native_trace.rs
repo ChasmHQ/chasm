@@ -683,7 +683,8 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
         let url = fork_url.to_string();
         async move {
             let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().map_err(|error| error.to_string())?;
-            let value: Value = client.post(&url).json(&json!({"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":[number, false]})).send().await.map_err(|error| error.to_string())?.json().await.map_err(|error| error.to_string())?;
+            let body = json!({"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":[number, false]});
+            let value: Value = super::retry::send(|| client.post(&url).json(&body)).await.map_err(|error| error.to_string())?.json().await.map_err(|error| error.to_string())?;
             Ok::<Value, String>(value["result"].clone())
         }
     };

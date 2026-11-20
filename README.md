@@ -74,7 +74,9 @@ macros, and fork a live chain to debug real transactions.
   - *Repeat* refills the request, *Debug* opens the trace, *To macro* adds it as a macro step.
 - **Fork a live chain** at the latest or a chosen block: pick Ethereum, Base, Arbitrum, Optimism, Polygon or Sepolia, or paste any EVM RPC. The status bar names the forked chain.
   - Paste a real transaction hash to replay and step through it. Verified contracts show their source, fetched from Sourcify.
-  - The fork keeps chain id 31337, so nothing you sign is valid on the real network.
+  - The fork keeps chain id 31337, so nothing you sign is valid on the real network. Contracts that read `block.chainid` (EIP-712, permit) therefore see 31337 in the workspace; replays of real transactions in the debugger use the real chain id.
+  - **Snapshots and time** live in Explorer > Timeline: *Snapshot now* and *Revert* to any point, *Time* (advance and mine), *Timestamp*, *Mine*, *Deal* (ETH), *Storage* (one raw slot) and *Code* (replace runtime code), without restarting.
+  - Public RPCs rate-limit; the fork retries with backoff, but a provider URL with a key is steadier.
   - **Test RPC** checks the URL first (chain, head, fork block, archive state) and shows only its host.
 
 ### Project
