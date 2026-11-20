@@ -159,6 +159,7 @@ Converter, Macros and Debugger. Press **Ctrl+K** to find anything, and
 - [CLAUDE.md](CLAUDE.md): architecture, module map and the rules the code must keep.
 - `cargo test`: unit and UI tests.
 - `python tests/live/run.py`: end-to-end flows against a running build ([tests/live](tests/live/README.md)).
+- [Workspace reliability plan](docs/WORKSPACE_RELIABILITY_PLAN.md): goals and acceptance checks for contract operations, verified imports, compiler consistency, fork RPCs and macros.
 - [docs/archive/](docs/archive/): finished plans (NEXT_PLAN, REVERT_DEBUG_PLAN) and their progress; [CHANGELOG.md](CHANGELOG.md): what changed.
 - [DEBUGGER.md](DEBUGGER.md): step debugger commands, keys and panes.
 
