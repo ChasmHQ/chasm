@@ -193,6 +193,10 @@ pub struct DesktopState {
     pub runtimes: HashMap<String, RuntimeInfo>,
     /// The transaction/call step debugger session, if one is loaded.
     pub trace: Option<super::trace_debug::Session>,
+    /// Outcome of the last Send/Simulate click: the job it started, or why
+    /// it did not start. The control API reports these to the caller.
+    pub last_call_job: Option<super::jobs::JobId>,
+    pub last_call_rejection: Option<String>,
     pub trace_busy: bool,
     pub trace_status: String,
     pub trace_input: String,
@@ -359,6 +363,8 @@ impl DesktopState {
             storage_layouts: HashMap::new(),
             runtimes: HashMap::new(),
             trace: None,
+            last_call_job: None,
+            last_call_rejection: None,
             trace_busy: false,
             trace_status: String::new(),
             trace_input: String::new(),
@@ -1612,6 +1618,7 @@ impl DesktopState {
                 .clone()
                 .unwrap_or_else(|| self.heading()),
             transaction_hash: None,
+            document: None,
         });
         jobs::prune(&mut self.jobs);
         self.dock_tab = 1;

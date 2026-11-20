@@ -110,6 +110,7 @@ Commands added for the native app (all in `app.catalog`):
 
 | Area | Commands and queries |
 |---|---|
+| Contract calls | `contracts.view` has `canSend`/`canRead` and, when false, `sendBlockReason`/`readBlockReason` (for example a tab with no deployment); `targetBound`. `contracts.simulate` and `contracts.send` either fail with `not_ready` and that reason (no job is started) or complete with `effect: "job_started"`, a `jobId` and the `documentId`. Poll `jobs.list` until that job leaves `running`; contract-call jobs carry `documentId`, `summary` and `transactionHash`, and the full result lands in that document even if another tab is active. `contracts.select` opens an artifact tab; `deployments.select` opens a deployed instance |
 | Deploy in place | `contracts.deploy.open`, `contracts.constructor.edit`, `contracts.deploy`; `contracts.deploy_form` reads the unbound tab's constructor form |
 | Templates | `contracts.template {kind: erc20 \| erc721 \| ownable, name}` |
 | Step debugger | `debugger.trace {hash?}` (or `{hashes: [..16]}` / `{macro_run: true}` for a scenario), `debugger.trace.step`, `.seek`, `.breakpoint`, `.console` (`locals`, `gas`, `args`, `writes`, `diff`, `p <variable path>`, `b … if`, `watch`, `txs`, `tx n`, `compare <file>`, …), `.view {tab: 0-5}` (5 = Gas), `.open_saved`; `debugger.state.trace` has `variables` (locals first) and `gas` |

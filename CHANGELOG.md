@@ -6,6 +6,7 @@ Chasm is now a native Rust + Slint desktop app. The Axum + React web UI,
 the `ui/` folder and the npm build are gone.
 
 ### Workspace
+- Send and Simulate say why they cannot run (`sendBlockReason`), and the button, `contracts.view` and the call itself use one check. Through the API a refused call fails with `not_ready` instead of reporting completed; an accepted one returns its `jobId`, and `jobs.list` gives that job's document, summary and transaction hash.
 - Native workspace with an activity rail (Contracts, Explorer, Converter, Macros, Debugger), dockable panes, saved layouts and Chasm-styled scrollbars.
 - An undeployed contract tab shows its constructor form and deploys in place; the tab then binds to the new address.
 - Request editor with one field per ABI parameter, wei/gwei/ether units and an *ether to wei* helper. Response in a side pane with Simple, raw JSON and trace views.

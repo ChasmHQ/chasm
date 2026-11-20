@@ -314,7 +314,11 @@ def fork():
     print(f"  note: {status[:160]}")
     check("Sourcify was asked about the contracts", "Sourcify" in status or len(verified) <= 2, status)
     if "Source from Sourcify for 0" not in status and "Sourcify" in status:
-        check("verified source is shown", t["file"] != "" or any(not f.endswith("unknown code") for f in t["frames"]), f"{t['file']} {t['frames']}")
+        # A verified frame is named by its contract; unverified ones by a short address.
+        command("debugger.trace.view", tab=3)
+        names = [row["text"] for row in trace()["calls"]]
+        command("debugger.trace.view", tab=0)
+        check("verified source is shown", t["file"] != "" or any(not name.startswith("0x") for name in names), f"{t['file']} {names[:4]}")
     command("toolchain.action", action="network", fork_url="")
     reopened(None)
     check("back to a local chain", rpc("eth_getCode", [usdc, "latest"]) == "0x")
@@ -354,6 +358,39 @@ def inline_deploy():
         time.sleep(0.5)
     check("deposit traced", t["loaded"] and t["total"] > 0, t["status"])
     check(f"five clicks or fewer ({clicks})", clicks <= 5)
+
+
+
+def call_jobs():
+    """Send on an unbound tab is refused with its reason; a real Send returns a job to poll."""
+    artifact = next(a for a in query("workspace.artifacts")["artifacts"] if a["name"] == "Bank")
+    command("contracts.select", id=artifact["id"])
+    command("contracts.function.select", id=function_id("deposit"))
+    view = query("contracts.view")
+    check("an unbound tab cannot send, and says why", view["address"] == "" and not view["canSend"] and "no deployment" in view["sendBlockReason"], f"{view['canSend']} {view['sendBlockReason']}")
+    jobs_before = len(query("jobs.list")["jobs"])
+    out = command_raw("contracts.send")
+    check("Send on it is refused, not reported completed", out.get("status") == "failed" and out["error"]["code"] == "not_ready" and "no deployment" in out["error"]["message"], str(out)[:300])
+    check("no job was started", len(query("jobs.list")["jobs"]) == jobs_before)
+
+    bound = query("app.state")["deployments"][-1]
+    command("deployments.select", id=bound["id"])
+    command("contracts.function.select", id=function_id("deposit"))
+    command("contracts.request.edit", value=str(10**15))
+    view = query("contracts.view")
+    check("the bound tab can send", view["canSend"] and view["sendBlockReason"] == "" and view["address"] == bound["address"], view["sendBlockReason"])
+    out = command("contracts.send")
+    check("Send returns its job and document", out.get("effect") == "job_started" and out.get("jobId") and out.get("documentId") == view["documentId"], str(out)[:300])
+    # Move to another tab while it runs: the job still reports to its own document.
+    command("contracts.select", id=artifact["id"])
+    for _ in range(120):
+        job = next((j for j in query("jobs.list")["jobs"] if j["id"] == out["jobId"]), None)
+        if job and job["status"] != "running":
+            break
+        time.sleep(0.5)
+    check("the job finishes with a summary and hash", job and job["status"] == "ok" and job.get("transactionHash", "").startswith("0x") and job.get("documentId") == out["documentId"], str(job))
+    command("ui.document.select", id=out["documentId"])
+    check("the result landed in the sending document", "Transaction status: Success" in query("contracts.view")["simple"])
 
 
 def template():
@@ -1014,4 +1051,4 @@ def scenario():
     check("compare reports the path and the effect difference", ("Same path" in compared or "First divergence" in compared) and "Storage effects differ" in compared and f"balanceOf[{OWNER}]" in compared, compared)
     print("  | " + " || ".join(compared.strip().splitlines())[:300])
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, storage_names, scenario, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, call_jobs, template, panes, gas, storage_names, scenario, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]

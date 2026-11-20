@@ -515,6 +515,41 @@ fn abi_function(state: &DesktopState, doc: &Document) -> Option<ethers::abi::Fun
     contract.abi.functions().find(|function| function.abi_signature() == signature).cloned()
 }
 
+/// Why Send (or Simulate) cannot start for this document right now, or None.
+/// The button, `contracts.view` and the executor all use this one check, so
+/// "can send" never disagrees with what a click does.
+pub fn call_block_reason(state: &DesktopState, doc: &Document, send: bool) -> Option<&'static str> {
+    if state.transition_pending() || !state.workspace_ready {
+        return Some("Wait for the workspace to finish loading or the pending confirmation.");
+    }
+    if state.send_busy || state.deploy_busy || state.wallet_busy {
+        return Some("Wait for the current wallet, confirmation or transaction operation.");
+    }
+    let view = &doc.contract_view;
+    let Some(target) = view.target.as_ref() else {
+        return Some("This tab has no deployment. Choose a deployment (deployments.select) or Attach an address in Details.");
+    };
+    if target.network_epoch != state.network_epoch {
+        return Some("This deployment belongs to an earlier network context. Deploy or attach it again.");
+    }
+    let Some(selected) = functions_for(state, doc).get(view.selected_function as usize) else {
+        return Some("Select a function first.");
+    };
+    let read_only = ["view", "pure"].contains(&selected.mutability.as_str());
+    if send {
+        if read_only {
+            return Some("Read-only functions use Read / Simulate, not Send.");
+        }
+        if state.wallet_key.is_none() {
+            return Some("Unlock a local keystore or choose an Anvil development account before Send.");
+        }
+        if !state.owned_node.as_ref().is_some_and(|node| node.valid()) {
+            return Some("The owned local Anvil node is unavailable; signing is disabled.");
+        }
+    }
+    None
+}
+
 fn execute(
     weak: Weak<MainWindow>,
     held: State,
@@ -524,32 +559,14 @@ fn execute(
 ) {
     let prepared = (|| -> Result<_, String> {
         let mut state = held.lock().unwrap();
-        if state.transition_pending()
-            || !state.workspace_ready
-            || state.send_busy
-            || state.deploy_busy
-            || state.wallet_busy
-        {
-            return Err(
-                "Wait for the current wallet, confirmation or transaction operation.".into(),
-            );
-        }
         let index = document_index(&state, &owner).ok_or("Open a contract document first.")?;
         let doc = &state.documents[index];
+        if let Some(reason) = call_block_reason(&state, doc, send) {
+            return Err(reason.into());
+        }
         let view = &doc.contract_view;
-        let target = view
-            .target
-            .clone()
-            .ok_or("Choose a deployment or Attach an address in Details.")?;
-        if target.network_epoch != state.network_epoch {
-            return Err("This deployment belongs to an earlier network context.".into());
-        }
-        let selected = functions_for(&state, doc)
-            .get(view.selected_function as usize)
-            .ok_or("Select a function first.")?;
-        if send && ["view", "pure"].contains(&selected.mutability.as_str()) {
-            return Err("Read-only functions use Read / Simulate, not Send.".into());
-        }
+        let target = view.target.clone().expect("checked by call_block_reason");
+        let selected = functions_for(&state, doc).get(view.selected_function as usize).expect("checked by call_block_reason");
         let signature = format!(
             "{}({})",
             selected.name,
@@ -618,13 +635,21 @@ fn execute(
             if send { "send call" } else { "simulate call" },
             false,
         );
+        if let Some(job) = state.jobs.iter_mut().find(|job| job.id == token.id) {
+            job.document = Some(stamp.document.clone());
+        }
+        state.last_call_job = Some(token.id);
         state.send_busy = true;
         Ok((stamp, request, key, token, owned, lease))
     })();
     let (stamp, request, key, token, owned, lease) = match prepared {
         Ok(value) => value,
         Err(error) => {
-            held.lock().unwrap().notice = error;
+            let mut state = held.lock().unwrap();
+            state.last_call_job = None;
+            state.last_call_rejection = Some(error.clone());
+            state.notice = error;
+            drop(state);
             super::paint(&weak, &held);
             return;
         }
@@ -971,17 +996,8 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
                 .is_some_and(|target| target.network_epoch == state.network_epoch),
         call_status: view.call_status.clone().into(),
         storage_status: view.storage_status.clone().into(),
-        can_read: ready
-            && function.is_some()
-            && view
-                .target
-                .as_ref()
-                .is_some_and(|target| target.network_epoch == state.network_epoch),
-        send_enabled: ready
-            && state.wallet_key.is_some()
-            && state.owned_node.as_ref().is_some_and(|node| node.valid())
-            && function
-                .is_some_and(|function| !["view", "pure"].contains(&function.mutability.as_str())),
+        can_read: call_block_reason(state, doc, false).is_none(),
+        send_enabled: call_block_reason(state, doc, true).is_none(),
         section: view.section,
         result_view: view.result_view,
         interact_view: view.interact_view,
@@ -1227,6 +1243,47 @@ mod tests {
         assert!(!storage_is_current(&view, 3, &target("A"), "0"));
         assert!(!storage_is_current(&view, 2, &target("A"), "1"));
         assert!(!storage_is_current(&view, 3, &target("B"), "1"));
+    }
+
+    #[test]
+    fn send_readiness_names_what_is_missing() {
+        let mut state = DesktopState::new(std::path::PathBuf::from("."), 1.0);
+        state.active = true;
+        state.workspace_ready = true;
+        state.network_epoch = 1;
+        state.contracts = vec![super::super::session::ContractItem {
+            abi: Default::default(),
+            name: "Bank".into(),
+            kind: "src".into(),
+            functions: vec![
+                super::super::session::FunctionInfo { name: "deposit".into(), inputs: String::new(), mutability: "payable".into(), params: Vec::new() },
+                super::super::session::FunctionInfo { name: "owner".into(), inputs: String::new(), mutability: "view".into(), params: Vec::new() },
+            ],
+            bytecode: "0x6000".into(),
+            constructor_sig: String::new(),
+            constructor: None,
+            constructor_error: None,
+        }];
+        let mut doc = Document::new("Bank".into(), "".into(), 0);
+        doc.contract_view.selected_function = 0;
+        // An artifact tab with a writable function but no deployment.
+        assert!(call_block_reason(&state, &doc, true).unwrap().contains("no deployment"));
+        assert!(call_block_reason(&state, &doc, false).unwrap().contains("no deployment"));
+        let mut old = target("0x00000000000000000000000000000000000000aa");
+        old.network_epoch = 0;
+        doc.contract_view.target = Some(old);
+        assert!(call_block_reason(&state, &doc, true).unwrap().contains("earlier network"));
+        doc.contract_view.target = Some(target("0x00000000000000000000000000000000000000aa"));
+        assert!(call_block_reason(&state, &doc, false).is_none(), "a bound tab can simulate");
+        assert!(call_block_reason(&state, &doc, true).unwrap().contains("keystore"), "Send needs a signer");
+        state.wallet_key = Some("not-a-real-key".into());
+        assert!(call_block_reason(&state, &doc, true).unwrap().contains("owned local Anvil"));
+        doc.contract_view.selected_function = 1;
+        assert!(call_block_reason(&state, &doc, true).unwrap().contains("Read-only"));
+        doc.contract_view.selected_function = -1;
+        assert!(call_block_reason(&state, &doc, false).unwrap().contains("Select a function"));
+        state.send_busy = true;
+        assert!(call_block_reason(&state, &doc, false).unwrap().contains("Wait for the current"));
     }
 
     #[test]

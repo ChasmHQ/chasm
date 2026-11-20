@@ -945,7 +945,18 @@ pub fn query(state: &DesktopState, query: &Query) -> Value {
         })).collect::<Vec<_>>(),"identityLimit":"Artifact IDs are workspace-scoped name/bytecode identities; ambiguous legacy artifacts are rejected, not resolved by row index."})
         }
         Query::Jobs => {
-            json!({"context":context(state),"jobs":state.jobs.iter().map(|job|json!({"id":format!("{}:job-{}",context(state).workspace_id,job.id.0),"name":job.name,"status":job.status,"transactionHash":job.transaction_hash})).collect::<Vec<_>>(),"outputAvailable":false,"reason":"Legacy job text is not exposed until its secret-redaction boundary is migrated."})
+            json!({"context":context(state),"jobs":state.jobs.iter().map(|job|{
+                let mut item = json!({"id":job_id(state, job.id),"name":job.name,"status":job.status,"transactionHash":job.transaction_hash});
+                // Contract calls carry their document and a one-line result
+                // (return value, revert reason or error); the full result is in contracts.view.
+                if let Some(document) = &job.document {
+                    item["documentId"] = json!(document);
+                    if job.status != "running" {
+                        item["summary"] = json!(super::history::summarize(&job.output));
+                    }
+                }
+                item
+            }).collect::<Vec<_>>(),"outputAvailable":false,"reason":"Only contract-call summaries are exposed; other job text waits for its secret-redaction boundary."})
         }
         Query::Catalog => catalog(state),
         Query::Toolchain => json!({
@@ -969,6 +980,11 @@ pub fn query(state: &DesktopState, query: &Query) -> Value {
     }
 }
 
+/// Workspace-scoped job ID, as `jobs.list` and command results show it.
+pub fn job_id(state: &DesktopState, id: super::jobs::JobId) -> String {
+    format!("{}:job-{}", context(state).workspace_id, id.0)
+}
+
 fn contract_view(state: &DesktopState) -> Value {
     let Some(doc) = state.documents.get(state.active_document as usize).filter(|doc| doc.kind == 0) else {
         return json!({"context":context(state),"open":false,"reason":"No contract tab is active."});
@@ -987,6 +1003,9 @@ fn contract_view(state: &DesktopState) -> Value {
         "arguments":view.arguments.as_str(), "value":view.value.as_str(),
         "fields":(0..slint::Model::row_count(&view.fields)).filter_map(|index| slint::Model::row_data(&view.fields, index)).map(|field| json!({"name":field.name.as_str(),"type":field.kind.as_str(),"value":field.value.as_str(),"error":field.error.as_str(),"amount":field.amount})).collect::<Vec<_>>(),
         "busy":view.call_busy, "canRead":view.can_read, "canSend":view.send_enabled, "canDebugCall":view.can_debug_call,
+        "sendBlockReason":super::native_contract::call_block_reason(state, doc, true).unwrap_or_default(),
+        "readBlockReason":super::native_contract::call_block_reason(state, doc, false).unwrap_or_default(),
+        "targetBound":view.target_bound,
         "callStatus":view.call_status.as_str(), "simple":view.simple_output.as_str(),
         "raw":view.raw_output.as_str(), "trace":view.trace_output.as_str(),
         "storageStatus":view.storage_status.as_str(), "storage":view.storage_output.as_str(),

@@ -455,8 +455,27 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             }
         }
         Command::Attach { address } => contract.invoke_attach(owner().into(), address.as_str().into()),
-        Command::Simulate {} => contract.invoke_read(owner().into()),
-        Command::Send {} => contract.invoke_send(owner().into()),
+        Command::Simulate {} | Command::Send {} => {
+            let document = owner();
+            {
+                let mut state = held.lock().unwrap();
+                state.last_call_job = None;
+                state.last_call_rejection = None;
+            }
+            if matches!(command, Command::Send {}) {
+                contract.invoke_send(document.clone().into());
+            } else {
+                contract.invoke_read(document.clone().into());
+            }
+            let state = held.lock().unwrap();
+            return match (state.last_call_job, &state.last_call_rejection) {
+                (Some(job), _) => json!({"status":"completed","effect":"job_started","context":application::context(&state),
+                    "jobId":application::job_id(&state, job),"documentId":document,
+                    "poll":"jobs.list: the job's status leaves \"running\"; its summary and transactionHash are the result. contracts.view shows it in this document."}),
+                (None, Some(reason)) => json!({"status":"failed","error":{"code":"not_ready","message":reason},"documentId":document}),
+                (None, None) => json!({"status":"failed","error":{"code":"not_ready","message":"The call did not start."},"documentId":document}),
+            };
+        }
         Command::Trace {} => {
             contract.invoke_result_view(owner().into(), 2);
             contract.invoke_trace(owner().into());

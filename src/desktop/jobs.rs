@@ -21,6 +21,8 @@ pub struct JobEntry {
     pub output: String,
     pub context: String,
     pub transaction_hash: Option<String>,
+    /// Contract document the job reports back to, when it has one.
+    pub document: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,7 +85,7 @@ mod tests {
 
     #[test]
     fn pruning_keeps_running_jobs_and_utf8_output_is_bounded() {
-        let mut entries: Vec<_> = (0..60).map(|id| JobEntry { id: JobId(id), name: "fixture".into(), status: "running".into(), output: String::new(), context: String::new(), transaction_hash: None }).collect();
+        let mut entries: Vec<_> = (0..60).map(|id| JobEntry { id: JobId(id), name: "fixture".into(), status: "running".into(), output: String::new(), context: String::new(), transaction_hash: None, document: None }).collect();
         prune(&mut entries);
         assert_eq!(entries.len(), 60);
         entries[30].status = "ok".into();

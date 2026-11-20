@@ -1,6 +1,6 @@
 # Rencana perbaikan workspace Chasm
 
-**Status:** usulan implementasi, belum dikerjakan. **Baseline:** `UI` di `4c288d3`. Rilis baseline dipakai untuk membandingkan hasil sebelum dan sesudah perbaikan; membangun ulang binary tidak mengimplementasikan item di bawah.
+**Status:** P0 selesai (lihat Progres); P1–P4 berikutnya. **Baseline:** `UI` di `4c288d3`. Rilis baseline dipakai untuk membandingkan hasil sebelum dan sesudah perbaikan; membangun ulang binary tidak mengimplementasikan item di bawah.
 
 ## Tujuan dan kriteria lulus
 
@@ -44,3 +44,9 @@
 Untuk tiap fase: tes unit negatif dan positif, satu flow desktop pada fixture lokal, lalu perbarui `AI_CONTROL.md`/`DEBUGGER.md` dan changelog dalam commit yang sama. Jangan gunakan kontrak produksi, endpoint privat, transaksi bertanda tangan yang direkam, atau workspace riset pengguna sebagai fixture.
 
 Untuk retest Windows, catat revision sumber **dan** SHA-256 executable. Dari terminal baru, `(Get-Command chasm -CommandType Application).Source` harus menunjuk ke `target\release\chasm.exe` checkout yang dibangun; `chasm --help` harus berjalan. Build debug tidak memperbarui release di PATH. Bangun ulang release setelah setiap fase yang siap diuji. Tetap di branch `UI`; push hanya atas permintaan, tanpa merge ke `main`.
+
+## Progres
+
+| Fase | Status |
+|---|---|
+| P0 | Selesai: `call_block_reason` dipakai tombol, `contracts.view` (`sendBlockReason`, `readBlockReason`, `targetBound`) dan eksekutor. `contracts.send/simulate` lewat API: `failed/not_ready` + alasan tanpa job, atau `job_started` + `jobId` + `documentId`. `jobs.list` memberi `documentId`, `summary`, `transactionHash` untuk job panggilan kontrak. Live flow `call_jobs` (tab tanpa deployment ditolak, Send pada deployment terikat dilacak lewat job walau tab berpindah). Kasus “alamat terisi tetapi diminta Attach” tetap belum direproduksi; kini alasan penolakan terlihat sebelum dan sesudah klik. |
