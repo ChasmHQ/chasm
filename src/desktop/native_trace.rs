@@ -310,6 +310,12 @@ fn pick_target(state: &DesktopState, input: &str) -> Result<Target, String> {
 }
 
 fn programs(state: &DesktopState) -> Vec<Program> {
+    let mut programs = workspace_programs(state);
+    programs.extend(super::foundry_import::all(&state.workspace).0);
+    programs
+}
+
+fn workspace_programs(state: &DesktopState) -> Vec<Program> {
     state
         .runtimes
         .iter()

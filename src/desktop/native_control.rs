@@ -494,7 +494,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             data.set_slot(slot.clone().unwrap_or_default().into());
             ui.global::<super::ChainLogic>().invoke_apply_cheat();
         }
-        Command::Toolchain { action, library, version, fork_url, fork_block, optimizer, optimizer_runs, via_ir, evm_version, bytecode_hash, source } => {
+        Command::Toolchain { action, library, version, fork_url, fork_block, optimizer, optimizer_runs, via_ir, evm_version, bytecode_hash, source, folder } => {
             let logic = ui.global::<super::ToolchainLogic>();
             let library = library.clone().unwrap_or_default();
             let version = version.clone().unwrap_or_default();
@@ -506,6 +506,8 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
                 "remove" => logic.invoke_remove(library.into()),
                 "network" => logic.invoke_save_network(fork_url.clone().unwrap_or_default().into(), fork_block.clone().unwrap_or_default().into()),
                 "build_source" => logic.invoke_build_source(source.clone().unwrap_or_default().into()),
+                "add_import" => logic.invoke_add_import(folder.clone().unwrap_or_default().into()),
+                "remove_import" => logic.invoke_remove_import(folder.clone().unwrap_or_default().into()),
                 "test_rpc" => logic.invoke_test_rpc(fork_url.clone().unwrap_or_default().into(), fork_block.clone().unwrap_or_default().into()),
                 "settings" => logic.invoke_save_settings(
                     match optimizer { Some(true) => 1, Some(false) => 2, None => 0 },

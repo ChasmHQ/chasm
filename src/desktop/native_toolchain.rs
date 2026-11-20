@@ -27,6 +27,7 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_build_active(active.clone().into());
     data.set_build_origin(origin.into());
     data.set_build_error(error.into());
+    data.set_imports(super::model(super::foundry_import::saved(workspace).into_iter().map(Into::into).collect()));
     data.set_settings_summary(if active == "foundry" { format!("{effective} (from foundry.toml)") } else { settings.describe() }.into());
     // Fill the form from the saved settings once per change, never while typing.
     let key = format!("{settings:?}");
@@ -111,6 +112,35 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                     status(&weak, format!("Build source: {}. Recompiling…", source.label()), false);
                     recompile(&weak);
                 }
+                Err(error) => status(&weak, error, false),
+            }
+            super::paint(&weak, &held);
+        }
+    });
+    ui.global::<ToolchainLogic>().on_add_import({
+        let weak = weak.clone();
+        let held = held.clone();
+        move |folder| {
+            let workspace = held.lock().unwrap().workspace.clone();
+            match super::foundry_import::add(&workspace, folder.as_str()) {
+                Ok(count) => {
+                    status(&weak, format!("Added a Foundry build with {count} contracts. Traces map them from now on."), false);
+                    if let Some(ui) = weak.upgrade() {
+                        ui.global::<ToolchainData>().set_import_input("".into());
+                    }
+                }
+                Err(error) => status(&weak, error, false),
+            }
+            super::paint(&weak, &held);
+        }
+    });
+    ui.global::<ToolchainLogic>().on_remove_import({
+        let weak = weak.clone();
+        let held = held.clone();
+        move |folder| {
+            let workspace = held.lock().unwrap().workspace.clone();
+            match super::foundry_import::remove(&workspace, folder.as_str()) {
+                Ok(()) => status(&weak, format!("Removed {folder}."), false),
                 Err(error) => status(&weak, error, false),
             }
             super::paint(&weak, &held);

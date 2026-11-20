@@ -33,6 +33,9 @@ export global ToolchainData {
     in property <string> build-active;
     in property <string> build-origin;
     in property <string> build-error;
+    // Foundry projects whose built artifacts the debugger maps without recompiling.
+    in property <[string]> imports;
+    in-out property <string> import-input;
     in-out property <int> optimizer: 0;
     in-out property <string> optimizer-runs;
     in-out property <bool> via-ir;
@@ -51,6 +54,8 @@ export global ToolchainLogic {
     callback save-settings(int, string, bool, string, string);
     callback build-source(string);
     callback test-rpc(string, string);
+    callback add-import(string);
+    callback remove-import(string);
 }
 
 component Small inherits ActionControl {
@@ -115,6 +120,20 @@ export component ToolchainWorkspace inherits ScrollView {
         if ToolchainData.build-error == "": SelectableText { text: "Active: \{ToolchainData.build-origin}."; color: Theme.accent; font-size: 0.8125rem; wrap: word-wrap; }
         if ToolchainData.build-error != "": SelectableText { text: ToolchainData.build-error; color: Theme.danger; font-size: 0.8125rem; wrap: word-wrap; }
         if ToolchainData.build-active == "foundry": SelectableText { text: "Foundry is active: the settings, solc lock and Use buttons below edit .chasm/chasm.toml and apply only with Build source Chasm."; color: Theme.warn; font-size: 0.75rem; wrap: word-wrap; }
+        Rectangle { height: 1px; background: Theme.line; }
+
+        SelectableText { text: "Foundry builds for the debugger"; font-weight: 600; font-size: 0.9375rem; }
+        SelectableText { text: "Contracts built by forge in another folder step by source without recompiling: Chasm reads that project's out/ artifacts each time a trace opens. Run forge build there after changes."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
+        for folder in ToolchainData.imports: HorizontalLayout {
+            spacing: 0.5rem;
+            SelectableText { text: folder; font-size: 0.8125rem; horizontal-stretch: 1; vertical-alignment: center; }
+            Small { text: "Remove"; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.remove-import(folder); } }
+        }
+        HorizontalLayout {
+            spacing: 0.5rem;
+            LineEdit { text <=> ToolchainData.import-input; placeholder-text: "Folder with foundry.toml, e.g. C:/code/protocol"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 1; accepted => { ToolchainLogic.add-import(self.text); } }
+            Small { text: "Add Foundry build"; enabled: !ToolchainData.busy && ToolchainData.import-input != ""; clicked => { ToolchainLogic.add-import(ToolchainData.import-input); } }
+        }
         Rectangle { height: 1px; background: Theme.line; }
 
         SelectableText { text: "Solidity compiler"; font-weight: 600; font-size: 0.9375rem; }

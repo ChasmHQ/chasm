@@ -842,4 +842,49 @@ def storage_names():
     check("diff shows the bank's balance change", "balance 0x" in diff and "wei" in diff, diff)
     print("  | " + " || ".join(diff.strip().splitlines())[:300])
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, storage_names, locals, captures, revert_explained, call_tree, external_build, build_source, fork]
+
+def foundry_import():
+    """A Foundry build in another folder maps in the debugger without recompiling or matching settings."""
+    import shutil
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    work = os.path.join(WORKSPACE, "..", "imported")
+    shutil.rmtree(work, ignore_errors=True)
+    shutil.copytree(os.path.join(here, "fixtures", "external"), work, ignore=shutil.ignore_patterns("out", "cache"))
+    os.makedirs(os.path.join(work, "src"), exist_ok=True)
+    shutil.move(os.path.join(work, "Vault.sol"), os.path.join(work, "src", "Vault.sol"))
+    subprocess.run(["forge", "build", "--offline", "--root", work], capture_output=True, check=True)
+    artifact = json.load(open(os.path.join(work, "out", "Vault.sol", "Vault.json"), encoding="utf-8"))
+    creation = artifact["bytecode"]["object"] + "000000000000000000000000" + OWNER[2:].lower()
+    sent = subprocess.run(["cast", "send", "--rpc-url", "http://127.0.0.1:8545", "--private-key", anvil_key_0(), "--json", "--create", creation],
+                          capture_output=True, text=True, check=True)
+    address = json.loads(sent.stdout)["contractAddress"]
+    data = rpc_call_data("deposit(uint256)", [9])
+
+    def traced():
+        command("debugger.trace", call={"to": address, "data": data})
+        for _ in range(60):
+            t = trace()
+            if t["loaded"] and not t["busy"]:
+                return t
+            time.sleep(0.5)
+        return trace()
+
+    check("without the import the code has no source", traced()["file"] != "Vault.sol", trace()["file"])
+    command("toolchain.action", action="add_import", folder="/nonexistent/project")
+    check("a missing folder is refused", "does not exist" in query("toolchain.state")["status"], query("toolchain.state")["status"])
+    command("toolchain.action", action="add_import", folder=work)
+    state = query("toolchain.state")
+    check("the build is added", "1 contracts" in state["status"] and len(state["imports"]) == 1, f"{state['status']} {state['imports']}")
+    t = traced()
+    check("imported via-IR code maps to Vault.sol", t["file"] == "Vault.sol", f"{t['file']!r} {t['location']}")
+    command("debugger.trace.console", line="args")
+    check("arguments decode from the imported ABI", "amount = 9" in trace()["console"], trace()["console"][-200:])
+    command("debugger.trace.console", line="goto 999999")
+    command("debugger.trace.console", line="p total")
+    console = trace()["console"].split("(trace) p total")[-1]
+    check("p reads a variable with the imported storage layout", "total (uint256) = 9" in console, console)
+    command("toolchain.action", action="remove_import", folder=state["imports"][0])
+    check("remove drops it", query("toolchain.state")["imports"] == [], str(query("toolchain.state")["imports"]))
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, storage_names, locals, captures, revert_explained, call_tree, external_build, foundry_import, build_source, fork]

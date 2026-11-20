@@ -34,6 +34,7 @@ key is stored here.
 | `captures` | offline replay saved to `.chasm/captures/`, uploaded and replayed |
 | `call_tree` | keeper → token frames with outcomes, per-frame args, entry and opcode breaks, an attached ABI naming code Chasm did not build |
 | `external_build` | a via-IR, optimizer, no-metadata contract with an immutable, deployed by `cast`, maps to source with matching `[compiler]` settings |
+| `foundry_import` | a via-IR build in another folder, added as an import, maps to source with args and `p total` from its layout; a missing folder is refused |
 | `build_source` | Auto follows `foundry.toml`; a duplicate library names both copies |
 | `revert_explained` | a keeper revert names `MiniToken.transfer` and its custom error; an oversized deploy names EIP-170; unsent calls trace through the API |
 | `fork` | mainnet fork, real transaction replay matches the receipt, Sourcify source |

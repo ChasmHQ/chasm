@@ -116,7 +116,7 @@ Commands added for the native app (all in `app.catalog`):
 | Offline captures | `debugger.capture.save`, `debugger.capture.open {name}`; `debugger.state.captures` |
 | Panes | `ui.panel {pane, action: dock \| float \| hide \| maximize \| reset \| preset, zone?}`; trace panes are `trace_ops`, `trace_state`, `trace_console`; presets `contracts`, `debugging`, `investigation`, `tracing`; `app.state.layout.panes` |
 | History, timeline, cheats | `history.list`, `history.action`, `chain.timeline.revert`, `chain.cheat` |
-| Compiler, libraries, fork | `toolchain.state` (incl. `network.forkChain`, `publicRpcs`), `toolchain.action {open, lock_solc, install, use, remove, network, settings, build_source, test_rpc}` (`test_rpc` takes `fork_url` and `fork_block`, saves nothing, and reports in `toolchain.state.status`); `toolchain.state.build` shows the active source |
+| Compiler, libraries, fork | `toolchain.state` (incl. `network.forkChain`, `publicRpcs`), `toolchain.action {open, lock_solc, install, use, remove, network, settings, build_source, test_rpc, add_import, remove_import}` (`test_rpc` takes `fork_url` and `fork_block`, saves nothing, and reports in `toolchain.state.status`; `add_import`/`remove_import` take `folder`, a Foundry project whose `out/` artifacts the debugger maps; `toolchain.state.imports` lists them); `toolchain.state.build` shows the active source |
 | Palette, notices | `ui.palette`, `ui.notice.action` |
 
 Forked transactions replay on a separate Anvil node with the real chain id; nothing is signed there. Pending controller confirmations block relevant actions across native hosts. See [CLAUDE.md](CLAUDE.md) for the code layout.

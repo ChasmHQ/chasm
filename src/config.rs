@@ -51,11 +51,15 @@ pub struct BuildConfig {
     /// auto (default), foundry or chasm. See `build_config`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<crate::build_config::Source>,
+    /// Foundry projects whose `out/` artifacts join the debugger's programs
+    /// without recompiling. See `desktop::foundry_import`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<String>,
 }
 
 impl BuildConfig {
     pub fn is_default(&self) -> bool {
-        self.source.is_none()
+        self.source.is_none() && self.imports.is_empty()
     }
 }
 

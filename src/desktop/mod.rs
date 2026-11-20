@@ -30,6 +30,7 @@ mod native_palette;
 mod toolchain;
 mod templates;
 mod sourcify;
+mod foundry_import;
 mod gas_profile;
 mod trace_locals;
 mod captures;

@@ -146,6 +146,12 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 - **Memory:** 32-byte words.
 - **Storage:** slots touched so far in this frame's contract.
 
+### Foundry builds from another folder
+
+Code built by `forge build` in another project steps by source without recompiling it in Chasm, with any compiler settings. Add the project folder (the one with `foundry.toml`) in Workspace > Compiler and libraries > *Foundry builds for the debugger*, or with `toolchain.action {action: "add_import", folder}`. The folder is saved under `[build] imports` in `.chasm/chasm.toml`.
+
+Each time a trace opens, Chasm reads that project's `out/**/*.json`: deployed code, source map, ABI and AST, and the storage layout when foundry.toml has `extra_output = ["storageLayout"]`. The source text is read from the project. Run `forge build` there after changing it. Workspace contracts are matched first.
+
 ### Storage at any step
 
 When a trace is recorded, Chasm reads the state before the execution from the node: every slot the execution wrote, each state variable's base slot, array elements, and mapping entries keyed by an address or argument from the trace. A mined transaction reads the parent block, and its balance changes are also read. These values are saved with the trace, so `p`, `sload` and `diff` work on a reopened trace without the node.

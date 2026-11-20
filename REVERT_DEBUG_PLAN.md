@@ -1,6 +1,6 @@
 # Plan: find the cause of any revert in one flow (2026-11-19)
 
-Status: R1, R2.1, R2.2, R2.4, R3, R4 and R6 done; next R2.3.
+Status: R1–R4 and R6 done; next R5.
 
 This plan comes from a review of a real fork session. The step debugger
 works: a contract Chasm compiled itself stepped by source line, through
@@ -173,7 +173,7 @@ Every step ships with unit tests and its live check, gets its own commit on
 | Step | Status |
 |---|---|
 | R1 | done: `revert_cause.rs` (first self-reverting frame, reason from all ABIs, oversized creation), deploy preflight keeps the creation call, size/out-of-gas messages via a redacted `chasmKind`, `debugger.trace {call}`; `revert_explained` live flow |
-| R2 | R2.1 compiler settings, R2.2 build source (`build_config.rs`: Auto/Foundry/Chasm, `forge config --json`) and R2.4 tolerant matching done; live flows `external_build`, `build_source`. A copy of the review's PoC compiles 123 contracts under Auto. R2.3 (import a Foundry build) next |
+| R2 | R2.1 compiler settings, R2.2 build source (`build_config.rs`: Auto/Foundry/Chasm, `forge config --json`) and R2.4 tolerant matching done; live flows `external_build`, `build_source`. A copy of the review's PoC compiles 123 contracts under Auto. R2.3 done: `foundry_import.rs` reads `out/**/*.json` (deployed code, source map, ABI, AST, storage layout with `extra_output = ["storageLayout"]`) of folders saved under `[build] imports`, on every trace; Compiler and libraries > *Foundry builds for the debugger*, actions `add_import`/`remove_import`; live flow `foundry_import`. Build-info is not needed: each artifact carries what one program needs |
 | R3 | done: `call_tree.rs` (frames, kinds, outcomes, ranges), Calls tab with frame jump, `calls` / `frame n`, per-frame `args` via attached or unique ABIs (ambiguous selectors list candidates), `b *pc`, `b op`, `b entry`; `call_tree` live flow |
 | R4 | done: `p <path>` resolves variables, mapping keys (nested), array indexes and struct members (`Layout::resolve`/`show`); `sload` and `p` read the value at the cursor from the writes plus the state before the execution, fetched at record time (written slots, base slots, array elements, mapping entries keyed by trace addresses) and saved with the trace; writes follow the storage context (DELEGATECALL writes the caller) and are marked undone by a reverting frame; `diff` lists net named changes and balance changes. Keys never hashed in the trace are named from trace addresses and calldata words. No `prestateTracer`: Anvil returns `{}` for it, so the diff comes from the struct log plus `eth_getStorageAt`. `storage_names` live flow |
 | R5 | not started |
