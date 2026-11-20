@@ -1,0 +1,26 @@
+# Native workspace reference
+
+Source baseline: native `UI` commit `515666e` (2026-11-21). Use the running `app.catalog`, `/api/v1/schema` and MCP `tools/list` for discovery. The November 13 schema snapshot, where installed, predates these features.
+
+## Identify the app and engine
+
+In PowerShell, `(Get-Command chasm -CommandType Application).Source` gives the executable on PATH. Compare its SHA-256 with the build under test; `chasm --help` confirms the CLI, not a particular revision. If PATH points at `target\release`, `cargo build` without `--release` will not update it. The debug-only `--control-token-file` belongs to the disposable live-test harness, not release pairing.
+
+The native transaction debugger traces calls and mined transactions on the workspace node and saves traces under `.chasm/traces/`. The lighter Contracts response trace is not the opcode debugger. The offline REVM engine under `debugger/` in the same repo is still a separate local process for captures and trusted Foundry tests. No adjacent checkout is required. A saved trace is not an offline capture (`.chasm/captures/`); a test without a replay baseline has no replay capture to export.
+
+## Read-only triage
+
+| Question | Evidence to read | What not to infer |
+|---|---|---|
+| Which instance? | `contracts.view`: `documentId`, `targetBound`, `address`, `canRead`, `canSend`, blocking reasons. Compare with `app.state.documents` and deployments. | The artifact name or the active tab after an operation does not identify the result owner. |
+| What happened to a request? | Keep original `requestId`; distinguish approval, callback refusal, and `effect: "job_started"`. For the last case poll the matching `jobs.list` entry. Contract-call jobs have `documentId`, status, and a bounded terminal `summary`; a transaction hash may be absent. Inspect the full result in its own tab. | `busy:false`, an old success in the Response pane, HTTP 200, or a command acknowledgment is not proof of execution. `not_ready` at callback time starts no job; earlier context/authorization checks can fail with other codes. |
+| Whose chain ID? | `toolchain.state.network.sourceChainId` describes the upstream chain if known; `executionChainId` is 31337 for the workspace. A disposable historical replay may instead use the upstream ID. | Workspace signatures or `block.chainid` behavior are not interchangeable with the upstream signing domain. Historical Anvil replay on the parent block can omit earlier same-block transactions. |
+| Is the ABI authoritative? | Distinguish selected workspace ABI, imported Foundry artifacts and a Sourcify import. Read `contracts.view.abiOrigin`, `proxy`, and the bound address separately. Import on a fork can perform an external lookup; obtain permission before transmitting an address. | A cached answer or a recognized proxy pattern is not independent proof of bytecode equality or implementation identity at an arbitrary historical block. Do not assume Etherscan/Blockscout import. |
+| Why no locals? | Build source Auto chooses Foundry settings when `foundry.toml` is present; the settings are not merged with Chasm's. Check compiler lock, actual artifact, program match, source map, AST and codegen. For native stepping, a local Foundry artifact folder can supply source maps and AST. | A source line from Sourcify does not supply a locals AST. The offline worker's generated build-info still expects a single compiler unit. |
+| Did a Macro undo its writes? | Inspect the selected run's `resultSimple` and per-step evidence, not just whether the bundle toggle is on. Compare the original head, relevant read-only state and available receipts. Distinguish confirmed, failed, unknown, and rollback not confirmed. | Ordinary Macro sends are separate transactions. Bundle mode is intended for leading sends followed by reads/checks, not arbitrary interleaving. A checked head is not a guarantee about the pending pool, restoration of automine, private relay behavior or external side effects. |
+
+## Local approval and evidence
+
+Use the user's pairing dialog and the process-advertised endpoint. Limited is for read-only observation; Partial and Full have different act/debug permissions. Stop if a required capability or permission is absent. Snapshot IDs are node-session state, not durable evidence. Do not retry a mutation because an RPC read or receipt timed out. Never handle signing secrets, keystore operations or approval tokens on the user's behalf.
+
+For a result, keep public IDs and a short redacted summary sufficient to distinguish **observed**, **simulated**, and **unknown**. Avoid dumping raw provider responses or whole source trees into a report. No live call is needed merely to explain the UI or interpret a supplied fixture.

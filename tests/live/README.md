@@ -2,7 +2,7 @@
 
 End-to-end flows that drive a real Chasm window through the local control
 API. `cargo test` does not run them: they need a debug build, Foundry in PATH,
-port 8545 free and, for `fork`, network access.
+port 8545 free and the fixture compilers installed. The `fork` flow uses a public RPC and Sourcify. `CHASM_SKIP_FORK=1` skips only that flow: `toolchain` and `template` can still download missing libraries. A skipped `fork` returns normally, so the runner's pass count alone does not establish fork coverage.
 
 ```bash
 cargo build
@@ -27,7 +27,7 @@ key is stored here.
 | `history`, `timeline` | saved calls, Repeat/Debug/To macro; snapshots, cheats, revert to a point |
 | `toolchain`, `template` | lock solc, install/use/remove a library, Test RPC without showing the URL; ERC20 template compiled and deployed |
 | `call_jobs` | Send on a tab without a deployment fails with `not_ready` and starts no job; a real Send returns a `jobId` that finishes with a hash and lands in its own document |
-| `bundle` | macro bundle mode: two deposits mined in one block with automine restored; a deposit then an over-withdrawal rolls the chain back to its starting block and balance |
+| `bundle` | Two deposits add one block containing two transactions. After a deposit and a failing withdrawal, the flow compares the block height and Bank balance to their starting values. It checks automine after both runs. |
 | `impersonate` | act as an address: refused without gas, deposit after a deal is from that address, history records it, a contract address works too |
 | `palette`, `macro` | Ctrl+K; a macro built from form commands |
 | `inline_deploy` | deploy from the contract tab, call and debug in five clicks |
@@ -44,5 +44,7 @@ key is stored here.
 | `revert_explained` | a keeper revert names `MiniToken.transfer` and its custom error; an oversized deploy names EIP-170; unsent calls trace through the API |
 | `fork` | mainnet fork, real transaction replay matches the receipt, Sourcify source; USDC imported by address as a proxy with its implementation's ABI, `name()` read through it |
 | `stress` (only when named) | 20-field form, 200k-step trace, 30 deployments, 500 History rows, 128-step macro, three zooms |
+
+The table describes assertions in `flows.py`, not results from a particular run. The `bundle` flow does not query the transaction pool or mine a later block to check for leftover sends. `src/desktop/macro_runner_tests.rs` covers an unconfirmed rollback with a mock backend, not a live node failure.
 
 `CHASM_STRESS_SHOTS=<folder>` saves a screenshot of each view per zoom.

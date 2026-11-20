@@ -21,7 +21,7 @@ Prerequisites: Rust, Foundry (`anvil`, `cast`, `forge`) in PATH, and Git (to ins
 ```bash
 cargo build              # debug build
 cargo run -- ./contracts # open a workspace folder
-cargo test               # unit and UI tests (no network)
+cargo test               # Rust test suite; does not run the Python live desktop flows
 cargo build --release    # target/release/chasm.exe; PATH points here on the dev machine
 ```
 
@@ -116,7 +116,8 @@ python tests/live/run.py stress     # slow; timing budgets
   - `history.list`, `toolchain.state` (fork chain, public RPCs);
   - `ui.screenshot` (PNG).
 - `app.state.layout.panes` lists where every pane sits; `ui.panel` docks, floats, hides or applies a preset.
-- Chain work is asynchronous; poll `app.state.busy` until it settles.
+- For `contracts.send` and `contracts.simulate`, distinguish `not_ready` (no job) from `job_started`. Poll `jobs.list` by the returned `jobId` and use `documentId` to identify the originating tab; an idle app alone does not establish success.
+- Bundle sends are separate transactions. A successful local rollback check compares the observed head after the acknowledged revert with the starting head. It does not inspect the transaction pool. After `RollbackFailed`, a submitted transaction can still be queued or mined; do not automatically resubmit.
 
 See `AI_CONTROL.md` for the tier table and `DEBUGGER.md` for the step
 debugger's commands and keys.
@@ -124,5 +125,5 @@ debugger's commands and keys.
 ## Workflow
 
 - Branch `UI` holds the native redesign and tracks `origin/native-ui`. Never merge into `main`; ask before every push. `origin/UI` is a different line of work (rust/revm, python sevm) and is not merged.
-- Plans and progress: all finished plans (latest: `REVERT_DEBUG_PLAN.md`) are in `docs/archive/`.
+- `docs/WORKSPACE_RELIABILITY_PLAN.md` tracks open acceptance criteria. In particular, a Sourcify import records ABI provenance without checking deployed bytecode at the fork block, and offline workspace build-info still requires one compiler unit. Archived plans are in `docs/archive/`.
 - Each change gets its tests and a live check through the API, then its own commit.

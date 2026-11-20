@@ -1,10 +1,6 @@
 # Chasm
 
-Chasm is a desktop workbench for smart contract development and security
-work. It brings the Remix, Postman and Foundry workflows into one native app:
-compile a Solidity folder, deploy and call contracts on a local node, step
-through every opcode mapped to your source, script multi-step attacks as
-macros, and fork a live chain to debug real transactions.
+Chasm is a desktop workbench for Solidity development. Compile a project, deploy and call contracts on a local Anvil node, and inspect the recorded opcodes alongside source when a source map matches. Macros let you repeat local development checks.
 
 > **Note:** Chasm is still a prototype. Feedback is welcome, and expect bugs.
 
@@ -31,7 +27,7 @@ macros, and fork a live chain to debug real transactions.
   - The two sources are never mixed.
   - Two copies of one library name both paths and the remapping that brought each.
 - **Zero-config compile.** Chasm finds the Solidity files in the folder and compiles them with `foundry-compilers`; no `foundry.toml` is needed.
-- **Deploy in place.** An undeployed contract tab shows its constructor form above the functions, with Deploy beside Send. Deploy, call and debug take five clicks.
+- **Deploy in place.** An undeployed tab shows its constructor form. Bind a deployment or attach an address before calling; entering an address alone does not bind the tab. Send and Simulate report why they cannot start, or start a job associated with that document so you can switch tabs.
 - **Request editor.**
   - One field per ABI parameter.
   - Values in wei, gwei or ether, with an *ether to wei* helper for amount fields.
@@ -43,10 +39,10 @@ macros, and fork a live chain to debug real transactions.
 - **Known addresses are named everywhere.** Anvil accounts, your signer and each deployment show by name.
 
 ### Debugger
-- **Step debugger** for any transaction or call on the project node:
+- **Step debugger** for transactions and calls the project node can trace:
   - step into, over and out, and single instructions, each with a reverse step;
   - breakpoints and opcode search;
-  - Solidity locals in scope at each step;
+  - Solidity locals where the build's AST and recorded stack allow reconstruction;
   - a gas profile per call and per source line.
 - **Variables.**
   - The call's decoded arguments.
@@ -63,8 +59,8 @@ macros, and fork a live chain to debug real transactions.
 
 ### Chain
 - **Timeline.**
-  - A snapshot before every Send, Deploy and cheat.
-  - *Revert to here* drops everything after that point.
+  - Use *Snapshot now* before a change you may want to undo. Send, Deploy and chain edits also attempt to record checkpoints. Look for the checkpoint in Explorer > Timeline before relying on it.
+  - Timeline keeps up to 200 points for this node session. A successful revert consumes the chosen snapshot and later ones. Reopening a project or restarting the node does not restore those checkpoints.
 - **Cheats.** Advance time, set the timestamp, mine blocks, and set an address's balance, nonce, storage slot or code.
 - **Explorer.**
   - The newest 100 blocks and transactions; search finds older ones.
@@ -74,26 +70,24 @@ macros, and fork a live chain to debug real transactions.
   - *Repeat* refills the request, *Debug* opens the trace, *To macro* adds it as a macro step.
 - **Fork a live chain** at the latest or a chosen block: pick Ethereum, Base, Arbitrum, Optimism, Polygon or Sepolia, or paste any EVM RPC. The status bar names the forked chain.
   - Paste a real transaction hash to replay and step through it. Verified contracts show their source, fetched from Sourcify.
-  - The fork keeps chain id 31337, so nothing you sign is valid on the real network. Contracts that read `block.chainid` (EIP-712, permit) therefore see 31337 in the workspace; replays of real transactions in the debugger use the real chain id.
-  - **Act as an address** in Wallet: send as a governor, whale or contract without its key (the local node impersonates it; give it ETH with Deal first). tx.origin becomes that address even for a contract, so `tx.origin == msg.sender` checks pass here although they cannot on a real chain.
-  - **Bundle mode** in Macros: sends land in one block (same `block.number` and timestamp), and a failure anywhere rolls the whole run back. Combined with Act as an address, a governor step and the next action can run as one bundle.
-  - **Snapshots and time** live in Explorer > Timeline: *Snapshot now* and *Revert* to any point, *Time* (advance and mine), *Timestamp*, *Mine*, *Deal* (ETH), *Storage* (one raw slot) and *Code* (replace runtime code), without restarting.
-  - Public RPCs rate-limit; the fork retries with backoff, but a provider URL with a key is steadier.
+  - The workspace node executes with chain ID 31337, including `block.chainid` on forks. The source chain ID identifies the upstream network; the debugger uses it for unsigned replay on a separate node.
+  - In Explorer, **Open verified contract** imports an address from Sourcify on the source chain. If Chasm recognizes a proxy at the local head, it uses the implementation's ABI but calls the entered address. Source and layout depend on what Sourcify supplies. The import records ABI provenance, not proof that the ABI matched local bytecode at a particular block.
+  - Test RPC, Sourcify lookup and replay block lookup retry HTTP 429/503 with bounded backoff. This does not cover every RPC read or retry a transaction submission.
   - **Test RPC** checks the URL first (chain, head, fork block, archive state) and shows only its host.
 
 ### Project
-- **Compiler.** Auto (per file pragma), or one solc version locked in `.chasm/chasm.toml`, downloaded when missing. Optimizer, runs, via-IR, EVM version and metadata hash are set there too. When they match how deployed code was built, the debugger shows its source. Immutables, linked libraries and code without a metadata hash still match.
+- **Compiler.** Auto can use different solc versions for independent source groups; dependent imports still need compatible pragmas. Debugger build-info uses the resolved build settings and compiler lock. The offline worker accepts one compilation unit: if the workspace produces several solc versions, use a compatible lock or supply a single build-info file. Matching bytecode can yield source lines even when locals are unavailable.
 - **Libraries.**
   - OpenZeppelin, OpenZeppelin Upgradeable, forge-std, Solmate and Solady.
   - Each is installed once into `~/.chasm/lib` and mapped per project.
   - Missing imports are flagged with the fix.
-- **Macros.** Build multi-step scripts in a form (call, raw send, storage read, snapshot, revert, assert) or as JSON, and run them against the local node.
+- **Macros.** A dry run reads current state and skips writes and their dependent steps. An ordinary run sends separate transactions; a later failure can leave earlier changes in place. Bundle mode queues consecutive sends and requests one mine per group before the next non-send step or the end. It does not guarantee inclusion order, a single block for the run, or atomic execution. On failure after setup, Chasm attempts to revert its snapshot and checks the head. Check the run status, receipts and node mining state if rollback or automining is uncertain. See [Reading a macro result](AI_CONTROL.md#reading-a-macro-result).
 - **Ctrl+K** jumps to any deployed function, contract, transaction or view.
 
 ### AI control (opt-in)
 A local API and MCP server let an AI client drive the app at a chosen tier.
 No command ever returns a private key, mnemonic or password. See
-[AI_CONTROL.md](AI_CONTROL.md).
+[AI_CONTROL.md](AI_CONTROL.md). The [Chasm AI skill](.agents/skills/chasm-bugbounty/SKILL.md) explains how to interpret a command acknowledgment, trace or Macro result without assuming an operation succeeded.
 
 ## Installation
 
@@ -104,7 +98,7 @@ No command ever returns a private key, mnemonic or password. See
 ### Quick install
 
 The installers download the last published pre-release. It predates the
-native app on the `native-ui` branch; build from source to run it.
+native app on the `UI` branch; build from source to run it.
 
 macOS (ARM64):
 ```bash
@@ -121,7 +115,7 @@ Uninstall with `uninstall.sh` / `uninstall.ps1` from the same location.
 ### Build from source
 
 ```bash
-git clone -b native-ui https://github.com/ChasmHQ/chasm
+git clone -b UI https://github.com/ChasmHQ/chasm
 cd chasm
 cargo build --release -j 6
 ./target/release/chasm ./contracts

@@ -1,6 +1,6 @@
 # Native control and investigation
 
-Last updated: 2026-11-19. Query `app.catalog` for the exact command list and schemas of the build you run.
+Last updated: 2026-11-21. Query `app.catalog` for the exact command list and schemas of the build you run.
 
 ## Local access
 
@@ -29,7 +29,7 @@ Never available at any tier, because no command exists for them:
 
 A screenshot is refused while the AI access panel, a pairing token or an approval is on screen. Full clients get 600 requests per minute, other tiers 120.
 
-Commands that act through the native callbacks return `{"status":"completed","effect":"native"}` once the callback ran. Chain work is asynchronous: read `app.state` (`busy` flags) or the matching view query until it settles.
+A native callback acknowledgement (`effect: "native"`) means the callback ran, not that its work succeeded. Read the matching view or notice for the outcome. Send and Simulate instead return a job reference when they start; follow that job rather than waiting for a global busy flag.
 
 ### Local testing
 
@@ -110,10 +110,10 @@ Commands added for the native app (all in `app.catalog`):
 
 | Area | Commands and queries |
 |---|---|
-| Macro bundles | `macros.bundle {enabled}` on the selected macro (validate again before running): leading sends are mined in one block, then reads and assertions run; a failure reverts to the start with the head checked. `macros.state.bundle` shows the mode; `resultSimple` names the block or the rollback |
-| Signer | `wallet.dev_account {index: 0-2}`, or `wallet.impersonate {address}` to send as any address without a key (the owned node on chain 31337 impersonates it; same tier and approval as Send). `app.state.wallet.impersonated` says which. No key is created, read or stored |
-| Contract calls | `contracts.view` has `canSend`/`canRead` and, when false, `sendBlockReason`/`readBlockReason` (for example a tab with no deployment); `targetBound`. `contracts.simulate` and `contracts.send` either fail with `not_ready` and that reason (no job is started) or complete with `effect: "job_started"`, a `jobId` and the `documentId`. Poll `jobs.list` until that job leaves `running`; contract-call jobs carry `documentId`, `summary` and `transactionHash`, and the full result lands in that document even if another tab is active. `contracts.select` opens an artifact tab; `deployments.select` opens a deployed instance |
-| Verified contracts and proxies | `contracts.import {address}` on a fork: the verified ABI, source and storage layout come from Sourcify (cached in `.chasm/sources/`, listed in `.chasm/imports.json`); a proxy uses its implementation's ABI and stays bound to the proxy address. `contracts.view.abiOrigin` names the source, `contracts.view.proxy` says what the address runs. `contracts.attach` also checks the address for an EIP-1967, beacon, legacy OpenZeppelin or EIP-1167 proxy |
+| Macro bundles | `macros.bundle {enabled}` edits the selected draft. Validate again before Run. Read `macros.state.bundle` for the setting; interpret `resultSimple` with the run and step statuses (see below). |
+| Signer | `wallet.dev_account` selects a local test account (index 0 to 2). Local signer changes, including switching to node impersonation, require the same tier and approval as Send. `app.state.wallet.address` identifies the account; `impersonated` is a boolean, not an address or evidence of key ownership. |
+| Contract calls | `contracts.view` has `canSend`/`canRead` and, when false, `sendBlockReason`/`readBlockReason` (for example a tab with no deployment); `targetBound`. `contracts.simulate` and `contracts.send` either fail with `not_ready` and that reason (no job is started) or complete with `effect: "job_started"`, a `jobId` and the `documentId`. Poll `jobs.list` until that job leaves `running`; contract-call jobs identify their `documentId`, add `summary` once terminal and include `transactionHash` when available. A Simulate is not broadcast. Re-select the originating tab for its full result even if another tab was active at completion. `contracts.select` opens an artifact tab; `deployments.select` opens a deployed instance |
+| Verified contracts and proxies | `contracts.import {address}` requires a fork with a known source chain ID. Check the notice and the bound tab after the callback. `contracts.view.abiOrigin` identifies Sourcify, its reported match and compiler version when available, the chain and ABI source address. `contracts.view.proxy` reports the proxy check. `contracts.attach` checks for a proxy but keeps the selected artifact's ABI. |
 | Deploy in place | `contracts.deploy.open`, `contracts.constructor.edit`, `contracts.deploy`; `contracts.deploy_form` reads the unbound tab's constructor form |
 | Templates | `contracts.template {kind: erc20 \| erc721 \| ownable, name}` |
 | Step debugger | `debugger.trace {hash?}` (or `{hashes: [..16]}` / `{macro_run: true}` for a scenario), `debugger.trace.step`, `.seek`, `.breakpoint`, `.console` (`locals`, `gas`, `args`, `writes`, `diff`, `p <variable path>`, `b … if`, `watch`, `txs`, `tx n`, `compare <file>`, …), `.view {tab: 0-5}` (5 = Gas), `.open_saved`; `debugger.state.trace` has `variables` (locals first) and `gas` |
@@ -124,7 +124,19 @@ Commands added for the native app (all in `app.catalog`):
 | Compiler, libraries, fork | `toolchain.state` (incl. `network.forkChain`, `network.sourceChainId` / `executionChainId`, `publicRpcs`), `toolchain.action {open, lock_solc, install, use, remove, network, settings, build_source, test_rpc, add_import, remove_import}` (`test_rpc` takes `fork_url` and `fork_block`, saves nothing, and reports in `toolchain.state.status`; `add_import`/`remove_import` take `folder`, a Foundry project whose `out/` artifacts the debugger maps; `toolchain.state.imports` lists them); `toolchain.state.build` shows the active source |
 | Palette, notices | `ui.palette`, `ui.notice.action` |
 
-Forked transactions replay on a separate Anvil node with the real chain id; nothing is signed there. Pending controller confirmations block relevant actions across native hosts. See [CLAUDE.md](CLAUDE.md) for the code layout.
+### Reading a macro result
+
+Check `macros.state.runBusy`, then the selected run in `results`, its `steps` and `resultSimple`. A dry run skips mutations and steps that need their outputs. An ordinary run submits separate transactions; a later failure does not undo earlier confirmations. A Revert step can report that the node acknowledged it without verifying storage. Successful probe checks cover only the configured locations.
+
+For a live bundle the runner records the local head, takes a snapshot and asks Anvil to disable automining. It queues consecutive deploys, raw sends and signed ABI calls. Before the next non-send step, or at the end of the run, it requests one mine for that group and checks each pending receipt. A later group can trigger another mine. The block in the summary is not a check that every receipt shares that block or that Anvil mined the transactions in submission order. These are separate transactions, not an atomic call.
+
+If the run stops after bundle setup, the runner asks Anvil to re-enable automining and revert the snapshot. It reports rollback only on a positive revert response and a matching chain ID, genesis hash, head number and head hash. That check does not cover the pending pool or automining. Even a mined result can have unknown run status if re-enabling automining was not confirmed. After an unknown submission or unconfirmed cleanup, inspect receipts, the local head and mining state before retrying.
+
+### What an import verifies
+
+Import checks the workspace node at `latest` for EIP-1967 implementation or beacon slots, the legacy OpenZeppelin slot, or the standard 45-byte EIP-1167 clone. An unrecognized proxy can look like an ordinary address. A recognized proxy stays the call target; its implementation is the Sourcify lookup address. Import requires a named contract and a parseable ABI. Source mapping and storage layout are optional. There is no Blockscout or Etherscan fallback, pinned verification block, or independent comparison between the imported ABI and the local runtime. `.chasm/imports.json` lists imports; reopening uses cached answers in `.chasm/sources/<chain>/<address>.json`, without rechecking the implementation. A missing or invalid cache entry may leave the import unavailable.
+
+The workspace executes on chain 31337. Upstream transaction replay uses a separate, unsigned call on the source chain ID. Timeline checkpoints belong to the running local node; reverting consumes the selected point and later ones. Refresh `app.state.context` and check the bound target after a revert. Pending controller confirmations block relevant actions across native hosts.
 
 ## Qualification
 

@@ -1,9 +1,6 @@
 # Debugger
 
-The Debugger activity steps through a transaction or call that ran on the
-workspace's own Anvil node. Every opcode is recorded once, with its stack,
-memory and storage, and mapped to your Solidity source. Moving backwards costs
-nothing, so every step command has a reverse.
+In the **Debugger** sidebar, choose **Last transaction or call** or **Choose a transaction** for the native opcode tracer. It lets you step backward through recorded state without rerunning the transaction. Solidity lines appear only where the debugger can match running code to a source map. **Captures and Foundry tests** opens a separate worker; native traces do not need it.
 
 ## Open something to debug
 
@@ -42,9 +39,7 @@ The Debugger start screen lists them under **Saved traces**, newest first, with 
 
 The offline engine (*Captures and Foundry tests*) saves a paused replay with **Save capture** to `.chasm/captures/<unix time>-<label>.json` (a `chasm-fork-capture` bundle: plan, baseline and the remote-state witness, without RPC credentials). With *Offline capture* selected, the saved captures are listed; **Open** uploads one to the local gateway and **Start offline capture** replays it without the network. *Synthetic* uses `debugger/examples/mainnet/synthetic-replay.json`. *Withdrawal lab* uses the capture and build info in `debugger/examples/web-debugger/`. Both ship with the offline worker. Synthetic and Foundry test runs have no replay baseline, so there is nothing to save; a Foundry test run is debugged live and is gone when the session closes. API: `debugger.capture.save`, `debugger.capture.open {name}`; `debugger.state` lists `captures`.
 
-The source pane shows the contract whose code is running. Code that is not a
-workspace contract (another deployment, a precompile) shows as `no source`,
-with opcodes only.
+The source pane matches running code against workspace builds, added Foundry builds and available Sourcify programs. If there is no matching program or source location for a recorded step, inspect the opcodes instead.
 
 ## Transactions from a forked chain
 
@@ -52,10 +47,9 @@ With the project forked (Workspace > Compiler and libraries > Network), paste a 
 
 - Chasm starts a separate replay node forked at the block before the transaction and replays the transaction there as a call. The project node and its deployments are not touched.
 - The replay node keeps the real chain id, so contracts that check `block.chainid` (EIP-712 signatures, permits) behave as on chain. Chasm never signs on it.
-- The replay runs with the mined block's context (number, timestamp, base fee, coinbase, gas limit, prevrandao) and the transaction's own fees.
-- It is exact for the first transaction of a block. For a later one, the transactions before it in the same block did not run first, and the status line says so.
-- Contracts that are not in the workspace get their verified source from [Sourcify](https://sourcify.dev) (no API key), cached in `.chasm/sources/<chain>/<address>.json`. The file that declares the contract is listed; code in its imports and unverified contracts show opcodes only. Saved traces reopen with the cached source.
-- Some MEV bot transactions check their position in the block or the builder's balance. Replayed alone they can revert even though they succeeded on chain.
+- If the upstream block lookup succeeds, replay supplies its number, timestamp, base fee, coinbase, gas limit and prevrandao as overrides. Without the block response, replay can proceed without those overrides.
+- The parent block supplies the starting state. For a later transaction, replay omits earlier transactions in the same block. Matching the chain ID and block context does not guarantee the original outcome.
+- When Chasm knows the source chain ID, it looks up at most 12 unmatched addresses with runtime code per trace using [Sourcify](https://sourcify.dev). It caches answers, including not-found responses, in `.chasm/sources/<chain>/<address>.json`. Source display needs matching runtime, a usable source map and the declaring file. Steps in imported files can still show only opcodes. Saved traces use the local cache.
 
 ## Step commands
 
@@ -154,9 +148,9 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 
 ### Foundry builds from another folder
 
-Code built by `forge build` in another project steps by source without recompiling it in Chasm, with any compiler settings. Add the project folder (the one with `foundry.toml`) in Workspace > Compiler and libraries > *Foundry builds for the debugger*, or with `toolchain.action {action: "add_import", folder}`. The folder is saved under `[build] imports` in `.chasm/chasm.toml`.
+Add a built project folder (the one with `foundry.toml`) in Workspace > Compiler and libraries > *Foundry builds for the debugger*, or with `toolchain.action {action: "add_import", folder}`. Chasm saves the folder under `[build] imports` in `.chasm/chasm.toml`. This adds local artifacts for source matching; it does not import a verified address or bind a contract tab.
 
-Each time a trace opens, Chasm reads that project's `out/**/*.json`: deployed code, source map, ABI and AST, and the storage layout when foundry.toml has `extra_output = ["storageLayout"]`. The source text is read from the project. Run `forge build` there after changing it. Workspace contracts are matched first.
+Chasm scans `[profile.default].out` (default `out`) to depth 3, considers at most 5,000 JSON artifacts per project, skips `build-info` directories and skips files larger than 16 MiB. It needs deployed code, a source map, the compilation target and readable source text. ABI, AST and storage layout are used when present. Rebuild the external project after editing its source. Workspace programs are considered first.
 
 ### Conditions
 
@@ -164,7 +158,7 @@ A condition compares numbers, stack words (`$0` is the top, or `stack[i]`), `pc`
 
 ### Scenarios: several transactions in one session
 
-`debugger.trace {"hashes": ["0x…", "0x…"]}` records up to 16 mined transactions and opens them as one session. `{"macro_run": true}` uses the transactions of the selected macro run. Storage carries over: a slot's value in a later transaction includes the earlier writes, and a transaction that reverted keeps none. Every view works across the boundary. The Calls tab has one `tx n` frame per transaction, `txs` lists them, `tx <n>` jumps to one, and `where` shows `tx i/n`. A scenario is not saved; each transaction debugged on its own is.
+`debugger.trace {"hashes": ["0x…", "0x…"]}` records up to 16 mined transactions and opens them as one session. `{"macro_run": true}` uses the available transaction hashes from the selected run result. If the node no longer has a transaction after rollback or restart, the scenario cannot record it. This view follows the supplied order; it does not certify mining order or that all receipts belong to one block. Storage carries over: a slot's value in a later transaction includes the earlier writes, and a transaction that reverted keeps none. Every view works across the boundary. The Calls tab has one `tx n` frame per transaction, `txs` lists them, `tx <n>` jumps to one, and `where` shows `tx i/n`. A scenario is not saved; each transaction debugged on its own is.
 
 ### Comparing traces
 
@@ -181,7 +175,7 @@ The value at the cursor is the value before the execution, plus every write up t
   - Frames are named with the matched contract's ABI, an ABI attached to that address in a contract tab, or a workspace ABI when exactly one declares the selector.
   - If several do, the frame lists the candidates; attach the address to choose.
 - **Variables:** the Solidity locals of the function at the cursor (parameters, return variables and locals in scope, with value types, memory strings and arrays, and calldata arrays decoded), then the decoded arguments of the call, then every storage write by variable name with its old and new value, for example `balanceOf[0xf39F… (Anvil #0, signer)]  0 → 2000000000000000000 (2 ether)`. Writes after the cursor are marked *later*; the write at the cursor is highlighted. Names come from the compiler's storage layout: mapping keys and dynamic array indexes are recovered from the hashes computed in the same transaction, packed variables are split, and slots the layout cannot explain show as `slot 0x…`.
-- Locals come from the compiler's AST and the stack positions observed in the trace, the same method as the sevm debugger. They need a workspace contract compiled without via-IR; verified Sourcify contracts show no locals. The console's `locals` prints them.
+- `locals` uses the matched build's AST and stack positions. A source line alone is not enough: Sourcify programs have no AST, compiler-generated steps can lack a source mapping, and optimized or via-IR builds can move variables off the expected stack slots. The console explains why it cannot reconstruct locals at the cursor.
 - **Gas:** where the execution gas went, per external call (`Contract.function`, named from the ABI or the selector) and per source line, most expensive first. Each step counts its own cost; a call's forwarded gas is counted in the callee. Intrinsic gas and refunds are not included. The console's `gas` and `gas lines` print the same tables.
 - Known addresses are labelled everywhere (Anvil accounts, the signer, workspace deployments).
 - **This step:** the opcode, gas left and cost, depth and code address. At the
@@ -191,7 +185,7 @@ The value at the cursor is the value before the execution, plus every write up t
 
 AI clients with the `debug` scope use the same commands:
 
-- `debugger.trace` with `{"hash": "0x…"}`, or `null` to debug the newest action, or `{"call": {"to", "data", "value", "from", "block"}}` to trace a call that was never sent (omit `to` for a creation). Nothing is signed.
+- `debugger.trace` with `{"hash": "0x…"}`, or `{}` to debug the newest action, or `{"call": {"to", "data", "value", "from", "block"}}` to trace a call that was never sent (omit `to` for a creation). Nothing is signed.
 - `debugger.trace.step` with `action` set to one of:
   - `continue`, `back`
   - `step`, `step-back`
@@ -206,12 +200,12 @@ AI clients with the `debug` scope use the same commands:
 - `debugger.trace.view` with any of `opcodes`, `state`, `console`, `compact` (booleans), `tab` (0 Stack, 1 Memory, 2 Storage, 3 Calls, 4 Variables, 5 Gas) and `opcodes_width`, `state_width`, `console_height` (px). `debugger.state` `trace.variables` and `trace.gas` are filled while their tab is shown.
 - `debugger.capture.save` and `debugger.capture.open` with `{"name": "<file>.json"}` for the offline engine's captures (see below).
 - `debugger.trace.open_saved` with `{"name": "<file>.json"}`, a name from `debugger.state` `trace.saved`.
-- The `debugger.state` query returns the trace position under `debugger.trace`.
+- The `debugger.state` query returns the trace position under `trace`.
 
 ## Offline engine
 
 *Captures and Foundry tests* in the Debugger sidebar opens the separate sevm
-engine. It replays capture files and Foundry test runs without a node.
+engine. It replays capture files and runs trusted Foundry tests. A binary in its Cargo build profile looks for the worker in the build checkout's `debugger/`. An installed binary looks in `debugger/` beside the executable on Windows or `<prefix>/share/chasm/debugger/` on Unix. It does not search the open Solidity project or a neighboring checkout. Interpreter precedence is `--debugger-python`, then `CHASM_DEBUGGER_PYTHON`, then the worker directory's `.venv` interpreter. If only the worker is missing, use native tracing or install the worker as described in [the README](README.md#build-from-source).
 
 ### Foundry tests
 
