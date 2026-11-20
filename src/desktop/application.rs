@@ -72,7 +72,7 @@ pub enum Command {
     #[serde(rename = "debugger.trace")]
     /// `call` traces an unsent call (`to` empty for a creation); otherwise
     /// `hash`, or the active tab's last transaction or call.
-    TraceLoad { hash: Option<String>, call: Option<TraceCall> },
+    TraceLoad { hash: Option<String>, call: Option<TraceCall>, hashes: Option<Vec<String>>, macro_run: Option<bool> },
     #[serde(rename = "debugger.trace.step")]
     TraceStep { action: String },
     #[serde(rename = "debugger.trace.seek")]
@@ -792,6 +792,12 @@ pub fn validate(state: &DesktopState, command: &Command) -> Result<(), AppError>
         Command::TraceLoad { call: Some(call), .. } => {
             call.request(&state.wallet_address).map_err(|error| AppError::new("invalid_params", error))?;
         }
+        Command::TraceLoad { hashes: Some(hashes), .. } => {
+            let hash = |text: &str| text.len() == 66 && text.starts_with("0x") && text[2..].bytes().all(|byte| byte.is_ascii_hexdigit());
+            if hashes.is_empty() || hashes.len() > super::native_trace::MAX_SCENARIO || !hashes.iter().all(|text| hash(text)) {
+                return Err(invalid("hashes takes 1 to 16 transaction hashes."));
+            }
+        }
         Command::Panel { pane, zone, .. } => {
             if pane.len() > 200 || zone.is_some_and(|zone| zone > 3) {
                 return Err(invalid("Zone is 0 left, 1 center, 2 right or 3 bottom."));
@@ -1095,7 +1101,7 @@ pub fn command_schema() -> Value {
         ("contracts.send", object(json!({}), vec![])),
         ("contracts.trace", object(json!({}), vec![])),
         ("contracts.storage.read", object(json!({"slot":{"type":"string","maxLength":80}}), vec!["slot"])),
-        ("debugger.trace", object(json!({"hash":{"type":["string","null"],"maxLength":66,"description":"Transaction hash; empty traces the active tab's last transaction or call"},"call":{"type":["object","null"],"description":"Trace an unsent call instead: data, optional to (omit for a contract creation), value (wei, decimal), from and block. Nothing is signed or sent.","properties":{"to":{"type":"string","maxLength":42},"data":{"type":"string","maxLength":131074},"value":{"type":"string","maxLength":78},"from":{"type":"string","maxLength":42},"block":{"type":"string","maxLength":20}},"required":["data"],"additionalProperties":false}}), vec![])),
+        ("debugger.trace", object(json!({"hashes":{"type":["array","null"],"items":{"type":"string","maxLength":66},"maxItems":16,"description":"Several mined transactions in order, debugged as one session (a scenario): storage carries over; console txs / tx <n>"},"macro_run":{"type":["boolean","null"],"description":"Debug the selected macro run's transactions as one scenario"},"hash":{"type":["string","null"],"maxLength":66,"description":"Transaction hash; empty traces the active tab's last transaction or call"},"call":{"type":["object","null"],"description":"Trace an unsent call instead: data, optional to (omit for a contract creation), value (wei, decimal), from and block. Nothing is signed or sent.","properties":{"to":{"type":"string","maxLength":42},"data":{"type":"string","maxLength":131074},"value":{"type":"string","maxLength":78},"from":{"type":"string","maxLength":42},"block":{"type":"string","maxLength":20}},"required":["data"],"additionalProperties":false}}), vec![])),
         ("debugger.trace.step", object(json!({"action":{"enum":["continue","back","step","step-back","next","prev-next","finish","finish-back","op","op-back"],"description":"step: next source line, entering calls and internal functions. next: next line in this frame; calls and internal functions run to completion. finish: run until this frame returns. op: one EVM instruction. continue: next breakpoint. Each -back / back / prev- form is the reverse. See DEBUGGER.md."}}), vec!["action"])),
         ("debugger.trace.seek", object(json!({"step":{"type":"integer","minimum":0}}), vec!["step"])),
         ("debugger.trace.breakpoint", object(json!({"line":{"type":"integer","minimum":1}}), vec!["line"])),

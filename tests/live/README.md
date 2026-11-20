@@ -30,6 +30,7 @@ key is stored here.
 | `inline_deploy` | deploy from the contract tab, call and debug in five clicks |
 | `panes` | trace panes dock, float and hide |
 | `gas`, `locals` | gas profile per call and line; Solidity locals (`i`, `result`, calldata array) |
+| `scenario` | two deposits as one session (`txs`, `tx 2`, storage carried over, one TX frame each), a watch stopping in each, a conditional opcode break, `compare` naming the differing slot |
 | `storage_names` | `p balanceOf[owner]` before and after a deposit, `p owner`, `p luckyNumbers[1]`, named `writes`, `diff` with the balance change |
 | `foundry_test` | a test in the workspace pauses at its first line, runs to a launch breakpoint, lists unresolved breakpoints and shows a compile error in Output |
 | `captures` | offline replay saved to `.chasm/captures/`, uploaded and replayed |

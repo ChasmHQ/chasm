@@ -466,9 +466,10 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             contract.invoke_read_slot(owner().into());
         }
         Command::Lookup { query } => logic.invoke_explorer_open(query.as_str().into()),
-        Command::TraceLoad { hash, call } => {
+        Command::TraceLoad { hash, call, hashes, macro_run } => {
             ui.global::<AppData>().set_debugger_mode(0);
             match call {
+                _ if hashes.is_some() || *macro_run == Some(true) => super::native_trace::load_scenario(ui.as_weak(), held.clone(), hashes.clone().unwrap_or_default()),
                 Some(call) => {
                     let from = held.lock().unwrap().wallet_address.clone();
                     match call.request(&from) {

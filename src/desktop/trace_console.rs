@@ -26,7 +26,15 @@ gas [lines]      gas per call frame, or per source line
 locals           Solidity locals of the function at the cursor
 calls            the call tree; frame <n> jumps to a frame's first step
 b *<pc>, b op <OP>, b entry   break on a pc, an opcode, or entering any call
-d *<pc>, d op <OP>, d entry   delete those breakpoints";
+d *<pc>, d op <OP>, d entry   delete those breakpoints
+b <line|*pc|op OP> if <cond>  stop only where the condition holds
+b if <cond>      stop where a condition becomes true; d if clears them
+                 cond: $0 > 5, pc == 0x1a, depth == 2, balanceOf[0x…] >= 100, joined by && or ||
+watch <variable> stop where a write changes it (watch slot <n> for a raw slot); unwatch <variable>
+ni, nexti        one instruction, stepping over calls
+txs              transactions of a scenario; tx <n> jumps to one's first step
+compare <file>   first divergence and effect differences against a saved trace (compare alone lists them)
+The recorded trace is read-only: set and Keep belong to the offline engine.";
 
 /// Run one command line and return what to print.
 pub fn run(session: &mut Session, line: &str) -> String {
@@ -44,6 +52,53 @@ pub fn run(session: &mut Session, line: &str) -> String {
         "n" | "next" => moved(session, |s| s.next_line(true)),
         "rn" => moved(session, |s| s.next_line(false)),
         "si" | "stepi" => moved(session, |s| s.step_opcode(true)),
+        "ni" | "nexti" => moved(session, |s| s.next_instruction()),
+        "set" | "keep" => "The recorded trace is read-only. To change state and run on, use the offline engine (Captures and Foundry tests).".into(),
+        "watch" => watch(session, &args),
+        "unwatch" => {
+            let label = args.join(" ");
+            let before = session.watches.len();
+            session.watches.retain(|watch| watch.label != label);
+            if session.watches.len() < before { format!("No longer watching {label}.") } else { format!("Not watching {label}.") }
+        }
+        "b" | "break" if args.first() == Some(&"if") => {
+            let condition = args[1..].join(" ");
+            match super::trace_condition::parse(&condition) {
+                Ok(()) => {
+                    session.when.push(condition.clone());
+                    format!("Stop where {condition} becomes true.")
+                }
+                Err(error) => error,
+            }
+        }
+        "d" | "delete" if args.first() == Some(&"if") => {
+            let count = session.when.len();
+            session.when.clear();
+            format!("Deleted {count} conditions.")
+        }
+        "b" | "break" if args.contains(&"if") => {
+            let at = args.iter().position(|arg| *arg == "if").unwrap();
+            let condition = args[at + 1..].join(" ");
+            if let Err(error) = super::trace_condition::parse(&condition) {
+                return error;
+            }
+            let target = args[..at].join(" ");
+            let out = run(session, &format!("b {target}"));
+            let key = if let Some(pc) = target.strip_prefix('*') {
+                parse_number(pc).map(|pc| format!("pc {pc}"))
+            } else if let Some(op) = target.strip_prefix("op ") {
+                Some(format!("op {}", op.trim().to_ascii_uppercase()))
+            } else {
+                target.parse::<usize>().ok().map(|line| format!("line {line}"))
+            };
+            match key {
+                Some(key) if !out.starts_with("Usage") => {
+                    session.conditions.insert(key, condition.clone());
+                    format!("{} Only where {condition}.", out.trim_end_matches('.'))
+                }
+                _ => out,
+            }
+        }
         "rsi" => moved(session, |s| s.step_opcode(false)),
         "fin" | "finish" => moved(session, |s| s.finish(true)),
         "rfin" => moved(session, |s| s.finish(false)),
@@ -184,6 +239,13 @@ pub fn run(session: &mut Session, line: &str) -> String {
             if session.break_on_entry {
                 out.push("frame entry".into());
             }
+            for line in out.iter_mut() {
+                if let Some(condition) = session.conditions.get(line.as_str()).or_else(|| session.conditions.get(&line.replace("opcode ", "op "))) {
+                    line.push_str(&format!(" if {condition}"));
+                }
+            }
+            out.extend(session.when.iter().map(|condition| format!("when {condition}")));
+            out.extend(session.watches.iter().map(|watch| format!("watch {}", watch.label)));
             if out.is_empty() { "No breakpoints.".into() } else { out.join("\n") }
         }
         "goto" | "g" => match args.first().and_then(|text| text.parse::<usize>().ok()).filter(|step| *step > 0) {
@@ -201,6 +263,29 @@ pub fn run(session: &mut Session, line: &str) -> String {
         "p" | "print" => print(session, &args.join(" ")),
         "x" => memory(session, &args),
         "sload" => sload(session, args.first().copied()),
+        "txs" => {
+            if session.parts.is_empty() {
+                return "One transaction. Debug several in one session with debugger.trace {hashes} or a macro run.".into();
+            }
+            let here = session.part_at(session.cursor);
+            session
+                .part_ranges()
+                .iter()
+                .zip(&session.parts)
+                .enumerate()
+                .map(|(at, ((first, last, failed), part))| format!("{}{:>2} {}  {}  steps {}–{}  gas {}", if at == here { ">" } else { " " }, at + 1, part.title, if *failed { "reverted" } else { "ok" }, first + 1, last + 1, part.gas_used))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        "tx" => match args.first().and_then(|text| text.parse::<usize>().ok()) {
+            Some(number) if number >= 1 && number <= session.parts.len() => {
+                let first = session.parts[number - 1].first;
+                session.go(first);
+                where_line(session)
+            }
+            _ => format!("Usage: tx <1–{}> (see txs)", session.parts.len().max(1)),
+        },
+        "compare" => "compare needs the project's saved traces; it runs from the Debugger console.".into(),
         other => format!("Unknown command `{other}`. Type help for the list."),
     }
 }
@@ -211,7 +296,8 @@ fn where_line(session: &Session) -> String {
         Some(location) => format!("{}:{}", location.file, location.line),
         None => "no source".into(),
     };
-    format!("step {}/{}  {place}  pc {}  {}", session.cursor + 1, session.steps.len(), step.pc, step.op)
+    let tx = if session.parts.is_empty() { String::new() } else { format!("  tx {}/{}", session.part_at(session.cursor) + 1, session.parts.len()) };
+    format!("step {}/{}{tx}  {place}  pc {}  {}", session.cursor + 1, session.steps.len(), step.pc, step.op)
 }
 
 fn print(session: &Session, what: &str) -> String {
@@ -287,6 +373,37 @@ fn sload(session: &Session, slot: Option<&str>) -> String {
         Some((_, value)) => format!("slot {wanted:#x} = 0x{}{}", value.trim_start_matches("0x"), decimal(value)),
         None => format!("Slot {wanted:#x} was not read or written up to this step, and its value before the execution was not fetched."),
     }
+}
+
+/// Watch a state variable of the running contract, or a raw slot.
+fn watch(session: &mut Session, args: &[&str]) -> String {
+    let Some(step) = session.current() else { return "No trace loaded.".into() };
+    let account = step.context.clone();
+    let watch = match args {
+        ["slot", slot] => match parse_number(slot) {
+            Some(slot) => super::trace_debug::Watch { label: format!("slot {slot:#x}"), account, slot, offset: 0, size: 32 },
+            None => return "Usage: watch slot <n>".into(),
+        },
+        [] => return "Usage: watch <variable> or watch slot <n>".into(),
+        _ => {
+            let path = args.join("");
+            let Some(layout) = session.layout_at(&step.address) else {
+                return "Watching a variable needs the running contract's storage layout; watch slot <n> works without it.".into();
+            };
+            match layout.resolve(&path) {
+                Ok((slot, offset, _)) => {
+                    let size = layout.value(&path, &|_| Some(ethers::types::H256::zero())).map(|(_, _, _, size)| size).unwrap_or(32);
+                    super::trace_debug::Watch { label: path, account, slot, offset, size }
+                }
+                Err(error) => return error,
+            }
+        }
+    };
+    let text = format!("Watching {} (slot {:#x}). c stops where a write changes it.", watch.label, watch.slot);
+    if !session.watches.contains(&watch) {
+        session.watches.push(watch);
+    }
+    text
 }
 
 /// Slot names and typed values from each contract's layout, cached per address.
@@ -453,5 +570,66 @@ mod tests {
         let diff = run(&mut session, "diff");
         assert!(!diff.contains("slot 0x1") && diff.contains("slot 0x2: 0x3 -> 0x7") && diff.contains("balance 0x00000000000000000000000000000000000000AA: 16 -> 0 wei"), "{diff}");
         assert!(run(&mut session, "p owner").contains("storage layout"));
+    }
+
+    #[test]
+    fn conditions_watches_and_nexti() {
+        let mut session = nested();
+        // Steps: 1 SSTORE(1=5) 2 DELEGATECALL 3 SSTORE(2=7) 4 STOP 5 CALL 6 SSTORE(3=9) 7 REVERT 8 STOP.
+        assert_eq!(run(&mut session, "b op SSTORE if $0 == 2"), "Break on every SSTORE Only where $0 == 2.");
+        assert!(run(&mut session, "goto 1").starts_with("step 1/8"));
+        assert!(run(&mut session, "c").starts_with("step 3/8"), "only the SSTORE to slot 2 matches");
+        assert!(run(&mut session, "info b").contains("opcode SSTORE if $0 == 2"));
+        run(&mut session, "d op SSTORE");
+        assert_eq!(run(&mut session, "b if depth == 2 && $0 == 3"), "Stop where depth == 2 && $0 == 3 becomes true.");
+        assert!(run(&mut session, "goto 1").starts_with("step 1/8"));
+        assert!(run(&mut session, "c").starts_with("step 6/8"));
+        assert!(run(&mut session, "b if $0 >").contains("missing an operand"));
+        assert_eq!(run(&mut session, "d if"), "Deleted 1 conditions.");
+        // A watch belongs to the account running at the cursor: here 0xaa.
+        assert!(run(&mut session, "goto 1").starts_with("step 1/8"));
+        assert!(run(&mut session, "watch slot 2").starts_with("Watching slot 0x2"));
+        assert!(run(&mut session, "c").starts_with("step 3/8"), "the delegatecall writes the caller's slot 2");
+        assert!(run(&mut session, "info b").contains("watch slot 0x2"));
+        assert_eq!(run(&mut session, "unwatch slot 0x2"), "No longer watching slot 0x2.");
+        assert!(run(&mut session, "watch owner").contains("storage layout"));
+        assert!(run(&mut session, "goto 2").starts_with("step 2/8"));
+        assert!(run(&mut session, "ni").starts_with("step 5/8"), "nexti steps over the delegatecall");
+        assert!(run(&mut session, "set x = 1").contains("read-only"));
+    }
+
+    /// One transaction to 0xaa: optional SLOAD of slot 0 (reads `seen`), then SSTORE slot 0 = `value`.
+    fn tx(value: u64, seen: Option<u64>, fail: bool) -> Session {
+        let mut logs = Vec::new();
+        if let Some(seen) = seen {
+            logs.push(json!({"pc":0,"op":"SLOAD","gas":100,"gasCost":1,"depth":1,"stack":["0x0"],"memory":[]}));
+            logs.push(json!({"pc":1,"op":"POP","gas":99,"gasCost":1,"depth":1,"stack":[format!("{seen:#x}")],"memory":[]}));
+        }
+        logs.push(json!({"pc":2,"op":"SSTORE","gas":90,"gasCost":1,"depth":1,"stack":[format!("{value:#x}"),"0x0"],"memory":[]}));
+        logs.push(json!({"pc":3,"op":if fail {"REVERT"} else {"STOP"},"gas":80,"gasCost":0,"depth":1,"stack":["0x0","0x0"],"memory":[]}));
+        let trace = json!({"failed":fail,"gas":21000,"returnValue":"","structLogs":logs});
+        super::super::trace_debug::from_trace(format!("tx {value}"), "0x00000000000000000000000000000000000000aa", &trace, Vec::new(), &HashMap::new()).unwrap()
+    }
+
+    #[test]
+    fn a_scenario_carries_storage_across_transactions() {
+        let aa = "0x00000000000000000000000000000000000000aa";
+        let mut before = super::super::trace_debug::Prestate::default();
+        before.storage.insert(aa.into(), HashMap::from([("0x0".to_string(), "0x1".to_string())]));
+        // Tx 1 writes 5; tx 2 reads 5 and writes 6 but reverts; tx 3 reads 5 and writes 7.
+        let parts = vec![(tx(5, None, false), before.clone()), (tx(6, Some(5), true), before.clone()), (tx(7, Some(5), false), before)];
+        let mut session = super::super::trace_debug::scenario("s".into(), parts).unwrap();
+        assert_eq!(session.parts.len(), 3);
+        assert_eq!(session.part_ranges(), vec![(0, 1, false), (2, 5, true), (6, 9, false)]);
+        let at = |session: &Session, step| session.storage_at(aa, U256::zero(), step).map(|word| word.to_low_u64_be());
+        assert_eq!((at(&session, 0), at(&session, 4), at(&session, 5), at(&session, 9)), (Some(5), Some(6), Some(5), Some(7)));
+        let txs = run(&mut session, "txs");
+        assert!(txs.contains(" 2 tx 6  reverted  steps 3–6") && txs.starts_with("> 1 tx 5"), "{txs}");
+        assert!(run(&mut session, "tx 3").starts_with("step 7/10  tx 3/3"));
+        let calls = run(&mut session, "calls");
+        assert_eq!(calls.lines().filter(|line| line.contains("tx ")).count(), 3, "{calls}");
+        let diff = run(&mut session, "diff");
+        assert!(diff.contains("slot 0x0: 0x1 -> 0x7"), "{diff}");
+        assert!(run(&mut session, "tx 4").starts_with("Usage"));
     }
 }

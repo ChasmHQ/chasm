@@ -90,9 +90,12 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
         }
         {
             let mut state = held.lock().unwrap();
-            let output = match state.trace.as_mut() {
-                Some(session) => super::trace_console::run(session, &line),
-                None => "No trace loaded. Debug a transaction or call first.".into(),
+            let output = match line.strip_prefix("compare").filter(|rest| rest.is_empty() || rest.starts_with(' ')) {
+                Some(name) => compare_saved(&state, name.trim()),
+                None => match state.trace.as_mut() {
+                    Some(session) => super::trace_console::run(session, &line),
+                    None => "No trace loaded. Debug a transaction or call first.".into(),
+                },
             };
             let entry = format!("(trace) {line}\n{output}\n");
             state.trace_console.push_str(&entry);
@@ -215,6 +218,27 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     });
 }
 
+/// `compare <file>`: the open trace against a saved one from `.chasm/traces/`.
+fn compare_saved(state: &DesktopState, name: &str) -> String {
+    let Some(session) = state.trace.as_ref() else { return "No trace loaded. Debug a transaction or call first.".into() };
+    if name.is_empty() {
+        let saved = saved_traces(&state.workspace);
+        if saved.is_empty() {
+            return "No saved traces yet. Each trace you open is saved in .chasm/traces/.".into();
+        }
+        return format!("compare <file>, one of:\n{}", saved.iter().take(20).map(|(file, label, _)| format!("  {file}  {label}")).collect::<Vec<_>>().join("\n"));
+    }
+    let loaded = saved_path(&state.workspace, name).and_then(|path| {
+        let bytes = std::fs::read(&path).map_err(|_| format!("No saved trace {name}."))?;
+        let saved: SavedTrace = serde_json::from_slice(&bytes).map_err(|_| format!("{name} is not a Chasm trace."))?;
+        saved.session(programs(state))
+    });
+    match loaded {
+        Ok(other) => super::trace_compare::compare(session, &other, name.trim_end_matches(".json")),
+        Err(error) => error,
+    }
+}
+
 fn with_session(weak: &Weak<MainWindow>, held: &State, edit: impl FnOnce(&mut Session)) {
     {
         let mut state = held.lock().unwrap();
@@ -334,6 +358,78 @@ fn workspace_programs(state: &DesktopState) -> Vec<Program> {
 
 /// Runtime the trace tasks spawn on; set by `wire`.
 static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Most transactions one scenario records.
+pub const MAX_SCENARIO: usize = 16;
+
+/// Records mined transactions in order as one session (a scenario). With no
+/// hashes, the selected macro run's transactions are used.
+pub fn load_scenario(weak: Weak<MainWindow>, held: State, hashes: Vec<String>) {
+    let Some(runtime) = RUNTIME.get().cloned() else { return };
+    let (hashes, title) = if hashes.is_empty() {
+        (super::native_macro::selected_run_hashes(&held), "Macro run".to_string())
+    } else {
+        let count = hashes.len();
+        (hashes, format!("Scenario of {count} transactions"))
+    };
+    let prepared = {
+        let mut state = held.lock().unwrap();
+        if state.transition_pending() || !state.workspace_ready || state.trace_busy {
+            return;
+        }
+        if hashes.is_empty() {
+            state.trace_status = "No transactions to debug: run a macro that sends transactions and select its result, or pass hashes.".into();
+            None
+        } else if hashes.len() > MAX_SCENARIO {
+            state.trace_status = format!("A scenario takes at most {MAX_SCENARIO} transactions.");
+            None
+        } else {
+            state.trace_busy = true;
+            state.trace_status = format!("Recording {} transactions…", hashes.len());
+            Some((state.rpc.clone(), programs(&state), state.workspace_epoch, state.network.fork_url.clone()))
+        }
+    };
+    super::paint(&weak, &held);
+    let Some((rpc, programs, epoch, fork_url)) = prepared else { return };
+    runtime.spawn(async move {
+        let mut parts = Vec::new();
+        let mut error = None;
+        for hash in &hashes {
+            match record(&rpc, Target::Transaction(hash.clone()), programs.clone(), &fork_url, None).await {
+                Ok((session, saved, ..)) => parts.push((session, saved.prestate.unwrap_or_default())),
+                Err(failure) => {
+                    error = Some(format!("{}…: {failure}", &hash[..hash.len().min(10)]));
+                    break;
+                }
+            }
+        }
+        let result = match error {
+            Some(error) => Err(error),
+            None => trace_debug::scenario(format!("{title} ({} transactions)", parts.len()), parts),
+        };
+        let _ = slint::invoke_from_event_loop(move || {
+            let mut state = held.lock().unwrap();
+            if !state.active || state.workspace_epoch != epoch {
+                return;
+            }
+            state.trace_busy = false;
+            match result {
+                Ok(mut session) => {
+                    session.abis = frame_abis(&state, &session);
+                    state.trace_status = format!("{} transactions in one session; txs lists them, tx <n> jumps to one. Not saved.", session.parts.len());
+                    if let Some(cause) = open_at_cause(&state, &mut session) {
+                        state.trace_status = format!("{cause} {}", state.trace_status);
+                    }
+                    state.trace = Some(session);
+                    state.open_activity(4);
+                }
+                Err(error) => state.trace_status = error,
+            }
+            drop(state);
+            super::paint(&weak, &held);
+        });
+    });
+}
 
 /// Traces an unsent call (from the control API). Nothing is signed or sent.
 pub fn load_call(weak: Weak<MainWindow>, held: State, call: Value, block: String) {

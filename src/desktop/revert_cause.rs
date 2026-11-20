@@ -128,9 +128,10 @@ fn forwards_callee(session: &Session, index: usize, data: &[u8]) -> bool {
 /// Selector of the call that entered the frame running at `index`.
 fn frame_selector(session: &Session, index: usize) -> Option<Vec<u8>> {
     let depth = session.steps[index].depth;
-    let entry = (0..=index).rev().take_while(|at| session.steps[*at].depth >= depth).last()?;
-    if entry == 0 {
-        return session.calldata.get(..4).map(<[u8]>::to_vec);
+    let floor = session.part_first(index);
+    let entry = (floor..=index).rev().take_while(|at| session.steps[*at].depth >= depth).last()?;
+    if entry == floor {
+        return session.calldata_at(index).get(..4).map(<[u8]>::to_vec);
     }
     let call = &session.steps[entry - 1];
     let from_top = match call.op.as_str() {

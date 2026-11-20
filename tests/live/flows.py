@@ -947,4 +947,71 @@ def foundry_import():
     command("toolchain.action", action="remove_import", folder=state["imports"][0])
     check("remove drops it", query("toolchain.state")["imports"] == [], str(query("toolchain.state")["imports"]))
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, storage_names, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]
+
+def scenario():
+    """Several transactions in one session, a conditional breakpoint, a watch, and a trace comparison."""
+    bank = next(d for d in query("app.state")["documents"] if d["title"] == "Bank")
+    command("ui.document.select", id=bank["id"])
+    hashes = []
+    for wei in (10**18, 2 * 10**18):
+        _deposit(wei)
+        hashes.append(query("history.list")["entries"][0]["tx"])
+    check("two deposits recorded", all(h.startswith("0x") for h in hashes), str(hashes))
+
+    def loaded():
+        for _ in range(120):
+            t = trace()
+            if t["loaded"] and not t["busy"]:
+                return t
+            time.sleep(0.5)
+        return trace()
+
+    def console(line):
+        command("debugger.trace.console", line=line)
+        return trace()["console"].split(f"(trace) {line}")[-1]
+
+    command("debugger.trace", hashes=hashes)
+    t = loaded()
+    check("the scenario opens as one session", "2 transactions" in t["title"], f"{t['title']} {t['status']}")
+    txs = console("txs")
+    check("txs lists both deposits", txs.count("deposit") >= 2 or txs.count("ok") == 2, txs)
+    where = console("tx 2")
+    check("tx 2 jumps into the second transaction", "tx 2/2" in where, where)
+    console("goto 1")
+    value = lambda text: int(text.split("=")[1].split()[0])
+    first = value(console(f"p balanceOf[{OWNER}]"))
+    console("goto 999999")
+    last = value(console(f"p balanceOf[{OWNER}]"))
+    check("storage carries over: the end has both deposits", last - first == 3 * 10**18, f"{first} -> {last}")
+    calls = console("calls")
+    check("one TX frame per transaction", calls.count("tx 1 ") == 1 and calls.count("tx 2 ") == 1, calls)
+
+    # Watch the owner's balance: c stops at each write, in either transaction.
+    console("goto 1")
+    check("watch a mapping entry", "Watching" in console(f"watch balanceOf[{OWNER}]"), trace()["console"][-200:])
+    stop1 = console("c")
+    stop2 = console("c")
+    check("the watch stops in each transaction", "tx 1/2" in stop1 and "tx 2/2" in stop2 and "SSTORE" in stop2, f"{stop1} / {stop2}")
+    console(f"unwatch balanceOf[{OWNER}]")
+    console("goto 1")
+    console(f"b op SSTORE if depth == 1 && $1 > {first + 2 * 10**18}")
+    stop = console("c")
+    check("a conditional opcode break skips the first deposit", "tx 2/2" in stop, stop)
+    console("d op SSTORE")
+
+    # Compare the second deposit with the first one's saved trace. Each
+    # transaction debugged on its own is saved; scenario parts are not.
+    command("debugger.trace", hash=hashes[0])
+    loaded()
+    command("debugger.trace", hash=hashes[1])
+    for _ in range(60):
+        if trace()["title"].endswith(hashes[1][-6:]) and not trace()["busy"]:
+            break
+        time.sleep(0.5)
+    listing = console("compare")
+    check("compare lists saved traces", hashes[0] in listing, listing[:300])
+    compared = console(f"compare {hashes[0]}.json")
+    check("compare reports the path and the effect difference", ("Same path" in compared or "First divergence" in compared) and "Storage effects differ" in compared and f"balanceOf[{OWNER}]" in compared, compared)
+    print("  | " + " || ".join(compared.strip().splitlines())[:300])
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, storage_names, scenario, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]

@@ -2196,3 +2196,14 @@ pub fn project_call(ui: &MainWindow, state: &super::session::DesktopState) {
         .unwrap_or_default();
     data.set_call_params(super::model(params));
 }
+
+/// Transaction hashes of the selected macro run, in step order, for a
+/// scenario trace.
+pub fn selected_run_hashes(state: &State) -> Vec<String> {
+    let Some(controller) = controller_for(state) else { return Vec::new() };
+    let library = controller.library.lock().unwrap();
+    library
+        .selected_result()
+        .map(|run| run.report.steps.iter().filter_map(|step| step.output.transaction_hash.clone()).collect())
+        .unwrap_or_default()
+}

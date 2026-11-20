@@ -54,7 +54,8 @@ macros, and fork a live chain to debug real transactions.
 - **sevm-style console**:
   - `s`, `n`, `si`, `fin`, `c`, `rc`;
   - `b 28`, `p stack[0]`, `x 0x40`, `sload 0`, `find SSTORE`, `args`, `writes`, `locals`, `gas`;
-  - `p balanceOf[0xf39F…]`, `p position.amount` at any step, and `diff` for the whole state change, without `cast index`.
+  - `p balanceOf[0xf39F…]`, `p position.amount` at any step, and `diff` for the whole state change, without `cast index`;
+  - `b op SSTORE if $1 > 100`, `watch balanceOf[0x…]`, several transactions in one session (`tx 2`), and `compare` against a saved trace.
 - **Panes float and dock** like any other pane; *Panels > Trace debugger layout (sevm)* lays them out like the sevm TUI.
 - **Offline engine captures** are saved in `.chasm/captures/` and replay without the network.
 - **Saved traces** in `.chasm/traces/`. They reopen without the node.

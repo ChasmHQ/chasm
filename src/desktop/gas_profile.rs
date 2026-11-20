@@ -58,9 +58,13 @@ pub fn by_call(session: &Session) -> Vec<Row> {
     let mut frames: Vec<String> = Vec::new();
     for (index, step) in session.steps.iter().enumerate() {
         let depth = step.depth as usize;
+        let starts = session.part_first(index) == index;
+        if starts {
+            frames.clear();
+        }
         frames.truncate(depth);
         if frames.len() < depth {
-            let selector = if index == 0 { session.calldata.get(..4).map(<[u8]>::to_vec) } else { call_selector(session, index) };
+            let selector = if starts { session.calldata_at(index).get(..4).map(<[u8]>::to_vec) } else { call_selector(session, index) };
             frames.resize(depth, String::new());
             frames[depth - 1] = frame_name(session, index, selector.as_deref());
         }

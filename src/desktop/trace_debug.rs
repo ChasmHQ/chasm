@@ -54,6 +54,27 @@ pub struct Program {
     pub variable: Vec<(usize, usize)>,
 }
 
+/// One transaction of a scenario session: where its steps start and how it ended.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Part {
+    pub first: usize,
+    pub title: String,
+    pub target: String,
+    pub calldata: Vec<u8>,
+    pub failed: bool,
+    pub gas_used: u64,
+}
+
+/// A watched storage value: stop where a write changes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Watch {
+    pub label: String,
+    pub account: String,
+    pub slot: ethers::types::U256,
+    pub offset: u64,
+    pub size: u64,
+}
+
 /// One SSTORE, named when the layout can explain the slot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StorageWrite {
@@ -150,6 +171,13 @@ pub struct Session {
     pub pc_breaks: Vec<u64>,
     pub op_breaks: Vec<String>,
     pub break_on_entry: bool,
+    /// Conditions on breakpoints, keyed `line N`, `pc N` or `op OP`.
+    pub conditions: HashMap<String, String>,
+    /// Standalone conditions: stop where one becomes true.
+    pub when: Vec<String>,
+    pub watches: Vec<Watch>,
+    /// Transactions of a scenario, in order; empty for a single execution.
+    pub parts: Vec<Part>,
     /// Frame tracking saved every `LOCALS_CHECKPOINT` steps of an external
     /// frame: (frame entry step, step) -> internal frames after that step.
     locals_cache: std::sync::Mutex<HashMap<(usize, usize), Vec<super::trace_locals::Frame>>>,
@@ -272,14 +300,23 @@ impl Session {
     /// Run to the next breakpoint (or the end); backwards runs to the previous one.
     pub fn resume(&mut self, forward: bool) -> bool {
         let lines: Vec<_> = self.breakpoints.clone();
+        // A condition that cannot be read at a step does not stop there.
+        let holds = |session: &Self, key: String, index: usize| {
+            session.conditions.get(&key).is_none_or(|condition| super::trace_condition::eval(session, index, condition).unwrap_or(false))
+        };
         let hit = |session: &Self, index: usize| {
             let step = &session.steps[index];
             let entered = index > 0 && step.depth > session.steps[index - 1].depth;
-            (session.location(index).is_some_and(|location| lines.contains(&location.line))
-                && session.line_key(index) != session.line_key(index.wrapping_sub(1)))
-                || session.pc_breaks.contains(&step.pc)
-                || session.op_breaks.iter().any(|op| op == &step.op)
+            let line = session.location(index).map(|location| location.line).filter(|line| lines.contains(line));
+            (line.is_some_and(|line| session.line_key(index) != session.line_key(index.wrapping_sub(1)) && holds(session, format!("line {line}"), index)))
+                || (session.pc_breaks.contains(&step.pc) && holds(session, format!("pc {}", step.pc), index))
+                || (session.op_breaks.iter().any(|op| op == &step.op) && holds(session, format!("op {}", step.op), index))
                 || (session.break_on_entry && entered)
+                || session.watch_hit(index).is_some()
+                || session.when.iter().any(|condition| {
+                    super::trace_condition::eval(session, index, condition).unwrap_or(false)
+                        && (index == 0 || !super::trace_condition::eval(session, index - 1, condition).unwrap_or(false))
+                })
         };
         if forward {
             match (self.cursor + 1..self.steps.len()).find(|&index| hit(self, index)) {
@@ -291,6 +328,30 @@ impl Session {
                 Some(index) => self.go(index),
                 None => self.go(0),
             }
+        }
+    }
+
+    /// The watch a write at `index` changes, if any.
+    pub fn watch_hit(&self, index: usize) -> Option<&Watch> {
+        if self.watches.is_empty() || self.steps.get(index).is_none_or(|step| step.op != "SSTORE") {
+            return None;
+        }
+        let at = self.writes.binary_search_by_key(&index, |write| write.step).ok()?;
+        let write = &self.writes[at];
+        self.watches.iter().find(|watch| {
+            watch.account == write.account
+                && watch.slot == write.slot
+                && super::storage_layout::field(write.before, watch.offset, watch.size) != super::storage_layout::field(write.after, watch.offset, watch.size)
+        })
+    }
+
+    /// Next step at this call depth or shallower: one instruction, stepping
+    /// over calls.
+    pub fn next_instruction(&mut self) -> bool {
+        let Some(depth) = self.current().map(|step| step.depth) else { return false };
+        match (self.cursor + 1..self.steps.len()).find(|&index| self.steps[index].depth <= depth) {
+            Some(index) => self.go(index),
+            None => self.go(self.steps.len().saturating_sub(1)),
         }
     }
 
@@ -335,6 +396,45 @@ impl Session {
         }
         frames
     }
+}
+
+/// Joins transactions recorded one by one into one session, in order. Each
+/// keeps its own frames, nesting and outcome; storage carries over, so the
+/// value of a slot in a later transaction includes the earlier writes. The
+/// state before the scenario is the first fetched value of each slot.
+pub fn scenario(title: String, parts: Vec<(Session, Prestate)>) -> Result<Session, String> {
+    let mut parts = parts.into_iter();
+    let (mut merged, first_prestate) = parts.next().ok_or("A scenario needs at least one transaction.")?;
+    merged.parts = vec![Part { first: 0, title: merged.title.clone(), target: merged.target.clone(), calldata: merged.calldata.clone(), failed: merged.failed, gas_used: merged.gas_used }];
+    let mut prestate = first_prestate;
+    for (session, part_prestate) in parts {
+        if merged.steps.len() + session.steps.len() > MAX_STEPS {
+            return Err(format!("The scenario is over {MAX_STEPS} steps; debug fewer transactions at once."));
+        }
+        merged.parts.push(Part { first: merged.steps.len(), title: session.title.clone(), target: session.target.clone(), calldata: session.calldata.clone(), failed: session.failed, gas_used: session.gas_used });
+        merged.steps.extend(session.steps);
+        for (address, program) in session.mapped {
+            merged.mapped.entry(address).or_insert(program);
+        }
+        merged.truncated |= session.truncated;
+        merged.gas_used += session.gas_used;
+        // A slot keeps the value fetched before the first transaction that read it.
+        for (account, slots) in part_prestate.storage {
+            let known = prestate.storage.entry(account).or_default();
+            for (slot, value) in slots {
+                known.entry(slot).or_insert(value);
+            }
+        }
+        for (account, (before, after)) in part_prestate.balances {
+            prestate.balances.entry(account).and_modify(|span| span.1 = after.clone()).or_insert((before, after));
+        }
+    }
+    merged.failed = merged.parts.iter().any(|part| part.failed);
+    merged.title = title;
+    merged.cursor = 0;
+    merged.index_lines();
+    merged.set_prestate(&prestate);
+    Ok(merged)
 }
 
 /// Parse a struct-logger trace. `target` is the address called at depth 1.
@@ -466,7 +566,11 @@ impl Session {
         self.observed.clear();
         // Writes of each open frame, to mark them undone when it reverts.
         let mut open: Vec<Vec<usize>> = vec![Vec::new()];
+        let ranges = self.part_ranges();
         for index in 0..self.steps.len() {
+            if index > 0 && ranges.iter().any(|(first, ..)| *first == index) {
+                open = vec![Vec::new()];
+            }
             let step = &self.steps[index];
             let top = |back: usize| step.stack.get(step.stack.len().wrapping_sub(1 + back)).and_then(|text| U256::from_str_radix(text.trim_start_matches("0x"), 16).ok());
             match step.op.as_str() {
@@ -533,9 +637,12 @@ impl Session {
                 _ => {}
             }
         }
-        if self.failed {
-            for write in &mut self.writes {
-                write.undone_at.get_or_insert(self.steps.len().saturating_sub(1));
+        // A transaction that failed keeps none of its writes.
+        for (first, last, failed) in ranges {
+            if failed {
+                for write in self.writes.iter_mut().filter(|write| first <= write.step && write.step <= last) {
+                    write.undone_at.get_or_insert(last);
+                }
             }
         }
         let _ = logs;
@@ -560,7 +667,8 @@ impl Session {
         };
         // Steps of this external frame, from its entry to the cursor. Tracking
         // resumes from the newest checkpoint so long traces stay fast.
-        let begin = (0..=self.cursor).rev().take_while(|at| self.steps[*at].depth >= step.depth).last().unwrap_or(self.cursor);
+        let floor = self.part_first(self.cursor);
+        let begin = (floor..=self.cursor).rev().take_while(|at| self.steps[*at].depth >= step.depth).last().unwrap_or(self.cursor);
         let own: Vec<usize> = (begin..=self.cursor).filter(|at| self.steps[*at].depth == step.depth).collect();
         let mut cache = self.locals_cache.lock().unwrap();
         let mut start = 0;
@@ -582,8 +690,36 @@ impl Session {
         let offset = view(*own.last()?).range?.0;
         let frame = frames.last()?;
         // Only the outermost call's input is recorded; inner calls show calldata as pointers.
-        let calldata = if step.depth == self.steps.first().map(|first| first.depth).unwrap_or(1) { &self.calldata[..] } else { &[] };
+        let calldata = if step.depth == self.steps.get(floor).map(|first| first.depth).unwrap_or(1) { self.calldata_at(self.cursor) } else { &[] };
         Some(super::trace_locals::read(index, frame, offset, &step.stack, &step.memory, calldata).into_iter().map(|value| (value.name, value.type_label, value.value)).collect())
+    }
+
+    /// (first step, last step, failed) of each transaction.
+    pub fn part_ranges(&self) -> Vec<(usize, usize, bool)> {
+        let end = self.steps.len().saturating_sub(1);
+        if self.parts.is_empty() {
+            return vec![(0, end, self.failed)];
+        }
+        self.parts
+            .iter()
+            .enumerate()
+            .map(|(at, part)| (part.first, self.parts.get(at + 1).map(|next| next.first.saturating_sub(1)).unwrap_or(end), part.failed))
+            .collect()
+    }
+
+    /// Index of the transaction running at `index` (0 for a single execution).
+    pub fn part_at(&self, index: usize) -> usize {
+        self.parts.iter().rposition(|part| part.first <= index).unwrap_or(0)
+    }
+
+    /// First step of the transaction running at `index`.
+    pub fn part_first(&self, index: usize) -> usize {
+        self.parts.get(self.part_at(index)).map(|part| part.first).unwrap_or(0)
+    }
+
+    /// Calldata of the transaction running at `index`.
+    pub fn calldata_at(&self, index: usize) -> &[u8] {
+        self.parts.get(self.part_at(index)).map(|part| &part.calldata[..]).unwrap_or(&self.calldata)
     }
 
     /// Values before the execution, from the node. Recomputes the writes'
@@ -702,8 +838,11 @@ impl Session {
                 }
             }
         }
-        for chunk in self.calldata.get(4..).unwrap_or_default().chunks(32).filter(|chunk| chunk.len() == 32) {
-            add(chunk.try_into().unwrap());
+        let calldata: Vec<&[u8]> = if self.parts.is_empty() { vec![&self.calldata] } else { self.parts.iter().map(|part| &part.calldata[..]).collect() };
+        for input in calldata {
+            for chunk in input.get(4..).unwrap_or_default().chunks(32).filter(|chunk| chunk.len() == 32) {
+                add(chunk.try_into().unwrap());
+            }
         }
         let mut out = layout.guessed_preimages(&keys);
         out.extend(self.preimages.iter().map(|(hash, bytes)| (*hash, bytes.clone())));

@@ -31,6 +31,8 @@ mod toolchain;
 mod templates;
 mod sourcify;
 mod foundry_import;
+mod trace_condition;
+mod trace_compare;
 mod gas_profile;
 mod trace_locals;
 mod captures;

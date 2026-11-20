@@ -310,6 +310,18 @@ impl Layout {
         })
     }
 
+    /// Numeric value of a storage path (an unsigned field of one slot), for
+    /// breakpoint conditions; also returns the slot, offset and size.
+    pub fn value(&self, path: &str, read: &dyn Fn(U256) -> Option<H256>) -> Result<(U256, U256, u64, u64), String> {
+        let (slot, offset, type_id) = self.resolve(path)?;
+        let size = self.bytes(&type_id);
+        if size > 32 || self.type_info(&type_id)["encoding"] != "inplace" || self.type_info(&type_id)["members"].is_array() {
+            return Err(format!("{path} is not a single value; compare one member or element."));
+        }
+        let word = read(slot).ok_or_else(|| format!("{path} is not known at this step."))?;
+        Ok((field(word, offset, size), slot, offset, size))
+    }
+
     /// Slot, byte offset and type id of a storage path.
     pub fn resolve(&self, path: &str) -> Result<(U256, u64, String), String> {
         let path = path.trim();
@@ -421,6 +433,14 @@ fn word(value: U256) -> [u8; 32] {
 
 fn hex(bytes: &[u8]) -> String {
     ethers::utils::hex::encode(bytes)
+}
+
+/// Unsigned value of `size` bytes, `offset` bytes from the right of the word.
+pub fn field(word: H256, offset: u64, size: u64) -> U256 {
+    let bytes = word.as_bytes();
+    let end = 32usize.saturating_sub(offset as usize);
+    let start = end.saturating_sub(size.min(32) as usize);
+    U256::from_big_endian(&bytes[start..end])
 }
 
 /// Value of a packed field: `size` bytes, `offset` bytes from the right of the word.

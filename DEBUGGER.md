@@ -138,6 +138,12 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 | `gas`, `gas lines` | | Gas per call frame, or per source line |
 | `calls`, `frame <n>` | | The call tree; jump to a frame's first step |
 | `b *<pc>`, `b op <OP>`, `b entry` | `d …` | Break on a pc in any contract, on an opcode, or on entering any call. These need no source. |
+| `b <line\|*pc\|op OP> if <cond>` | | Stop there only where the condition holds |
+| `b if <cond>` | `d if` | Stop where a condition becomes true |
+| `watch <variable>`, `watch slot <n>` | `unwatch …` | Stop where a write changes the value (in the account running at the cursor) |
+| `ni`, `nexti` | | One instruction, stepping over calls |
+| `txs`, `tx <n>` | | The transactions of a scenario; jump to one |
+| `compare <file>` | | First divergence and effect differences against a saved trace; `compare` alone lists them |
 | `where`, `help` | | Current position, command list |
 
 ## State panes
@@ -151,6 +157,20 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 Code built by `forge build` in another project steps by source without recompiling it in Chasm, with any compiler settings. Add the project folder (the one with `foundry.toml`) in Workspace > Compiler and libraries > *Foundry builds for the debugger*, or with `toolchain.action {action: "add_import", folder}`. The folder is saved under `[build] imports` in `.chasm/chasm.toml`.
 
 Each time a trace opens, Chasm reads that project's `out/**/*.json`: deployed code, source map, ABI and AST, and the storage layout when foundry.toml has `extra_output = ["storageLayout"]`. The source text is read from the project. Run `forge build` there after changing it. Workspace contracts are matched first.
+
+### Conditions
+
+A condition compares numbers, stack words (`$0` is the top, or `stack[i]`), `pc`, `gas`, `depth` and state variables of the code running at the step (`balanceOf[0x…]`, `total.amount`), with `==`, `!=`, `<`, `<=`, `>`, `>=`. Comparisons join with `&&` and `||`, left to right. A condition that cannot be read at a step (no layout, a value not known yet) does not stop there.
+
+### Scenarios: several transactions in one session
+
+`debugger.trace {"hashes": ["0x…", "0x…"]}` records up to 16 mined transactions and opens them as one session. `{"macro_run": true}` uses the transactions of the selected macro run. Storage carries over: a slot's value in a later transaction includes the earlier writes, and a transaction that reverted keeps none. Every view works across the boundary. The Calls tab has one `tx n` frame per transaction, `txs` lists them, `tx <n>` jumps to one, and `where` shows `tx i/n`. A scenario is not saved; each transaction debugged on its own is.
+
+### Comparing traces
+
+`compare <file>` compares the open trace with one saved in `.chasm/traces/`. It reports the first step where the two take different paths (by code, pc and call depth), with the source line and frame of each. Then it lists the outcome and gas of both, and every storage slot (by name when the layout knows it) and balance whose net change differs.
+
+The recorded trace is read-only. `set` and Keep belong to the offline engine, which runs its own VM.
 
 ### Storage at any step
 

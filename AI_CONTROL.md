@@ -112,7 +112,7 @@ Commands added for the native app (all in `app.catalog`):
 |---|---|
 | Deploy in place | `contracts.deploy.open`, `contracts.constructor.edit`, `contracts.deploy`; `contracts.deploy_form` reads the unbound tab's constructor form |
 | Templates | `contracts.template {kind: erc20 \| erc721 \| ownable, name}` |
-| Step debugger | `debugger.trace {hash?}`, `debugger.trace.step`, `.seek`, `.breakpoint`, `.console` (`locals`, `gas`, `args`, `writes`, `diff`, `p <variable path>`, …), `.view {tab: 0-5}` (5 = Gas), `.open_saved`; `debugger.state.trace` has `variables` (locals first) and `gas` |
+| Step debugger | `debugger.trace {hash?}` (or `{hashes: [..16]}` / `{macro_run: true}` for a scenario), `debugger.trace.step`, `.seek`, `.breakpoint`, `.console` (`locals`, `gas`, `args`, `writes`, `diff`, `p <variable path>`, `b … if`, `watch`, `txs`, `tx n`, `compare <file>`, …), `.view {tab: 0-5}` (5 = Gas), `.open_saved`; `debugger.state.trace` has `variables` (locals first) and `gas` |
 | Offline captures | `debugger.capture.save`, `debugger.capture.open {name}`; `debugger.state.captures` |
 | Foundry tests | `debugger.launch {mode: 1, foundry_target, foundry_match, trusted, breakpoints, run_to_breakpoint}` then `debugger.start`; `debugger.state.output` has compile errors, launch breakpoints and how the run ended |
 | Panes | `ui.panel {pane, action: dock \| float \| hide \| maximize \| reset \| preset, zone?}`; trace panes are `trace_ops`, `trace_state`, `trace_console`; presets `contracts`, `debugging`, `investigation`, `tracing`; `app.state.layout.panes` |

@@ -80,26 +80,40 @@ fn memory_slice(memory: &[String], offset: ethers::types::U256, length: ethers::
     (offset..offset + length).map(|at| flat.get(at).copied().unwrap_or(0)).collect()
 }
 
-/// Builds the frame list in step order (parents before children).
+/// Builds the frame list in step order (parents before children); a
+/// scenario has one TX frame per transaction.
 pub fn frames(session: &Session) -> Vec<Frame> {
-    let steps = &session.steps;
-    if steps.is_empty() {
-        return Vec::new();
+    let mut frames = Vec::new();
+    for (first, last, failed) in session.part_ranges() {
+        if session.steps.is_empty() {
+            break;
+        }
+        let offset = frames.len();
+        let mut part = frames_between(session, first, last, failed);
+        for frame in &mut part {
+            frame.parent = frame.parent.map(|parent| parent + offset);
+        }
+        frames.extend(part);
     }
+    frames
+}
+
+fn frames_between(session: &Session, start: usize, end: usize, failed: bool) -> Vec<Frame> {
+    let steps = &session.steps[..=end];
     let mut frames = vec![Frame {
-        depth: steps[0].depth,
+        depth: steps[start].depth,
         kind: "TX".into(),
-        address: steps[0].address.clone(),
-        input: session.calldata.clone(),
+        address: steps[start].address.clone(),
+        input: session.calldata_at(start).to_vec(),
         value: None,
-        gas: steps[0].gas,
-        first: 0,
-        last: steps.len() - 1,
+        gas: steps[start].gas,
+        first: start,
+        last: end,
         outcome: "running".into(),
         parent: None,
     }];
     let mut open: Vec<usize> = vec![0];
-    for index in 0..steps.len() {
+    for index in start..steps.len() {
         let step = &steps[index];
         // Leaving frames: the depth dropped below theirs.
         while open.len() > 1 && frames[*open.last().unwrap()].depth > step.depth {
@@ -153,11 +167,11 @@ pub fn frames(session: &Session) -> Vec<Frame> {
             frames[parent].last = frames[parent].last.max(frames[at].last);
         }
     }
-    if session.truncated {
+    if session.truncated && end + 1 == session.steps.len() {
         frames[0].outcome = "cut at the step limit".into();
     } else {
         // The transaction's own result is what the top frame did.
-        frames[0].outcome = if session.failed { "reverted" } else { "returned" }.into();
+        frames[0].outcome = if failed { "reverted" } else { "returned" }.into();
     }
     frames
 }
@@ -206,6 +220,10 @@ pub fn arguments(frame: &Frame, abis: &Abis) -> Option<(String, Vec<(String, Str
 
 /// One line per frame, indented by depth, for the Calls tab and console.
 pub fn describe(session: &Session, frame: &Frame, abis: &Abis) -> String {
+    if frame.kind == "TX" && !session.parts.is_empty() {
+        let at = session.part_at(frame.first);
+        return format!("tx {} {} → {} (steps {}–{})", at + 1, name(session, frame, abis), frame.outcome, frame.first + 1, frame.last + 1);
+    }
     let value = frame.value.filter(|value| !value.is_zero()).map(|value| format!(" value {value}")).unwrap_or_default();
     let kind = if frame.kind == "TX" || frame.kind == "CALL" { String::new() } else { format!("{} ", frame.kind.to_ascii_lowercase()) };
     format!("{kind}{}{value} → {} (steps {}–{})", name(session, frame, abis), frame.outcome, frame.first + 1, frame.last + 1)
