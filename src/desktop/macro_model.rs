@@ -79,6 +79,9 @@ pub struct MacroDefinition {
     pub revert_on_failure: bool,
     #[serde(default)]
     pub rollback_probes: Vec<StorageProbe>,
+    /// Send every leading transaction in one block; a failure reverts the run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bundle: bool,
     pub steps: Vec<MacroStep>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub legacy_notes: Vec<LegacyNote>,
@@ -992,6 +995,7 @@ pub fn migrate_legacy_notes(
             snapshot_before_run: false,
             revert_on_failure: false,
             rollback_probes: Vec::new(),
+            bundle: false,
             steps: Vec::new(),
             legacy_notes: vec![note],
         };

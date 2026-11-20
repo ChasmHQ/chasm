@@ -608,6 +608,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
                 None => return json!({"status":"failed","error":{"code":"entity_not_found","message":"No macro with that ID."}}),
             }
         }
+        Command::MacroBundle { enabled } => macros.invoke_set_bundle(*enabled),
         Command::EditMacro { json } => {
             ui.global::<MacroData>().set_definition_json(json.as_str().into());
             macros.invoke_edited(json.as_str().into());
@@ -700,6 +701,7 @@ fn macro_state(ui: &MainWindow) -> Value {
         "selectedId": data.get_selected_id().as_str(),
         "selectedName": data.get_selected_name().as_str(),
         "definitionJson": data.get_definition_json().as_str(),
+        "bundle": data.get_bundle(),
         "validationCurrent": data.get_validation_ready(),
         "validation": data.get_validation().as_str(),
         "validationFailed": data.get_validation_failed(),

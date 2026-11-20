@@ -14,6 +14,7 @@ fn definition(steps: Vec<model::MacroStep>) -> model::MacroDefinition {
         snapshot_before_run: false,
         revert_on_failure: false,
         rollback_probes: Vec::new(),
+        bundle: false,
         steps,
         legacy_notes: Vec::new(),
     }

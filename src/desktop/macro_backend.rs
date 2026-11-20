@@ -115,6 +115,13 @@ pub trait OwnedControls: Send + Sync {
         guard: &'a (dyn Fn() -> bool + Send + Sync),
         private_id: &'a str,
     ) -> BoxFuture<'a, Result<Value, ControlTransport>>;
+    /// `evm_setAutomine` / `evm_mine` for bundles. Default: unavailable.
+    fn automine<'a>(&'a self, _guard: &'a (dyn Fn() -> bool + Send + Sync), _enabled: bool) -> BoxFuture<'a, Result<Value, ControlTransport>> {
+        Box::pin(async { Err(ControlTransport::NotDispatched) })
+    }
+    fn mine<'a>(&'a self, _guard: &'a (dyn Fn() -> bool + Send + Sync)) -> BoxFuture<'a, Result<Value, ControlTransport>> {
+        Box::pin(async { Err(ControlTransport::NotDispatched) })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +141,8 @@ pub struct DesktopMacroBackend<A, S, T, C> {
     gate: MutationGate,
     token: runner::ExecutionToken,
     addresses: SignerAddresses,
+    /// Bundle submissions waiting for their block: hash -> (result, creation).
+    pending: std::sync::Mutex<std::collections::HashMap<String, (CallResult, bool)>>,
 }
 
 impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedControls>
@@ -172,7 +181,21 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
             gate,
             token,
             addresses,
+            pending: Default::default(),
         })
+    }
+
+    /// A submission result: kept for later when the node only queued it.
+    fn submitted(&self, result: Result<CallResult, ()>, deployment: bool) -> runner::MutationOutcome {
+        if let Ok(result) = &result {
+            if result.context.request["submissionState"] == "pending" {
+                if let Some(hash) = result.context.request["transactionHash"].as_str().filter(|hash| valid_hex(hash, 32)).map(str::to_ascii_lowercase) {
+                    self.pending.lock().unwrap().insert(hash.clone(), (result.clone(), deployment));
+                    return runner::MutationOutcome::Pending { tx_hash: hash };
+                }
+            }
+        }
+        map_submission(result, deployment)
     }
 
     fn current(&self, token: &runner::ExecutionToken) -> bool {
@@ -391,7 +414,7 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
                 Err(error) => return runner::MutationOutcome::Failed(error),
             };
             let guard = || self.current(token) && !cancel.is_cancelled();
-            map_submission(
+            self.submitted(
                 self.submissions
                     .deploy(&guard, self.owned.clone(), key, creation, value, exact_gas)
                     .await,
@@ -451,7 +474,7 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
                 Err(error) => return runner::MutationOutcome::Failed(error),
             };
             let guard = || self.current(token) && !cancel.is_cancelled();
-            map_submission(
+            self.submitted(
                 self.submissions
                     .abi_send(&guard, self.owned.clone(), key, prepared, exact_gas)
                     .await,
@@ -550,7 +573,7 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
                 }
             }
             let guard = || self.current(token) && !cancel.is_cancelled();
-            map_submission(
+            self.submitted(
                 self.submissions
                     .raw_send(&guard, self.owned.clone(), key, request)
                     .await,
@@ -636,6 +659,46 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
                 }
                 _ => runner::ControlOutcome::Unknown(runner::UnknownReason::Control),
             }
+        })
+    }
+
+    fn set_automine<'a>(&'a self, token: &'a runner::ExecutionToken, enabled: bool) -> BoxFuture<'a, runner::ControlOutcome<bool>> {
+        Box::pin(async move {
+            if !self.current(token) {
+                return runner::ControlOutcome::Failed(runner::FailureCode::StaleContext);
+            }
+            let guard = || self.current(token);
+            match tokio::time::timeout(CONTROL_TIMEOUT, self.controls.automine(&guard, enabled)).await {
+                Ok(Ok(value)) if envelope(&value).is_some() => runner::ControlOutcome::Confirmed(true),
+                Ok(Err(ControlTransport::NotDispatched)) => runner::ControlOutcome::Failed(runner::FailureCode::Unavailable),
+                _ => runner::ControlOutcome::Unknown(runner::UnknownReason::Control),
+            }
+        })
+    }
+
+    fn mine<'a>(&'a self, token: &'a runner::ExecutionToken) -> BoxFuture<'a, runner::ControlOutcome<bool>> {
+        Box::pin(async move {
+            if !self.current(token) {
+                return runner::ControlOutcome::Failed(runner::FailureCode::StaleContext);
+            }
+            let guard = || self.current(token);
+            match tokio::time::timeout(CONTROL_TIMEOUT, self.controls.mine(&guard)).await {
+                Ok(Ok(value)) if envelope(&value).is_some() => runner::ControlOutcome::Confirmed(true),
+                Ok(Err(ControlTransport::NotDispatched)) => runner::ControlOutcome::Failed(runner::FailureCode::Unavailable),
+                _ => runner::ControlOutcome::Unknown(runner::UnknownReason::Control),
+            }
+        })
+    }
+
+    fn confirm_pending<'a>(&'a self, token: &'a runner::ExecutionToken, tx_hash: &'a str) -> BoxFuture<'a, runner::MutationOutcome> {
+        Box::pin(async move {
+            let Some((pending, deployment)) = self.pending.lock().unwrap().remove(&tx_hash.to_ascii_lowercase()) else {
+                return runner::MutationOutcome::Unknown { tx_hash: Some(tx_hash.to_string()), reason: runner::UnknownReason::InvalidConfirmation };
+            };
+            if !self.current(token) {
+                return runner::MutationOutcome::Unknown { tx_hash: Some(tx_hash.to_string()), reason: runner::UnknownReason::Receipt };
+            }
+            map_submission(Ok(contract_service::finish_bundled(pending, deployment).await), deployment)
         })
     }
 }

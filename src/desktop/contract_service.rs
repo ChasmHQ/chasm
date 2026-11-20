@@ -143,6 +143,19 @@ struct TransactionPlan {
     value: U256,
     exact_gas: Option<u64>,
     expected_source: Option<super::macro_runner::SourceIdentity>,
+    /// Return right after the node accepts the transaction (a bundle mines it
+    /// later); `finish_bundled` then waits for the receipt.
+    no_wait: bool,
+}
+
+tokio::task_local! {
+    /// Set while a macro bundle submits: transactions are accepted into the
+    /// pending pool and mined together, so their receipts come later.
+    pub static BUNDLE_SUBMIT: bool;
+}
+
+fn bundling() -> bool {
+    BUNDLE_SUBMIT.try_with(|value| *value).unwrap_or(false)
 }
 
 /// A signer value that is an address, not a key: the owned Anvil node sends
@@ -199,6 +212,7 @@ pub async fn send_with_gas(
             value,
             exact_gas,
             expected_source: None,
+            no_wait: false,
         },
         key,
         owned,
@@ -254,6 +268,7 @@ pub async fn deploy_with_gas(
             value,
             exact_gas,
             expected_source: None,
+            no_wait: false,
         },
         key,
         owned,
@@ -278,7 +293,7 @@ pub async fn guarded_deploy(
     };
     submit_transaction_guarded(TransactionPlan {
         context, abi: Abi::default(), rpc: "http://127.0.0.1:8545".into(), to: None,
-        data: creation, value, exact_gas: Some(exact_gas), expected_source: None,
+        data: creation, value, exact_gas: Some(exact_gas), expected_source: None, no_wait: bundling(),
     }, key, owned, guard).await.map_err(|_| ())
 }
 
@@ -298,7 +313,7 @@ pub async fn guarded_abi_send(
     let value = parse_quantity(&request.call["value"]).map_err(|_| ())?;
     submit_transaction_guarded(TransactionPlan {
         context: request.context, abi: request.abi, rpc: request.rpc, to: Some(to), data, value,
-        exact_gas: Some(exact_gas), expected_source: None,
+        exact_gas: Some(exact_gas), expected_source: None, no_wait: bundling(),
     }, key, owned, guard).await.map_err(|_| ())
 }
 
@@ -318,7 +333,7 @@ pub async fn guarded_raw_send(
     };
     submit_transaction_guarded(TransactionPlan {
         context, abi: Abi::default(), rpc: "http://127.0.0.1:8545".into(), to: Some(to), data,
-        value, exact_gas: Some(request.exact_gas), expected_source: request.expected_source.clone(),
+        value, exact_gas: Some(request.exact_gas), expected_source: request.expected_source.clone(), no_wait: bundling(),
     }, key, owned, guard).await.map_err(|_| ())
 }
 
@@ -505,7 +520,49 @@ async fn submit_transaction_guarded(
         return Ok(receipt_unavailable(plan, Some(submitted), "Submission was not confirmed with the expected transaction hash. Check the transaction before retrying."));
     }
     plan.context.request["submissionResponse"] = submitted;
+    if plan.no_wait {
+        plan.context.request["submissionState"] = json!("pending");
+        plan.context.request["preSubmitSource"] = pre_submit_source;
+        return Ok(CallResult::from_receipt(plan.context, &plan.abi, Value::Null));
+    }
     await_receipt(plan, hash, &pre_submit_source).await
+}
+
+/// Waits for the receipt of a transaction submitted with `no_wait` (in a
+/// bundle, after the block is mined) and checks it like a normal send.
+pub async fn finish_bundled(pending: CallResult, creation: bool) -> CallResult {
+    let hash = pending.context.request["transactionHash"].as_str().unwrap_or_default().to_string();
+    let pre_submit_source = pending.context.request["preSubmitSource"].clone();
+    let mut context = pending.context;
+    if let Some(request) = context.request.as_object_mut() {
+        request.remove("preSubmitSource");
+    }
+    let plan = TransactionPlan {
+        context,
+        abi: pending.abi,
+        rpc: "http://127.0.0.1:8545".into(),
+        to: if creation { None } else { Some(ethers::types::Address::zero()) },
+        data: Vec::new(),
+        value: U256::zero(),
+        exact_gas: None,
+        expected_source: None,
+        no_wait: false,
+    };
+    match await_receipt(plan, hash, &pre_submit_source).await {
+        Ok(result) => result,
+        Err(error) => {
+            let mut result = pending_error(error);
+            result.simple = "Receipt check failed after the bundle was mined.".into();
+            result
+        }
+    }
+}
+
+fn pending_error(reason: String) -> CallResult {
+    let context = ResultContext { contract: String::new(), address: String::new(), signature: String::new(), request: json!({"submissionState":"unknown"}), workspace_epoch: 0, network_epoch: 0, source: Value::Null };
+    let mut result = CallResult::from_receipt(context, &Abi::default(), Value::Null);
+    result.simple = reason;
+    result
 }
 
 /// Sends `transaction` as `from` through the owned node without a key, then
@@ -543,6 +600,11 @@ async fn submit_impersonated(
     };
     plan.context.request["transactionHash"] = json!(hash);
     plan.context.request["submissionResponse"] = submitted;
+    if plan.no_wait {
+        plan.context.request["submissionState"] = json!("pending");
+        plan.context.request["preSubmitSource"] = pre_submit_source.clone();
+        return Ok(CallResult::from_receipt(plan.context, &plan.abi, Value::Null));
+    }
     await_receipt(plan, hash, pre_submit_source).await
 }
 
@@ -1363,6 +1425,7 @@ mod tests {
             value: U256::zero(),
             exact_gas: None,
             expected_source: None,
+            no_wait: false,
         };
         let result = receipt_unavailable(request, None, "Submission outcome is unknown.");
         assert!(result.simple.contains(&hash));
@@ -1397,6 +1460,7 @@ mod tests {
             value: U256::MAX,
             exact_gas: Some(250_000),
             expected_source: None,
+            no_wait: false,
         };
         let sender = ethers::types::Address::from_low_u64_be(1);
         let unsigned = unsigned_transaction(&plan, sender);

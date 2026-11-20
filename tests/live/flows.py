@@ -259,6 +259,68 @@ def macro():
     check("the result says what reached the chain", "confirmed on the workspace chain" in simple and "revert" in simple.lower(), simple[:300])
 
 
+
+def bundle():
+    """Bundle mode: two deposits mined in one block; a failing step rolls the chain back."""
+    bank = next(d for d in query("app.state")["documents"] if d["title"] == "Bank")
+    command("ui.document.select", id=bank["id"])
+    bank_address = query("contracts.view")["address"]
+    command("wallet.dev_account", index=0)
+    command("ui.navigate", activity="macros")
+
+    def build(steps):
+        command("macros.new")
+        for index, (kind, value) in enumerate(steps):
+            command("macros.step.add", kind="call")
+            command("macros.step.field", index=index, field="target", value=bank_address)
+            if kind == "deposit":
+                command("macros.step.field", index=index, field="value", value=str(value))
+                command("macros.step.encode", index=index, contract="Bank", function="deposit", arguments="", send=True)
+            else:
+                command("macros.step.encode", index=index, contract="Bank", function="withdraw", arguments=json.dumps([str(value)]), send=True)
+        command("macros.bundle", enabled=True)
+        check("bundle mode is on", query("macros.state")["macros"]["bundle"])
+        command("macros.validate")
+        state = query("macros.state")["macros"]
+        check("validated", state["validationCurrent"] and not state["validationFailed"], state["validation"] or state["error"])
+
+    def run():
+        before = len(query("macros.state")["macros"]["results"])
+        command("macros.run", dry_run=False)
+        for _ in range(90):
+            state = query("macros.state")["macros"]
+            if not state["runBusy"] and len(state["results"]) > before:
+                break
+            time.sleep(1)
+        command("macros.result.select", index=0)
+        return query("macros.state")["macros"]
+
+    head = int(rpc("eth_blockNumber"), 16)
+    build([("deposit", 10**15), ("deposit", 2 * 10**15)])
+    state = run()
+    simple = state["resultSimple"]
+    print("  | " + " || ".join(simple.splitlines())[:300])
+    check("both deposits succeeded", [step["status"] for step in state["steps"]][:2] == ["Succeeded"] * 2, str([step["status"] for step in state["steps"]]))
+    check("the result names one block", "mined together in one block" in simple, simple[:300])
+    after = int(rpc("eth_blockNumber"), 16)
+    block = rpc("eth_getBlockByNumber", [hex(after), False])
+    check("exactly one new block holds both transactions", after == head + 1 and len(block["transactions"]) == 2, f"{head} -> {after}, {len(block['transactions'])} txs")
+    check("automine is back on", rpc("anvil_getAutomine") is True)
+
+    # A deposit then an over-withdrawal: the withdrawal reverts, so the deposit is undone too.
+    balance = lambda: int(rpc("eth_getBalance", [bank_address, "latest"]), 16)
+    before_balance, head = balance(), int(rpc("eth_blockNumber"), 16)
+    build([("deposit", 10**15), ("withdraw", 10**24)])
+    state = run()
+    simple = state["resultSimple"]
+    print("  | " + " || ".join(simple.splitlines())[:300])
+    check("the failing step is reported", "Failed" in [step["status"] for step in state["steps"]], str([step["status"] for step in state["steps"]]))
+    check("the result says it rolled back", "rolled back" in simple and "Nothing from this run stays applied" in simple, simple[:300])
+    check("the chain is back where it started", int(rpc("eth_blockNumber"), 16) == head and balance() == before_balance, f"{head} vs {rpc('eth_blockNumber')}, {before_balance} vs {balance()}")
+    check("automine is back on after a rollback", rpc("anvil_getAutomine") is True)
+    command("ui.navigate", activity="explorer")
+
+
 def fork():
     """Fork mainnet, check a real contract, debug a real transaction, back to local.
 
@@ -1126,4 +1188,4 @@ def scenario():
     check("compare reports the path and the effect difference", ("Same path" in compared or "First divergence" in compared) and "Storage effects differ" in compared and f"balanceOf[{OWNER}]" in compared, compared)
     print("  | " + " || ".join(compared.strip().splitlines())[:300])
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, call_jobs, impersonate, template, panes, gas, storage_names, scenario, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, bundle, inline_deploy, call_jobs, impersonate, template, panes, gas, storage_names, scenario, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]

@@ -51,6 +51,7 @@ fn plan(dry_run: bool, operations: Vec<Operation>) -> ExecutionPlan {
     ExecutionPlan {
         token: token(),
         dry_run,
+        bundle: false,
         steps: operations
             .into_iter()
             .enumerate()
@@ -90,6 +91,11 @@ struct FakeState {
     abi_send_gas: Vec<Option<u64>>,
     block_number: Option<String>,
     gas_used: Option<String>,
+    /// Bundle: sends queue while automine is off; `mine` confirms them.
+    automine: bool,
+    queued: Vec<String>,
+    mined: Vec<String>,
+    fail_hash: Option<usize>,
 }
 
 struct FakeBackend {
@@ -129,6 +135,10 @@ impl FakeBackend {
                 abi_send_gas: Vec::new(),
                 block_number: Some("0x0a".into()),
                 gas_used: Some("21000".into()),
+                automine: true,
+                queued: Vec::new(),
+                mined: Vec::new(),
+                fail_hash: None,
             }),
             current: AtomicBool::new(true),
             lease: AtomicBool::new(false),
@@ -146,6 +156,16 @@ impl FakeBackend {
         cancel: &CancellationToken,
         contract_address: Option<String>,
     ) -> MutationOutcome {
+        {
+            // Automine off: the node only queues the transaction.
+            let mut state = self.state.lock().unwrap();
+            if !state.automine {
+                state.events.push(format!("queue:{kind}"));
+                let hash = format!("0x{:064x}", state.queued.len() + 1);
+                state.queued.push(hash.clone());
+                return MutationOutcome::Pending { tx_hash: hash };
+            }
+        }
         let (outcome, block_number, gas_used) = {
             let mut state = self.state.lock().unwrap();
             state.events.push(kind.into());
@@ -365,10 +385,50 @@ impl MacroBackend for FakeBackend {
                 state.snapshot_word.clone()
             };
             state.source = fixture_source();
+            state.historical = fixture_source();
             if state.post_revert_wrong_head {
                 state.source.block_hash = TX_HASH.into();
             }
             ControlOutcome::Confirmed(true)
+        })
+    }
+
+    fn set_automine<'a>(&'a self, _: &'a ExecutionToken, enabled: bool) -> BoxFuture<'a, ControlOutcome<bool>> {
+        Box::pin(async move {
+            let mut state = self.state.lock().unwrap();
+            state.events.push(format!("automine:{enabled}"));
+            state.automine = enabled;
+            ControlOutcome::Confirmed(true)
+        })
+    }
+
+    fn mine<'a>(&'a self, _: &'a ExecutionToken) -> BoxFuture<'a, ControlOutcome<bool>> {
+        Box::pin(async move {
+            let mut state = self.state.lock().unwrap();
+            state.events.push("mine".into());
+            let queued = std::mem::take(&mut state.queued);
+            state.mined.extend(queued);
+            state.word = WORD_ONE.into();
+            state.source.block_number += 1;
+            state.source.block_hash = TX_HASH.into();
+            state.historical = state.source.clone();
+            ControlOutcome::Confirmed(true)
+        })
+    }
+
+    fn confirm_pending<'a>(&'a self, _: &'a ExecutionToken, tx_hash: &'a str) -> BoxFuture<'a, MutationOutcome> {
+        Box::pin(async move {
+            let state = self.state.lock().unwrap();
+            let Some(position) = state.mined.iter().position(|hash| hash == tx_hash) else {
+                return MutationOutcome::Unknown { tx_hash: Some(tx_hash.into()), reason: UnknownReason::Receipt };
+            };
+            MutationOutcome::Confirmed(ConfirmedMutation {
+                contract_address: None,
+                tx_hash: tx_hash.into(),
+                reverted: state.fail_hash == Some(position),
+                block_number: Some(format!("{:#x}", state.source.block_number)),
+                gas_used: Some("0x5208".into()),
+            })
         })
     }
 }
@@ -520,6 +580,7 @@ async fn reverted_receipt_preserves_confirmed_hash_and_stops() {
         snapshots: HashMap::new(),
         sweeps: HashMap::new(),
         remaining_output: MAX_TOTAL_OUTPUT_BYTES,
+        pending: Vec::new(),
     };
     let mut report = StepReport {
         id: StepId(1),
@@ -1291,6 +1352,7 @@ async fn malformed_or_zero_deployment_address_cannot_be_confirmed() {
         snapshots: HashMap::new(),
         sweeps: HashMap::new(),
         remaining_output: MAX_TOTAL_OUTPUT_BYTES,
+        pending: Vec::new(),
     };
     let mut step = StepReport {
         id: StepId(1),
@@ -1637,4 +1699,59 @@ async fn the_chain_effect_says_sends_are_separate_and_what_stays_applied() {
 
     let dry = chain_effect(&run(plan(true, vec![send()]), &FakeBackend::new()).await);
     assert!(dry.starts_with("Dry run: nothing was signed"), "{dry}");
+}
+
+fn bundle_plan(operations: Vec<Operation>) -> ExecutionPlan {
+    let mut plan = plan(false, operations);
+    plan.bundle = true;
+    plan
+}
+
+fn send() -> Operation {
+    Operation::RawSend { transaction: transaction(), gas: GasLimit::Exact(70_000), signer: SignerAlias::Active }
+}
+
+#[tokio::test]
+async fn a_bundle_mines_its_sends_in_one_block_before_reads() {
+    let backend = FakeBackend::new();
+    let report = run(bundle_plan(vec![send(), send(), Operation::Storage(probe())]), &backend).await;
+    assert_eq!(report.status, RunStatus::Completed, "{:?}", report.steps.iter().map(|step| step.status).collect::<Vec<_>>());
+    assert_eq!(report.bundle, Some(BundleOutcome::Mined { block: 11 }));
+    let events = backend.events();
+    let position = |event: &str| events.iter().position(|item| item == event).unwrap_or_else(|| panic!("{event} missing in {events:?}"));
+    assert!(position("snapshot") < position("automine:false"));
+    assert!(position("automine:false") < position("queue:raw_send"));
+    assert_eq!(events.iter().filter(|event| *event == "mine").count(), 1, "one block for both sends");
+    assert!(position("mine") < events.iter().position(|item| item.starts_with("storage:")).unwrap(), "reads see the mined block");
+    assert_eq!(events.last().map(String::as_str), Some("automine:true"));
+    assert!(report.steps[..2].iter().all(|step| step.status == StepStatus::Succeeded && step.output.submission == Some(SubmissionState::Confirmed)));
+    assert!(chain_effect(&report).contains("one block"), "{}", chain_effect(&report));
+}
+
+#[tokio::test]
+async fn a_failing_send_in_a_bundle_rolls_everything_back() {
+    let backend = FakeBackend::new();
+    backend.state.lock().unwrap().fail_hash = Some(1);
+    let report = run(bundle_plan(vec![send(), send(), Operation::Storage(probe())]), &backend).await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.bundle, Some(BundleOutcome::RolledBack { block: 10 }));
+    assert_eq!(report.steps[1].failure, Some(FailureCode::Reverted));
+    assert_eq!(report.steps[2].status, StepStatus::Skipped);
+    let events = backend.events();
+    assert!(events.contains(&"revert".to_string()) && events.contains(&"automine:true".to_string()), "{events:?}");
+    let text = chain_effect(&report);
+    assert!(text.contains("rolled back") && !text.contains("stay applied"), "{text}");
+}
+
+#[tokio::test]
+async fn a_bundle_whose_rollback_cannot_be_verified_says_so() {
+    let backend = FakeBackend::new();
+    {
+        let mut state = backend.state.lock().unwrap();
+        state.fail_hash = Some(0);
+        state.post_revert_wrong_head = true;
+    }
+    let report = run(bundle_plan(vec![send()]), &backend).await;
+    assert_eq!(report.status, RunStatus::RollbackFailed);
+    assert_eq!(report.bundle, Some(BundleOutcome::RollbackFailed));
 }

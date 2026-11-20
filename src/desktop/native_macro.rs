@@ -810,6 +810,7 @@ fn begin_new(controller: &Arc<Controller>) -> bool {
         snapshot_before_run: false,
         revert_on_failure: false,
         rollback_probes: Vec::new(),
+        bundle: false,
         steps: Vec::new(),
         legacy_notes: Vec::new(),
     };
@@ -1343,6 +1344,13 @@ fn wire_callbacks(ui: &MainWindow, key: usize, generation: u64, controller: Arc<
         }
     });
     let held = controller.clone();
+    ui.global::<MacroLogic>().on_set_bundle(move |enabled| {
+        if host_current(&held, key, generation) {
+            form_edit(&held, |draft| super::macro_form::set_bundle(draft, enabled).map(|draft| (draft, 0)));
+            refresh_all(&held);
+        }
+    });
+    let held = controller.clone();
     ui.global::<MacroLogic>().on_set_field(move |index, field, value| {
         if host_current(&held, key, generation) && value.len() <= 64 * 1024 {
             form_edit(&held, |draft| super::macro_form::set_field(draft, index.max(0) as usize, field.as_str(), value.as_str()).map(|draft| (draft, 0)));
@@ -1821,6 +1829,7 @@ fn project(
             .unwrap_or("")
             .into(),
     );
+    data.set_bundle(record.and_then(|record| serde_json::from_str::<serde_json::Value>(&record.draft).ok()).is_some_and(|value| value["bundle"] == true));
     data.set_summary(
         record
             .map(|record| {

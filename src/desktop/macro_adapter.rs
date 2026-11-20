@@ -616,6 +616,7 @@ fn adapt_checked(
             token,
             dry_run,
             steps,
+            bundle: definition.bundle,
         },
         ids,
         numeric_ids: mapper.ids,

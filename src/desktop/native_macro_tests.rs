@@ -11,6 +11,7 @@ fn definition(name: &str) -> MacroDefinition {
         snapshot_before_run: false,
         revert_on_failure: false,
         rollback_probes: Vec::new(),
+        bundle: false,
         steps: Vec::new(),
         legacy_notes: Vec::new(),
     }
@@ -225,6 +226,7 @@ fn output_for(active: &ActiveRun) -> ExecutionOutput {
             status: macro_runner::RunStatus::Completed,
             failure: None,
             steps,
+            bundle: None,
         },
         step_ids: active
             .definition

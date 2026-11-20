@@ -97,6 +97,18 @@ pub fn toggle_step(draft: &str, index: usize) -> Result<String, String> {
     Ok(write(map, list))
 }
 
+/// Turn bundle mode on or off for the whole macro.
+pub fn set_bundle(draft: &str, enabled: bool) -> Result<String, String> {
+    let mut map = parse(draft)?;
+    if enabled {
+        map.insert("bundle".into(), json!(true));
+    } else {
+        map.remove("bundle");
+    }
+    let list = steps(&map);
+    Ok(write(map, list))
+}
+
 /// Set one field of a step: `id` renames the step, everything else is a kind field.
 pub fn set_field(draft: &str, index: usize, key: &str, value: &str) -> Result<String, String> {
     let map = parse(draft)?;

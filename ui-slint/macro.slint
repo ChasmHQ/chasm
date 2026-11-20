@@ -35,6 +35,8 @@ export global MacroData {
     in property <string> preflight-sweep;
     in property <string> preflight-signers;
     in property <string> preflight-snapshot;
+    // The selected macro sends its leading transactions in one block.
+    in property <bool> bundle;
     in property <string> status;
     in property <bool> loading;
     in property <bool> failed;
@@ -88,6 +90,7 @@ export global MacroLogic {
     callback remove-step(int);
     callback move-step(int, int);
     callback toggle-step(int);
+    callback set-bundle(bool);
     callback set-field(int, string, string);
     callback choose-call(int, int);
     callback encode-call(int, string, bool);
@@ -168,6 +171,7 @@ export component MacroWorkspace inherits Rectangle {
                     Rectangle { width: 1px; background: Theme.line; }
                     IconButton { icon: @image-url("icons/refresh.svg"); label: "Validate"; enabled: root.has-selection && !MacroData.run-busy; clicked => { MacroData.validation-ready = false; MacroLogic.validate(); } }
                     IconButton { icon: @image-url("icons/search.svg"); label: "Dry run"; enabled: root.validation-current && MacroData.can-dry-run && !MacroData.run-busy; clicked => { MacroLogic.dry-run(); } }
+                    IconButton { icon: @image-url("icons/block.svg"); label: MacroData.bundle ? "Bundle: one block, rollback on failure" : "Bundle off"; checkable: true; selected: MacroData.bundle; enabled: root.has-selection && !MacroData.run-busy; clicked => { MacroLogic.set-bundle(!MacroData.bundle); } }
                     IconButton { icon: @image-url("icons/play.svg"); label: MacroData.run-busy ? "Running…" : "Run"; primary: true; enabled: root.validation-current && MacroData.can-run && !MacroData.run-busy; clicked => { MacroLogic.run(); } }
                     if MacroData.run-busy: IconButton { icon: @image-url("icons/stop.svg"); label: "Cancel"; clicked => { MacroLogic.cancel(); } }
                     Rectangle { horizontal-stretch: 1; }

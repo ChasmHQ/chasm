@@ -173,6 +173,9 @@ pub struct ExecutionPlan {
     pub token: ExecutionToken,
     pub dry_run: bool,
     pub steps: Vec<PlanStep>,
+    /// Send every leading transaction into one block, then run the reads and
+    /// assertions; any failure reverts the whole run to its start.
+    pub bundle: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -302,6 +305,9 @@ pub enum MutationOutcome {
         reason: UnknownReason,
     },
     Cancelled,
+    /// Accepted into the node's pending pool (bundle mode); `confirm_pending`
+    /// gives the final outcome once the block is mined.
+    Pending { tx_hash: String },
 }
 
 pub enum ControlOutcome<T> {
@@ -407,6 +413,21 @@ pub trait MacroBackend: Send + Sync {
         snapshot: &'a str,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, ControlOutcome<bool>>;
+
+    /// Bundle mode: switch automine. Backends without it refuse the bundle.
+    fn set_automine<'a>(&'a self, _token: &'a ExecutionToken, _enabled: bool) -> BoxFuture<'a, ControlOutcome<bool>> {
+        Box::pin(async { ControlOutcome::Failed(FailureCode::Unavailable) })
+    }
+
+    /// Bundle mode: mine one block with every pending transaction.
+    fn mine<'a>(&'a self, _token: &'a ExecutionToken) -> BoxFuture<'a, ControlOutcome<bool>> {
+        Box::pin(async { ControlOutcome::Failed(FailureCode::Unavailable) })
+    }
+
+    /// Bundle mode: the outcome of a submission once its block is mined.
+    fn confirm_pending<'a>(&'a self, _token: &'a ExecutionToken, tx_hash: &'a str) -> BoxFuture<'a, MutationOutcome> {
+        Box::pin(async move { MutationOutcome::Unknown { tx_hash: Some(tx_hash.to_string()), reason: UnknownReason::Receipt } })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -498,6 +519,21 @@ pub struct RunReport {
     pub status: RunStatus,
     pub failure: Option<FailureCode>,
     pub steps: Vec<StepReport>,
+    /// Bundle runs: the block every transaction landed in, and whether a
+    /// failure rolled the chain back to where the run started (verified).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<BundleOutcome>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleOutcome {
+    /// Every transaction was mined in this block and the run succeeded.
+    Mined { block: u64 },
+    /// A step failed; the chain was reverted to the start and the head checked.
+    RolledBack { block: u64 },
+    /// The revert was refused or the head did not match: state is unknown.
+    RollbackFailed,
 }
 
 /// Progress reported to the run observer; tests assert on every field.
@@ -542,6 +578,8 @@ struct State {
     snapshots: HashMap<StepId, Checkpoint>,
     sweeps: HashMap<StepId, SweepSelection>,
     remaining_output: usize,
+    /// Bundle mode: submissions waiting for their block (step, hash, creation).
+    pending: Vec<(StepId, String, bool)>,
 }
 
 #[derive(Clone, Copy)]
@@ -1235,6 +1273,12 @@ fn mutation_result(
             report.status = StepStatus::Cancelled;
             true
         }
+        // Bundle mode: accepted into the pool; confirmed after the block is mined.
+        MutationOutcome::Pending { tx_hash } => {
+            report.output.transaction_hash = valid_hash(&tx_hash);
+            state.pending.push((id, tx_hash, deployment));
+            false
+        }
         MutationOutcome::Failed(error) => {
             report.status = StepStatus::Failed;
             report.failure = Some(error);
@@ -1789,6 +1833,7 @@ where
                 output: OutputSummary::default(),
             })
             .collect(),
+        bundle: None,
     };
     observer(&RunEvent::Started {
         id,
@@ -1801,6 +1846,7 @@ where
         snapshots: HashMap::new(),
         sweeps: HashMap::new(),
         remaining_output: MAX_TOTAL_OUTPUT_BYTES,
+        pending: Vec::new(),
     };
     if let Err(error) = validation {
         report.status = RunStatus::InvalidPlan;
@@ -1854,8 +1900,41 @@ where
     } else {
         None
     };
+    // Bundle: checkpoint the chain and stop mining, so every send lands in the
+    // same block. A send that the node refuses still stops the run.
+    let bundle_start = if plan.bundle && !plan.dry_run {
+        match bundle_begin(backend, &plan.token, cancel).await {
+            Ok(start) => Some(start),
+            Err(error) => {
+                report.status = RunStatus::Failed;
+                report.failure = Some(error);
+                for step in &mut report.steps {
+                    step.status = StepStatus::Skipped;
+                    step.skipped = Some(SkipReason::Stopped);
+                }
+                observer(&RunEvent::Finished { id, status: report.status });
+                return Ok(report);
+            }
+        }
+    } else {
+        None
+    };
     let mut stopped = false;
-    for (step, result) in plan.steps.iter().zip(report.steps.iter_mut()) {
+    let mut mined_block = None;
+    for index in 0..plan.steps.len().min(report.steps.len()) {
+        let step = &plan.steps[index];
+        // The first step that is not a send mines the block, so reads and
+        // assertions see every bundled transaction.
+        if bundle_start.is_some() && !stopped && !state.pending.is_empty() && !sends_transaction(&step.operation) {
+            match bundle_mine(backend, &plan.token, &mut state, &mut report.steps, &mut observer, id).await {
+                Ok(block) => mined_block = Some(block),
+                Err(()) => {
+                    stopped = true;
+                    report.status = RunStatus::Failed;
+                }
+            }
+        }
+        let result = &mut report.steps[index];
         let was_stopped = stopped;
         if stopped {
             result.status = StepStatus::Skipped;
@@ -1906,6 +1985,19 @@ where
             };
         }
     }
+    if let Some(start) = bundle_start {
+        // A bundle that ends with sends mines them now.
+        if !stopped && !state.pending.is_empty() {
+            match bundle_mine(backend, &plan.token, &mut state, &mut report.steps, &mut observer, id).await {
+                Ok(block) => mined_block = Some(block),
+                Err(()) => {
+                    stopped = true;
+                    report.status = RunStatus::Failed;
+                }
+            }
+        }
+        report.bundle = Some(bundle_end(backend, &plan.token, &start, stopped, mined_block, &mut report.status).await);
+    }
     if !stopped && plan.dry_run {
         report.status = RunStatus::PreflightComplete;
     }
@@ -1914,6 +2006,99 @@ where
         status: report.status,
     });
     Ok(report)
+}
+
+/// Where a bundle started: the chain head and the snapshot that restores it.
+struct BundleStart {
+    snapshot: String,
+    head: SourceIdentity,
+}
+
+/// Sends a bundle can hold in its block: everything that signs a transaction.
+fn sends_transaction(operation: &Operation) -> bool {
+    matches!(operation, Operation::Deploy { .. } | Operation::RawSend { .. }) || matches!(operation, Operation::AbiCall(input) if input.signer.is_some())
+}
+
+/// Snapshot the chain and switch automine off. On any error nothing is left
+/// changed: automine is switched back on.
+async fn bundle_begin<B: MacroBackend + ?Sized>(backend: &B, token: &ExecutionToken, cancel: &CancellationToken) -> Result<BundleStart, FailureCode> {
+    let head = source(backend, token, None, Some(cancel)).await.map_err(|_| FailureCode::Unavailable)?;
+    let snapshot = match backend.snapshot(token, cancel).await {
+        ControlOutcome::Confirmed(id) => id,
+        ControlOutcome::Failed(error) => return Err(error),
+        _ => return Err(FailureCode::Unavailable),
+    };
+    match backend.set_automine(token, false).await {
+        ControlOutcome::Confirmed(true) => Ok(BundleStart { snapshot, head }),
+        outcome => {
+            let _ = backend.set_automine(token, true).await;
+            Err(match outcome {
+                ControlOutcome::Failed(error) => error,
+                _ => FailureCode::Unavailable,
+            })
+        }
+    }
+}
+
+/// Mines the pending sends into one block and records each receipt. Returns
+/// the block number, or Err when any send failed or its outcome is unknown.
+async fn bundle_mine<B, F>(backend: &B, token: &ExecutionToken, state: &mut State, steps: &mut [StepReport], observer: &mut F, id: RunId) -> Result<u64, ()>
+where
+    B: MacroBackend + ?Sized,
+    F: FnMut(&RunEvent) + Send,
+{
+    let pending = std::mem::take(&mut state.pending);
+    if !matches!(backend.mine(token).await, ControlOutcome::Confirmed(true)) {
+        for (step_id, hash, _) in &pending {
+            if let Some(report) = steps.iter_mut().find(|report| report.id == *step_id) {
+                report.status = StepStatus::Unknown;
+                report.unknown = Some(UnknownReason::Control);
+                report.output.transaction_hash = valid_hash(hash);
+            }
+        }
+        return Err(());
+    }
+    let mut failed = false;
+    let mut block = None;
+    for (step_id, hash, deployment) in pending {
+        let outcome = backend.confirm_pending(token, &hash).await;
+        if let MutationOutcome::Confirmed(confirmed) = &outcome {
+            block = block.or_else(|| confirmed.block_number.as_deref().and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok()));
+        }
+        let Some(report) = steps.iter_mut().find(|report| report.id == step_id) else { continue };
+        report.status = StepStatus::Running;
+        if mutation_result(outcome, step_id, state, report, deployment) {
+            failed = true;
+        } else {
+            report.status = StepStatus::Succeeded;
+        }
+        observer(&RunEvent::Step { id, step: report.clone() });
+    }
+    if failed { Err(()) } else { block.ok_or(()) }
+}
+
+/// Restores automine and, when the run failed, reverts to the snapshot and
+/// checks the head is the one the bundle started from.
+async fn bundle_end<B: MacroBackend + ?Sized>(backend: &B, token: &ExecutionToken, start: &BundleStart, failed: bool, mined: Option<u64>, status: &mut RunStatus) -> BundleOutcome {
+    let automine = backend.set_automine(token, true).await;
+    if !failed {
+        if !matches!(automine, ControlOutcome::Confirmed(true)) {
+            *status = RunStatus::Unknown;
+        }
+        return match mined {
+            Some(block) => BundleOutcome::Mined { block },
+            None => BundleOutcome::Mined { block: start.head.block_number },
+        };
+    }
+    let never = CancellationToken::new();
+    let reverted = matches!(backend.revert(token, &start.snapshot, &never).await, ControlOutcome::Confirmed(true));
+    let head = source(backend, token, None, None).await.ok();
+    if reverted && head.as_ref() == Some(&start.head) {
+        BundleOutcome::RolledBack { block: start.head.block_number }
+    } else {
+        *status = RunStatus::RollbackFailed;
+        BundleOutcome::RollbackFailed
+    }
 }
 
 /// What a run left on the chain, in plain words: how many transactions were
@@ -1928,6 +2113,18 @@ pub fn chain_effect(report: &RunReport) -> String {
     let unverified = report.steps.iter().any(|step| step.status == StepStatus::RevertAcknowledgedUnverified);
     if report.dry_run {
         return "Dry run: nothing was signed or sent. Reads ran on current state; steps that write (and steps that need their output) were skipped, so this is not a simulation of the whole sequence.".into();
+    }
+    match &report.bundle {
+        Some(BundleOutcome::Mined { block }) => {
+            return format!("Bundle: {confirmed} transaction(s) mined together in one block ({block}), then the reads and checks ran. They share block.number and block.timestamp; they are still separate transactions.");
+        }
+        Some(BundleOutcome::RolledBack { block }) => {
+            return format!("Bundle failed, so the chain was rolled back to block {block}, where the run started (head checked). Nothing from this run stays applied.");
+        }
+        Some(BundleOutcome::RollbackFailed) => {
+            return "Bundle failed and the rollback could not be confirmed: the chain may still hold some of this run's transactions. Check Explorer > Timeline before running again.".into();
+        }
+        None => {}
     }
     let mut lines = vec![match confirmed {
         0 => "No transaction was confirmed.".to_string(),

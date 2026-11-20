@@ -132,6 +132,8 @@ pub enum Command {
     NewMacro {},
     #[serde(rename = "macros.select")]
     SelectMacro { id: String },
+    #[serde(rename = "macros.bundle")]
+    MacroBundle { enabled: bool },
     #[serde(rename = "macros.edit")]
     EditMacro { json: String },
     #[serde(rename = "macros.validate")]
@@ -386,6 +388,7 @@ impl Command {
             Self::NewMacro {} => "macros.new",
             Self::SelectMacro { .. } => "macros.select",
             Self::EditMacro { .. } => "macros.edit",
+            Self::MacroBundle { .. } => "macros.bundle",
             Self::ValidateMacro {} => "macros.validate",
             Self::RunMacro { .. } => "macros.run",
             Self::CancelMacro {} => "macros.cancel",
@@ -1173,6 +1176,7 @@ pub fn command_schema() -> Value {
         ("macros.new", object(json!({}), vec![])),
         ("macros.select", object(json!({"id":{"type":"string","maxLength":128}}), vec!["id"])),
         ("macros.edit", object(json!({"json":{"type":"string","maxLength":122880}}), vec!["json"])),
+        ("macros.bundle", object(json!({"enabled":{"type":"boolean","description":"Bundle mode for the selected macro: its leading sends are mined together in one block, then reads and assertions run; any failure reverts the chain to where the run started (head checked). Validate again before running."}}), vec!["enabled"])),
         ("macros.validate", object(json!({}), vec![])),
         ("macros.run", object(json!({"dry_run":{"type":"boolean"}}), vec!["dry_run"])),
         ("macros.cancel", object(json!({}), vec![])),

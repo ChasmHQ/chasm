@@ -140,6 +140,14 @@ impl OwnedControls for Controls {
     fn revert<'a>(&'a self, guard: &'a (dyn Fn() -> bool + Send + Sync), private_id: &'a str) -> BoxFuture<'a, Result<Value, ControlTransport>> {
         self.rpc(guard, "evm_revert", json!([private_id]))
     }
+
+    fn automine<'a>(&'a self, guard: &'a (dyn Fn() -> bool + Send + Sync), enabled: bool) -> BoxFuture<'a, Result<Value, ControlTransport>> {
+        self.rpc(guard, "evm_setAutomine", json!([enabled]))
+    }
+
+    fn mine<'a>(&'a self, guard: &'a (dyn Fn() -> bool + Send + Sync)) -> BoxFuture<'a, Result<Value, ControlTransport>> {
+        self.rpc(guard, "evm_mine", json!([]))
+    }
 }
 
 pub struct TrustedMacroExecutor {
@@ -220,7 +228,11 @@ impl MacroExecutor for TrustedMacroExecutor {
                 addresses,
             ).map_err(|_| ExecutionFailure::Unavailable)?;
             let step_ids = adapted.plan_ids();
-            let report = runner::execute(adapted.plan, &backend, &cancel, |_| {})
+            // In a bundle, sends return once the node accepts them; the runner
+            // mines them together and then checks each receipt.
+            let bundle = adapted.plan.bundle && !adapted.plan.dry_run;
+            let report = super::contract_service::BUNDLE_SUBMIT
+                .scope(bundle, runner::execute(adapted.plan, &backend, &cancel, |_| {}))
                 .await
                 .map_err(|_| ExecutionFailure::Failed)?;
             Ok(ExecutionOutput { report, step_ids })
