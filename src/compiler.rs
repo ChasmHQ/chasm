@@ -23,11 +23,6 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    /// Standard compiler — no storage layout in output (fast, used for the live workspace).
-    pub fn new(root: PathBuf, remappings: Vec<String>) -> Result<Self> {
-        Self::new_impl(root, remappings, false)
-    }
-
     /// Applies `[compiler]` settings: optimizer, runs, via-IR, EVM version and
     /// metadata hash. Unset keys keep solc's defaults.
     pub fn apply_settings(&mut self, config: &crate::config::CompilerConfig) -> Result<()> {
@@ -212,9 +207,11 @@ impl Compiler {
         }
         let infos = &output.output().build_infos;
         if infos.len() != 1 {
+            let versions: Vec<String> = infos.iter().map(|info| info.build_info.get("solcVersion").and_then(|version| version.as_str()).unwrap_or("?").to_string()).collect();
             return Err(anyhow::anyhow!(
-                "Select an explicit build-info file: workspace produced {} compiler units",
-                infos.len()
+                "The workspace compiled with {} solc versions ({}); the offline engine takes one build-info. Lock one version in Compiler and libraries, or upload a build-info file.",
+                infos.len(),
+                versions.join(", ")
             ));
         }
         let mut value = serde_json::to_value(&infos[0])?;
@@ -272,14 +269,21 @@ impl Compiler {
 }
 
 pub fn debug_build_info(root: PathBuf, remappings: Vec<String>) -> Result<serde_json::Value> {
-    // The offline engine must see the same bytecode as the workspace build.
-    let (remappings, settings) = match crate::build_config::resolve(&root) {
-        Ok(effective) => (effective.remappings, effective.compiler),
-        Err(_) => (remappings, Default::default()),
-    };
-    let mut compiler = Compiler::new(root, remappings)?;
-    compiler.apply_settings(&settings)?;
-    compiler.debug_build_info()
+    // The offline engine must see the same bytecode as the workspace build:
+    // the same build source, settings and locked solc. A broken config is an
+    // error, not a silent fallback to defaults that would build other code.
+    let _ = remappings;
+    let effective = crate::build_config::resolve(&root).map_err(|error| anyhow::anyhow!(error))?;
+    let mut compiler = Compiler::new_for_storage_layout_with_solc(root, effective.remappings, &effective.compiler.solc)?;
+    compiler.apply_settings(&effective.compiler)?;
+    let mut info = compiler.debug_build_info()?;
+    info["chasmSettings"] = serde_json::json!({
+        "solc": info["solcVersion"].clone(),
+        "locked": !effective.compiler.solc.is_empty(),
+        "source": effective.active.label(),
+        "settings": effective.compiler.describe(),
+    });
+    Ok(info)
 }
 
 /// Normalize a file path for cross-format comparison:

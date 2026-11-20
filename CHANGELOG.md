@@ -6,6 +6,8 @@ Chasm is now a native Rust + Slint desktop app. The Axum + React web UI,
 the `ui/` folder and the npm build are gone.
 
 ### Workspace
+- The offline engine's workspace build-info is built with the same build source, settings and **locked solc** as the workspace, and records them (`chasmSettings`). A workspace that needs several solc versions names them instead of failing with a unit count.
+- `locals` says why there are none: code that matches no build, Sourcify source without an AST, a step without source mapping, or a via-IR/optimized build.
 - **Open verified contract** (Explorer, `contracts.import`): on a fork, any verified address opens as a bound tab with its Sourcify ABI and storage layout, without building it. A proxy uses its implementation's ABI. Imports are reloaded from the cache when the project opens.
 - Attach and import detect EIP-1967 (implementation and beacon), legacy OpenZeppelin and EIP-1167 clone proxies; Details names the implementation while calls still go to the attached address.
 - Send and Simulate say why they cannot run (`sendBlockReason`), and the button, `contracts.view` and the call itself use one check. Through the API a refused call fails with `not_ready` instead of reporting completed; an accepted one returns its `jobId`, and `jobs.list` gives that job's document, summary and transaction hash.

@@ -135,7 +135,7 @@ pub fn run(session: &mut Session, line: &str) -> String {
         "locals" | "info locals" => match session.locals() {
             Some(locals) if !locals.is_empty() => locals.iter().map(|(name, kind, value)| format!("{name} ({kind}) = {value}")).collect::<Vec<_>>().join("\n"),
             Some(_) => "No locals in scope here.".into(),
-            None => "Locals need the running contract's AST from this workspace.".into(),
+            None => session.locals_unavailable().into(),
         },
         "gas" => {
             let rows = if args.first().is_some_and(|arg| arg.starts_with('l')) { super::gas_profile::by_line(session) } else { super::gas_profile::by_call(session) };
@@ -596,6 +596,7 @@ mod tests {
         assert!(run(&mut session, "goto 2").starts_with("step 2/8"));
         assert!(run(&mut session, "ni").starts_with("step 5/8"), "nexti steps over the delegatecall");
         assert!(run(&mut session, "set x = 1").contains("read-only"));
+        assert!(run(&mut session, "locals").contains("matches no known build"), "unmatched code names why there are no locals");
     }
 
     /// One transaction to 0xaa: optional SLOAD of slot 0 (reads `seen`), then SSTORE slot 0 = `value`.

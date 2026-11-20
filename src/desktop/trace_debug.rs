@@ -722,6 +722,25 @@ impl Session {
         self.parts.get(self.part_at(index)).map(|part| &part.calldata[..]).unwrap_or(&self.calldata)
     }
 
+    /// Why `locals()` has nothing for the step at the cursor.
+    pub fn locals_unavailable(&self) -> &'static str {
+        let Some(step) = self.current() else { return "No trace loaded." };
+        let Some(program) = self.mapped.get(&step.address).map(|index| &self.programs[*index]) else {
+            return "The running code matches no known build (workspace, imported Foundry build or Sourcify), so there is no source or locals.";
+        };
+        if program.ast.is_none() {
+            return if program.source_path.starts_with("sourcify/") {
+                "Source lines come from Sourcify, which gives no AST; locals need the contract's AST. Build it in the workspace or add its Foundry build."
+            } else {
+                "This build has no AST, so locals cannot be named."
+            };
+        }
+        if self.location(self.cursor).is_none() {
+            return "No source mapping at this step (compiler-generated code); locals show inside Solidity lines.";
+        }
+        "Locals could not be reconstructed here. Via-IR and optimized builds keep variables off the stack slots the AST predicts."
+    }
+
     /// Values before the execution, from the node. Recomputes the writes'
     /// previous values, which were zero for slots the trace never read.
     pub fn set_prestate(&mut self, prestate: &Prestate) {

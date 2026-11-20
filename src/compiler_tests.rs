@@ -35,4 +35,29 @@ mod tests {
         assert!(!project.path().join("cache").exists());
         println!("{}", String::from_utf8_lossy(&check.stdout));
     }
+
+    /// The worker's build-info uses the solc the workspace locked, not the
+    /// newest one the pragma allows; two versions name both.
+    #[test]
+    fn debugger_build_info_follows_the_workspace_solc_lock() {
+        let installed = foundry_compilers::solc::Solc::installed_versions();
+        let has = |version: &str| installed.iter().any(|item| item.to_string() == version);
+        if !has("0.8.26") || !has("0.8.28") {
+            eprintln!("Skipping: solc 0.8.26 and 0.8.28 must both be installed");
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("contracts")).unwrap();
+        std::fs::write(project.path().join("contracts/A.sol"), "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20; contract A { uint public x; }").unwrap();
+        crate::config::ChasmConfig::update(project.path(), |config| config.compiler.solc = "0.8.26".into()).unwrap();
+        let info = debug_build_info(project.path().to_path_buf(), vec![]).unwrap();
+        assert_eq!(info["solcVersion"], "0.8.26", "the lock wins over the newest matching solc");
+        assert_eq!((info["chasmSettings"]["locked"].as_bool(), info["chasmSettings"]["source"].as_str()), (Some(true), Some("chasm")));
+        // Unlocked, two files that need different compilers give two units.
+        crate::config::ChasmConfig::update(project.path(), |config| config.compiler.solc.clear()).unwrap();
+        std::fs::write(project.path().join("contracts/A.sol"), "// SPDX-License-Identifier: MIT\npragma solidity =0.8.26; contract A {}").unwrap();
+        std::fs::write(project.path().join("contracts/B.sol"), "// SPDX-License-Identifier: MIT\npragma solidity =0.8.28; contract B {}").unwrap();
+        let error = debug_build_info(project.path().to_path_buf(), vec![]).unwrap_err().to_string();
+        assert!(error.contains("2 solc versions") && error.contains("0.8.26") && error.contains("0.8.28"), "{error}");
+    }
 }
