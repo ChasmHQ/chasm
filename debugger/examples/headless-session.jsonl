@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","id":1,"method":"hello","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"start","params":{"entry":"0x1000000000000000000000000000000000000001","accounts":[{"address":"0x1000000000000000000000000000000000000001","code":"0x600160005500"}],"breakpoints":[{"address":"0x1000000000000000000000000000000000000001","pc":4}]}}
+{"jsonrpc":"2.0","id":3,"method":"wait_event","params":{}}
+{"jsonrpc":"2.0","id":4,"method":"set_stack","params":{"index":1,"value":"0x9"}}
+{"jsonrpc":"2.0","id":5,"method":"resume","params":{}}
+{"jsonrpc":"2.0","id":6,"method":"wait_event","params":{}}
+{"jsonrpc":"2.0","id":7,"method":"shutdown","params":{}}

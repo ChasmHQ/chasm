@@ -1,0 +1,441 @@
+"""Looking at things: expressions, memory, the backtrace, source and disassembly."""
+
+from __future__ import annotations
+
+import re
+from typing import TYPE_CHECKING
+
+from ..frames import FrameSnapshot
+from ..session import SessionError
+from .parsing import _UNIT_SIZES, _X_FORMAT, _breakpoint_numbers
+from .render import _escape, _memory_region
+from .result import CommandResult
+
+if TYPE_CHECKING:
+    from .processor import CommandProcessor
+
+
+def cmd_print(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    expr = rest.strip()
+    if not expr:
+        return CommandResult(error="usage: print <solidity expression>")
+    res = proc.evaluate(expr)
+    proc.history.append(res)
+    idx = len(proc.history)
+    return CommandResult().add(
+        f"[bold]${idx}[/bold] = {_escape(res.display)}  [dim]({res.type_name})[/dim]"
+    )
+
+
+def cmd_call(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """gdb's `call`: evaluate and KEEP the side effects."""
+    expr = rest.strip()
+    if not expr:
+        return CommandResult(error="usage: call <solidity expression>")
+    res = proc.evaluate(expr, keep=True)
+    if res.void:
+        return CommandResult(mutated=True).add(
+            f"[green]done[/green] [dim](gas {res.gas_used})[/dim]"
+        )
+    proc.history.append(res)
+    return CommandResult(mutated=True).add(
+        f"[bold]${len(proc.history)}[/bold] = {_escape(res.display)}  [dim]({res.type_name})[/dim]"
+    )
+
+
+def cmd_ptype(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    expr = rest.strip()
+    if not expr:
+        return CommandResult(error="usage: ptype <expression>")
+    type_name = proc.inspect(
+        "evaluate", proc.substitute(expr), internal_index=proc.selected_internal
+    ).type_name
+    return CommandResult().add(f"type = [bold]{type_name}[/bold]")
+
+
+def cmd_display(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    expr = rest.strip()
+    if not expr:
+        return CommandResult(lines=proc.render_displays())
+    proc._display_counter += 1
+    proc.displays.append((proc._display_counter, expr))
+    return CommandResult(lines=proc.render_displays()[-1:])
+
+
+def cmd_undisplay(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    if not args:
+        proc.displays.clear()
+        return CommandResult().add("all displays removed")
+    targets = set(_breakpoint_numbers(args, "undisplay"))
+    proc.displays = [(n, e) for n, e in proc.displays if n not in targets]
+    return CommandResult().add("removed")
+
+
+def cmd_examine(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """gdb's `x/NFU addr` over EVM memory.
+
+    Like gdb, an `x` with no address (or a bare format such as `x/4xg`) resumes
+    just past the last examination and reuses its format, so repeated `x` walks
+    forward through memory — through regions that only grow during the run —
+    instead of restarting at zero.
+    """
+    snap = proc.require_stop()
+    spec, addr_text = "", ""
+    tokens = rest.strip().split(None, 1)
+    if tokens and tokens[0].startswith("/"):
+        spec = tokens[0]
+        addr_text = tokens[1] if len(tokens) > 1 else ""
+    elif tokens:
+        addr_text = rest.strip()
+    spec = spec or proc._last_x_spec or "/8xg"
+    match = _X_FORMAT.match(spec)
+    if not match:
+        return CommandResult(error=f"bad format {spec!r}; try x/32xb 0x40")
+    count = int(match.group(1) or 8)
+    fmt = match.group(2) or "x"
+    unit = _UNIT_SIZES.get(match.group(3) or "g", 8)
+
+    if addr_text:
+        try:
+            offset = int(proc.evaluate(addr_text).value)
+        except Exception:
+            offset = int(addr_text, 0)
+    else:
+        offset = proc._last_x_next
+
+    total = count * unit
+    proc._last_x_spec = spec
+    proc._last_x_next = offset + total
+    data = proc.inspect("read_memory", offset, total)
+    result = CommandResult()
+    if fmt == "s":
+        text = bytes(data).split(b"\x00", 1)[0].decode("utf-8", "replace")
+        return result.add(f'0x{offset:04x}: "{_escape(text)}"')
+    per_row = max(1, min(count, 32 // unit if unit <= 32 else 1))
+    if unit == 1:
+        per_row = 16
+    for row_start in range(0, total, per_row * unit):
+        chunk = data[row_start : row_start + per_row * unit]
+        cells = []
+        for i in range(0, len(chunk), unit):
+            word = chunk[i : i + unit]
+            value = int.from_bytes(word, "big")
+            if fmt == "d":
+                cells.append(str(int.from_bytes(word, "big", signed=True)))
+            elif fmt in ("u", "o", "t"):
+                cells.append({"u": str(value), "o": oct(value), "t": bin(value)}[fmt])
+            elif fmt == "c":
+                cells.append("".join(chr(b) if 32 <= b < 127 else "." for b in word))
+            else:
+                cells.append(f"{value:0{unit * 2}x}")
+        row_addr = offset + row_start
+        # Rows at or past the current size read as zeros (EVM semantics) but are
+        # not allocated yet; mark them so a dump cannot mistake the two.
+        annotation = (
+            "beyond memory" if row_addr >= snap.memory_size else _memory_region(row_addr)
+        )
+        result.add(
+            f"[cyan]0x{offset + row_start:04x}[/cyan]: {' '.join(cells)}"
+            + (f"  [dim]{annotation}[/dim]" if annotation else "")
+        )
+    if offset + total > snap.memory_size:
+        result.add(
+            f"[dim](memory is {snap.memory_size} bytes; the rest reads as zero)[/dim]"
+        )
+    return result
+
+
+def cmd_backtrace(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    snap = proc.require_stop()
+    result = CommandResult()
+    for row in snap.backtrace:
+        marker = (
+            "[bold yellow]->[/bold yellow]" if row.index == proc.selected_row else "  "
+        )
+        colour = "cyan" if row.kind == "solidity" else "magenta"
+        key = row.source_key or snap.source_key or "?"
+        where = f"{key}:{row.line}" if row.line else f"pc 0x{row.pc:x}"
+        detail = f" [dim][{row.detail}][/dim]" if row.detail else ""
+        result.add(
+            f"{marker} [dim]#{row.index}[/dim] [{colour}]{_escape(row.name)}[/{colour}] at [green]{where}[/green]{detail}"
+        )
+    return result
+
+
+def cmd_find(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`find <hex>` — every offset in the running code where the byte pattern occurs.
+
+    Gadget hunting: reports whether each hit starts on an instruction boundary, and
+    the nearest preceding JUMPDEST — the address an indirect jump can actually reach.
+    """
+    proc.require_stop()
+    if not args:
+        return CommandResult(error="usage: find <hex>   e.g. find 60515255")
+    pattern = args[0].lower().removeprefix("0x")
+    if (
+        not pattern
+        or len(pattern) % 2
+        or any(c not in "0123456789abcdef" for c in pattern)
+    ):
+        return CommandResult(error=f"not a hex pattern: {args[0]!r}")
+    found = proc.inspect("find_needle", pattern)
+    hits, total = found["hits"], found["total"]
+    name = proc.snapshot.contract_name if proc.snapshot else "the running code"
+    if not hits:
+        return CommandResult().add(f"[dim]no occurrence of {pattern} in {name}[/dim]")
+    result = CommandResult().add(
+        f"[dim]{total} occurrence(s) of {pattern} in {name}[/dim]"
+    )
+    for hit in hits[:20]:
+        flags = []
+        if hit["jumpdest"]:
+            flags.append("JUMPDEST")
+        elif hit["instruction_aligned"]:
+            flags.append("aligned")
+        else:
+            flags.append("inside operand")
+        if hit["nearest_jumpdest"] is not None:
+            flags.append(f"jump via 0x{hit['nearest_jumpdest']:04x}")
+        line = f" [dim]L{hit['line']}[/dim]" if hit["line"] else ""
+        result.add(
+            f"  [cyan]0x{hit['pc']:04x}[/cyan]  {_escape(hit['text'])}"
+            f"  [dim]({', '.join(flags)})[/dim]{line}"
+        )
+    if total > len(hits):
+        result.add(f"[dim]... and {total - len(hits)} more[/dim]")
+    return result
+
+
+def cmd_provenance(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`provenance on|off|status` — opt-in per-opcode recording for `why`."""
+    prov = proc.session.provenance
+    if not args or args[0] not in ("on", "off", "status"):
+        return CommandResult(error="usage: provenance on|off|status")
+    if args[0] in ("on", "off"):
+        prov.enabled = args[0] == "on"
+    state = "on" if prov.enabled else "off"
+    return CommandResult().add(
+        f"[yellow]provenance recording {state}[/yellow] "
+        f"[dim]({len(prov.records)} opcode(s) recorded)[/dim]"
+    )
+
+
+def cmd_why(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`why N` — what produced the value in $stack[N] (0 = top).
+
+    Walks the recording newest→oldest: constants, DUP/SWAP copies, consumed
+    operands, MSTORE→MLOAD and SSTORE→SLOAD chains, calldata windows, and the
+    frame-entry slots anything else traces back to.
+    """
+    snap = proc.require_stop()
+    if not args or not args[0].lstrip("-").isdigit():
+        return CommandResult(error="usage: why <stack index, 0 = top>")
+    index = int(args[0])
+    prov = proc.session.provenance
+    if not prov.records:
+        return CommandResult(
+            error="nothing recorded; `provenance on` first, then navigate"
+        )
+    from ..session.provenance import why_stack
+
+    bottom_up = tuple(int(entry.value) for entry in reversed(snap.stack))
+    result = why_stack(prov.records, snap.depth, bottom_up, index)
+    if result.get("error"):
+        return CommandResult(error=result["error"])
+    out = CommandResult().add(
+        f"[dim]why $stack[{index}] ({len(result['origins'])} origin(s)):[/dim]"
+    )
+    for origin in result["origins"]:
+        chain = " <- ".join(f"0x{hop['pc']:04x} {hop['op']}" for hop in origin["via"][:6])
+        more = " …" if len(origin["via"]) > 6 else ""
+        out.add(
+            f"  [{origin['kind']}] {_escape(origin['detail'])}"
+            + (f" = {origin['value'][:18]}…" if origin.get("value") else "")
+            + (f"  [dim]{chain}{more}[/dim]" if chain else "")
+        )
+    return out
+
+
+def cmd_parity(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    """`parity [Contract] 0x<hex>` — prove the compiled runtime matches a deployment.
+
+    Breakpoint pcs and gadget offsets are only true for the exact bytes on chain:
+    paste the deployed runtime (explorer `cast code` output) and this reports the
+    first divergence, ignoring the metadata tail and immutable values.
+    """
+    snap = proc.require_stop()
+    hex_arg = None
+    contract = None
+    for arg in args:
+        if arg.lower().startswith("0x") and len(arg) > 2:
+            hex_arg = arg[2:]
+        elif re.fullmatch(r"[0-9a-fA-F]+", arg) and len(arg) % 2 == 0:
+            hex_arg = arg
+        else:
+            contract = arg
+    if hex_arg is None:
+        return CommandResult(error="usage: parity [Contract] 0x<deployed runtime hex>")
+    try:
+        reference = bytes.fromhex(hex_arg)
+    except ValueError:
+        return CommandResult(error=f"not hex: {hex_arg[:16]}…")
+    name = contract or snap.contract_name
+    art = proc.project.artifact(name) if name else None
+    if art is None or not art.deployed_bytecode:
+        return CommandResult(error=f"no compiled artifact for {name!r}")
+    from ..compile import compare_runtime
+
+    verdict = compare_runtime(art, reference)
+    if verdict["match"]:
+        return CommandResult().add(
+            f"[green]runtime matches {art.name}[/green] "
+            f"[dim](compiled {verdict['compiled_size']}B, reference "
+            f"{verdict['reference_size']}B; metadata/immutables ignored)[/dim]"
+        )
+    return CommandResult().add(
+        f"[bold red]runtime DIVERGES from {art.name}[/bold red] at "
+        f"0x{verdict['first_diff_offset']:04x} "
+        f"[dim](compiled {verdict['compiled_size']}B, reference "
+        f"{verdict['reference_size']}B; every pc past this point describes a "
+        f"different program — rebuild with the deployed solc/flags)[/dim]"
+    )
+
+
+def cmd_frame(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    snap = proc.require_stop()
+    if not args:
+        return CommandResult(lines=proc.describe_stop(snap))
+    if not args[0].lstrip("-").isdigit():
+        raise SessionError(f"frame takes a number, not {args[0]!r}; see `bt`")
+    index = int(args[0])
+    rows = snap.backtrace
+    if not 0 <= index < len(rows):
+        return CommandResult(error=f"no frame #{index}")
+    proc.selected_row = index
+    proc.selected_frame = rows[index].evm_index
+    proc.selected_internal = (
+        rows[index].internal_index if rows[index].internal_index >= 0 else None
+    )
+    row = rows[index]
+    where = (
+        f"{row.source_key or snap.source_key}:{row.line}"
+        if row.line
+        else f"pc 0x{row.pc:x}"
+    )
+    return CommandResult().add(
+        f"#{row.index}  [cyan]{_escape(row.name)}[/cyan] at [green]{where}[/green]"
+    )
+
+
+def cmd_up(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    return _move_frame(proc, +1)
+
+
+def cmd_down(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    return _move_frame(proc, -1)
+
+
+def _move_frame(proc: CommandProcessor, delta: int) -> CommandResult:
+    """`up` moves toward the caller, `down` toward the callee, as in gdb."""
+    snap = proc.require_stop()
+    rows = snap.backtrace
+    target = proc.selected_row + delta
+    if not 0 <= target < len(rows):
+        return CommandResult(
+            error="already at the outermost frame"
+            if delta > 0
+            else "already at the innermost frame"
+        )
+    return cmd_frame(proc, [str(target)], str(target))
+
+
+def cmd_list(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    snap = proc.snapshot
+    source_key = (
+        snap.source_key
+        if snap and snap.source_key
+        else next(iter(proc.project.sources), None)
+    )
+    centre = snap.line if snap and snap.line else 1
+    if args:
+        if ":" in args[0]:
+            source_key, line_text = args[0].rsplit(":", 1)
+            centre = int(line_text)
+        elif args[0].isdigit():
+            centre = int(args[0])
+    lines = proc.source_lines(source_key)
+    if not lines:
+        return CommandResult(error=f"no source for {source_key}")
+    start = max(1, centre - 5)
+    end = min(len(lines), start + 10)
+    result = CommandResult().add(f"[dim]{source_key}[/dim]")
+    exec_lines = _executable_lines(proc, snap)
+    for n in range(start, end + 1):
+        here = snap is not None and n == snap.line
+        gutter = (
+            "[bold yellow]->[/bold yellow]"
+            if here
+            else ("[dim] .[/dim]" if n in exec_lines else "  ")
+        )
+        body = _escape(lines[n - 1])
+        result.add(
+            f"{gutter} [dim]{n:>4}[/dim]  " + (f"[bold]{body}[/bold]" if here else body)
+        )
+    proc.last_list_line = end
+    return result
+
+
+def _executable_lines(proc: CommandProcessor, snap: FrameSnapshot | None) -> set:
+    if snap is None or not snap.contract_name:
+        return set()
+    art = proc.project.artifact(snap.contract_name)
+    if art is None or not art.deployed_source_map:
+        return set()
+    from ..srcmap import PcMap
+
+    pcmap = PcMap(
+        art.deployed_bytecode, art.deployed_source_map, proc.session.line_indexes
+    )
+    return set(pcmap.executable_lines(snap.file_id))
+
+
+def cmd_disassemble(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
+    proc.require_stop()
+    rows = proc.inspect("disassembly", 8, 20)
+    result = CommandResult()
+    for row in rows:
+        marker = "[bold yellow]=>[/bold yellow]" if row["current"] else "  "
+        label = "[magenta]" if row["jumpdest"] else ""
+        close = "[/magenta]" if row["jumpdest"] else ""
+        line = f" [dim]L{row['line']}[/dim]" if row["line"] else ""
+        result.add(
+            f"{marker} [cyan]{row['pc']:04x}[/cyan]  {label}{row['text']}{close}{line}"
+        )
+    return result
+
+
+VERBS = {
+    "print": cmd_print,
+    "p": cmd_print,
+    "inspect": cmd_print,
+    "call": cmd_call,
+    "ptype": cmd_ptype,
+    "display": cmd_display,
+    "undisplay": cmd_undisplay,
+    "x": cmd_examine,
+    "backtrace": cmd_backtrace,
+    "bt": cmd_backtrace,
+    "where": cmd_backtrace,
+    "frame": cmd_frame,
+    "f": cmd_frame,
+    "up": cmd_up,
+    "down": cmd_down,
+    "list": cmd_list,
+    "l": cmd_list,
+    "disassemble": cmd_disassemble,
+    "disas": cmd_disassemble,
+    "find": cmd_find,
+    "parity": cmd_parity,
+    "provenance": cmd_provenance,
+    "why": cmd_why,
+}
