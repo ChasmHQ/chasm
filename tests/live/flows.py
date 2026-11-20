@@ -540,6 +540,66 @@ def captures():
     check("synthetic runs say why there is nothing to save", "no replay baseline" in debugger()["captureStatus"], debugger()["captureStatus"])
 
 
+
+def foundry_test():
+    """A Foundry test pauses at entry, stops at a launch breakpoint, and shows a compile error."""
+    import shutil
+    project = os.path.join(WORKSPACE, "ftest")
+    os.makedirs(os.path.join(project, "test"), exist_ok=True)
+    with open(os.path.join(project, "foundry.toml"), "w") as f:
+        f.write('[profile.default]\nsolc_version = "0.8.28"\nevm_version = "cancun"\nlibs = []\n')
+    test = os.path.join(project, "test", "Steps.t.sol")
+    source = ("pragma solidity ^0.8.28;\ncontract Steps {\n uint256 public amount;\n function testOne() public {\n"
+              "  amount = 1;\n  amount = 2;\n  require(amount == 2);\n }\n}\n")
+    with open(test, "w") as f:
+        f.write(source)
+
+    def debugger():
+        return query("debugger.state")["debugger"]
+
+    def settled(seconds=180):
+        """Paused, finished or failed: anything but preparing."""
+        time.sleep(1)
+        for _ in range(seconds * 2):
+            state = debugger()
+            if state["canCommand"] or state["phase"].lower() in ("failed", "finished"):
+                return state
+            time.sleep(0.5)
+        return debugger()
+
+    def stop():
+        command("debugger.cancel")
+        for _ in range(60):
+            if debugger()["canStart"]:
+                return
+            time.sleep(0.5)
+
+    try:
+        command("ui.navigate", activity="debugger")
+        command("debugger.launch", mode=1, foundry_target="ftest/test/Steps.t.sol", foundry_match="testOne", trusted=True, breakpoints="", run_to_breakpoint=False)
+        command("debugger.start")
+        state = settled()
+        check("the test pauses at its first line", state["canCommand"] and "Steps.t.sol" in state["location"] and ":5" in state["location"], f"{state['location']} {state['status']} {state['notice']}")
+        stop()
+
+        command("debugger.launch", mode=1, breakpoints="Steps.t.sol:6, Missing.sol:1", run_to_breakpoint=True)
+        check("the launch summary lists the breakpoints", "breakpoints Steps.t.sol:6" in debugger()["launchSummary"], debugger()["launchSummary"])
+        command("debugger.start")
+        state = settled()
+        check("a launch breakpoint stops the run", state["canCommand"] and ":6" in state["location"], f"{state['location']} {state['status']}")
+        check("the output pane names each breakpoint", "Steps.t.sol:6" in state["output"] and "'Missing.sol:1' not set" in state["output"], state["output"])
+        stop()
+
+        with open(test, "w") as f:
+            f.write(source.replace("amount = 2;", "amount = missing;"))
+        command("debugger.start")
+        state = settled()
+        check("a compile error is shown", "compile failed" in state["output"] and "Undeclared identifier" in state["output"], state["output"][:400] + " / " + state["notice"])
+        stop()
+    finally:
+        command("debugger.launch", mode=0, breakpoints="", run_to_breakpoint=False)
+        shutil.rmtree(project, ignore_errors=True)
+
 def rpc_call_data(signature, args):
     """ABI-encode a call with cast; no keys involved."""
     import subprocess
@@ -887,4 +947,4 @@ def foundry_import():
     command("toolchain.action", action="remove_import", folder=state["imports"][0])
     check("remove drops it", query("toolchain.state")["imports"] == [], str(query("toolchain.state")["imports"]))
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, storage_names, locals, captures, revert_explained, call_tree, external_build, foundry_import, build_source, fork]
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, storage_names, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]

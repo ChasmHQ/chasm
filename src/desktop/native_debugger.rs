@@ -67,6 +67,8 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
         state.debug_foundry_target = data.get_foundry_target().to_string();
         state.debug_foundry_match = data.get_foundry_match().to_string();
         state.debug_foundry_trusted = data.get_foundry_trusted();
+        state.debug_foundry_breakpoints = data.get_foundry_breakpoints().to_string();
+        state.debug_foundry_run_to_break = data.get_foundry_run_to_break();
         state.debug_capture_id = data.get_capture_id().to_string();
         state.debug_build_info_id = data.get_build_info_id().to_string();
         state.debug_prepared_launch = None;
@@ -378,6 +380,8 @@ fn launch_request(state: &DesktopState) -> Result<super::debug_transport::DebugL
             r#match: (!state.debug_foundry_match.is_empty())
                 .then(|| state.debug_foundry_match.clone()),
             trusted: state.debug_foundry_trusted,
+            run_to_breakpoint: state.debug_foundry_run_to_break,
+            breakpoints: launch_breakpoints(&state.debug_foundry_breakpoints),
         }),
         2 => Ok(super::debug_transport::DebugLaunchRequest::Offline {
             capture_id: state.debug_capture_id.clone(),
@@ -388,18 +392,28 @@ fn launch_request(state: &DesktopState) -> Result<super::debug_transport::DebugL
     }
 }
 
+/// Breakpoints typed one per line or comma separated.
+fn launch_breakpoints(text: &str) -> Vec<String> {
+    text.split(['\n', ',']).map(str::trim).filter(|spec| !spec.is_empty()).map(str::to_string).collect()
+}
+
 fn launch_summary(state: &DesktopState) -> String {
     match state.debug_launch_mode {
         0 => "Synthetic WorkshopVault fixture. It is not a replay of this project or a chain transaction.".into(),
-        1 => format!(
-            "Trusted local Foundry target: {}{}",
-            state.debug_foundry_target,
-            if state.debug_foundry_match.is_empty() {
-                String::new()
-            } else {
-                format!(" · match {}", state.debug_foundry_match)
-            }
-        ),
+        1 => {
+            let breaks = launch_breakpoints(&state.debug_foundry_breakpoints);
+            format!(
+                "Trusted local Foundry target: {}{}{}{}",
+                state.debug_foundry_target,
+                if state.debug_foundry_match.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · match {}", state.debug_foundry_match)
+                },
+                if breaks.is_empty() { String::new() } else { format!(" · breakpoints {}", breaks.join(", ")) },
+                if state.debug_foundry_run_to_break { " · runs to the first breakpoint" } else { " · pauses at the test's first line" }
+            )
+        }
         2 => format!(
             "Offline capture resource: {}{}",
             state.debug_capture_id,
@@ -1307,6 +1321,10 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     }
     project_launch!(state.debug_foundry_target.as_str(), get_foundry_target, set_foundry_target);
     project_launch!(state.debug_foundry_match.as_str(), get_foundry_match, set_foundry_match);
+    project_launch!(state.debug_foundry_breakpoints.as_str(), get_foundry_breakpoints, set_foundry_breakpoints);
+    if data.get_foundry_run_to_break() != state.debug_foundry_run_to_break {
+        data.set_foundry_run_to_break(state.debug_foundry_run_to_break);
+    }
     project_launch!(state.debug_capture_id.as_str(), get_capture_id, set_capture_id);
     project_launch!(state.debug_build_info_id.as_str(), get_build_info_id, set_build_info_id);
     project_launch!(state.debug_launch_summary.as_str(), get_launch_summary, set_launch_summary);
@@ -1491,7 +1509,16 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
         pane_text!(&snapshot.panes.logs, get_logs_text, set_logs_text);
         pane_text!(&snapshot.panes.gas, get_gas_text, set_gas_text);
         pane_text!(&snapshot.panes.diff, get_diff_text, set_diff_text);
+        let output = output_text(&snapshot.panes.output);
+        if data.get_output_text().as_str() != output {
+            data.set_output_text(output.into());
+        }
     } else {
+        // A failed start has no snapshot; its error is the output.
+        let output = debug.envelope.as_ref().and_then(|envelope| envelope.error.as_ref()).map(|error| format!("{}: {}", error.code, error.message)).unwrap_or_default();
+        if data.get_output_text().as_str() != output {
+            data.set_output_text(output.into());
+        }
         data.set_location("No paused execution context".into());
         if data.get_execution().row_count() > 0 {
             data.set_execution(super::model(Vec::<ExecStat>::new()));
@@ -1532,6 +1559,17 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     if data.get_result_text().as_str() != result {
         data.set_result_text(result.into());
     }
+}
+
+/// The worker's output pane: compiler notices, launch breakpoints and how
+/// the run ended, one per line.
+fn output_text(pane: &Value) -> String {
+    let lines: Vec<&str> = pane["lines"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let mut text = lines.join("\n");
+    if pane["truncated"] == true {
+        text.push_str("\n(earlier lines dropped)");
+    }
+    text
 }
 
 fn code_rows(snapshot: &super::debug_session::Snapshot, mode: i32) -> (String, Vec<CodeRow>) {

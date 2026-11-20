@@ -227,6 +227,9 @@ pub struct DesktopState {
     pub debug_foundry_target: String,
     pub debug_foundry_match: String,
     pub debug_foundry_trusted: bool,
+    /// Breakpoints set before a Foundry test starts, one per line.
+    pub debug_foundry_breakpoints: String,
+    pub debug_foundry_run_to_break: bool,
     pub debug_capture_id: String,
     /// Result of the last Save capture / Open capture.
     pub debug_capture_status: String,
@@ -386,6 +389,8 @@ impl DesktopState {
             debug_foundry_target: String::new(),
             debug_foundry_match: String::new(),
             debug_foundry_trusted: false,
+            debug_foundry_breakpoints: String::new(),
+            debug_foundry_run_to_break: false,
             debug_capture_id: String::new(),
             debug_capture_status: String::new(),
             debug_build_info_id: String::new(),

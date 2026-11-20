@@ -153,6 +153,10 @@ pub enum Command {
         trusted: Option<bool>,
         capture_id: Option<String>,
         build_info_id: Option<String>,
+        /// Foundry: breakpoints set before the first step, comma separated.
+        breakpoints: Option<String>,
+        /// Foundry: run to the first breakpoint instead of pausing at entry.
+        run_to_breakpoint: Option<bool>,
     },
     #[serde(rename = "debugger.start")]
     DebugStart {},
@@ -763,7 +767,10 @@ pub fn validate(state: &DesktopState, command: &Command) -> Result<(), AppError>
                 return Err(invalid("Macro JSON is limited to 120 KiB."));
             }
         }
-        Command::DebugLaunch { mode, foundry_target, foundry_match, capture_id, build_info_id, .. } => {
+        Command::DebugLaunch { mode, foundry_target, foundry_match, capture_id, build_info_id, breakpoints, .. } => {
+            if breakpoints.as_ref().is_some_and(|text| text.len() > 4096) {
+                return Err(invalid("Breakpoints are limited to 4096 bytes."));
+            }
             if *mode > 2
                 || [foundry_target, foundry_match, capture_id, build_info_id]
                     .iter()

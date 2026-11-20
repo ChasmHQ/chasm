@@ -645,6 +645,12 @@ struct Start {
     gas_price: Option<String>,
     target: Option<String>,
     r#match: Option<String>,
+    /// Foundry only: stop on the test's first line (default) or run to the
+    /// first breakpoint.
+    pause_at_entry: Option<bool>,
+    /// Foundry only: `File.sol:LINE`, `*PC` or function names, set before the
+    /// first step.
+    breakpoints: Option<Vec<String>>,
 }
 
 fn fingerprint<T: Serialize>(request: &T) -> Result<u64, GatewayError> {
@@ -756,6 +762,8 @@ async fn start(
         ("nonce", json!(body.nonce)),
         ("gas_price", json!(body.gas_price)),
         ("match", json!(body.r#match)),
+        ("pause_at_entry", json!(body.pause_at_entry)),
+        ("breakpoints", json!(body.breakpoints)),
     ] {
         if !value.is_null() {
             params[key] = value;
@@ -783,7 +791,7 @@ async fn start(
             "nonce",
             "gas_price",
         ],
-        "foundry" => &["mode", "target_path", "match"],
+        "foundry" => &["mode", "target_path", "match", "pause_at_entry", "breakpoints"],
         _ => unreachable!(),
     };
     if params

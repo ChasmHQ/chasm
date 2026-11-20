@@ -192,3 +192,13 @@ AI clients with the `debug` scope use the same commands:
 
 *Captures and Foundry tests* in the Debugger sidebar opens the separate sevm
 engine. It replays capture files and Foundry test runs without a node.
+
+### Foundry tests
+
+*Trusted Foundry* runs a test file inside the workspace (its folder needs a `foundry.toml` with a pinned, installed solc).
+
+- **Breakpoints (optional)**, comma separated: `Vault.sol:42`, `*0x1a4` or a function name. They are set before the test's first step.
+- **Pause at the test's first line** (default) or **Run to the first breakpoint**.
+- The **Output** tab lists what the worker reported: the test being debugged, each breakpoint it set or could not set, how the run ended (passed, failed, or finished without reaching a breakpoint) and, when the start fails, the compile error. Endpoints are redacted; the worker's raw stdout and stderr are never shown.
+
+API: `debugger.launch {mode: 1, foundry_target, foundry_match, trusted: true, breakpoints, run_to_breakpoint}`, then `debugger.start`; `debugger.state.output` holds the Output text.

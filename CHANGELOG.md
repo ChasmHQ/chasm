@@ -25,6 +25,7 @@ the `ui/` folder and the npm build are gone.
 - Call tree in the Calls tab and console (`calls`, `frame n`). Arguments decode per frame with matched, attached or unique workspace ABIs. Breakpoints by pc, opcode and frame entry.
 - A reverted trace names the frame where the failure started and decodes its custom error from any known ABI. Failed deploys are debuggable and name the EIP-170/3860 size rules. `debugger.trace` traces unsent calls.
 - Solidity locals of the function at the cursor (Variables tab, console `locals`).
+- **Foundry tests** in the offline engine take breakpoints before the first step and can run straight to the first one. An Output tab shows compile errors, which breakpoints were set, and why a run ended without stopping.
 - **Foundry builds from another folder** map in the debugger without recompiling: Compiler and libraries > *Foundry builds for the debugger* reads a project's `out/` artifacts (code, source map, ABI, AST, storage layout).
 - State variables by name at any step: `p balanceOf[0x…]`, nested mappings, array elements and struct members. The state before the execution is read when the trace is recorded and saved with it. `diff` lists every named slot and balance the execution changed. Writes undone by a reverting frame are marked, and DELEGATECALL writes land in the caller's storage.
 - Gas profile per call frame and per source line (Gas tab, console `gas`).

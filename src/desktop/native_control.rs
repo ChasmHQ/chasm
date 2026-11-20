@@ -619,7 +619,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             }
         }
         Command::SelectMacroResult { index } => macros.invoke_select_result(*index as i32),
-        Command::DebugLaunch { mode, foundry_target, foundry_match, trusted, capture_id, build_info_id } => {
+        Command::DebugLaunch { mode, foundry_target, foundry_match, trusted, capture_id, build_info_id, breakpoints, run_to_breakpoint } => {
             let data = ui.global::<DebugData>();
             data.set_launch_mode(*mode as i32);
             if let Some(value) = foundry_target { data.set_foundry_target(value.as_str().into()); }
@@ -627,6 +627,8 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             if let Some(value) = trusted { data.set_foundry_trusted(*value); }
             if let Some(value) = capture_id { data.set_capture_id(value.as_str().into()); }
             if let Some(value) = build_info_id { data.set_build_info_id(value.as_str().into()); }
+            if let Some(value) = breakpoints { data.set_foundry_breakpoints(value.as_str().into()); }
+            if let Some(value) = run_to_breakpoint { data.set_foundry_run_to_break(*value); }
             debug.invoke_launch_edited();
         }
         Command::DebugStart {} => debug.invoke_start(),
@@ -715,6 +717,7 @@ fn debugger_state(ui: &MainWindow) -> Value {
         "frames": data.get_frames_text().as_str(), "locals": data.get_locals_text().as_str(),
         "stack": data.get_stack_text().as_str(), "storage": data.get_storage_text().as_str(),
         "result": data.get_result_text().as_str(), "logs": data.get_logs_text().as_str(),
+        "output": data.get_output_text().as_str(),
         "console": ui.global::<super::PanelData>().get_console_text().as_str(),
         "trace": trace_state(ui),
     })

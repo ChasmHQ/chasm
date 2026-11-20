@@ -13,6 +13,9 @@ pub enum DebugLaunchRequest {
         target: String,
         r#match: Option<String>,
         trusted: bool,
+        /// Run from the test's first line to the first breakpoint instead.
+        run_to_breakpoint: bool,
+        breakpoints: Vec<String>,
     },
     Offline {
         capture_id: String,
@@ -41,6 +44,8 @@ impl DebugLaunchRequest {
                 target,
                 r#match,
                 trusted,
+                run_to_breakpoint,
+                breakpoints,
             } => {
                 if !trusted {
                     return Err("Confirm that this workspace and Foundry target are trusted before running local code.".into());
@@ -63,6 +68,17 @@ impl DebugLaunchRequest {
                         );
                     }
                     body["match"] = json!(pattern);
+                }
+                if breakpoints.len() > 32
+                    || breakpoints.iter().any(|spec| spec.trim().is_empty() || spec.len() > 512 || spec.chars().any(char::is_control))
+                {
+                    return Err("Breakpoints: at most 32 of File.sol:LINE, *PC or a function name.".into());
+                }
+                if !breakpoints.is_empty() {
+                    body["breakpoints"] = json!(breakpoints);
+                }
+                if *run_to_breakpoint {
+                    body["pauseAtEntry"] = json!(false);
                 }
             }
             Self::Offline {
@@ -477,6 +493,8 @@ mod tests {
                     target: "test/Counter.t.sol".into(),
                     r#match: Some("testCounter".into()),
                     trusted: true,
+                run_to_breakpoint: false,
+                breakpoints: Vec::new(),
                 },
                 json!({"mode":"foundry", "target":"test/Counter.t.sol", "match":"testCounter"}),
             ),
@@ -485,6 +503,8 @@ mod tests {
                     target: "test/Counter.t.sol".into(),
                     r#match: None,
                     trusted: true,
+                run_to_breakpoint: false,
+                breakpoints: Vec::new(),
                 },
                 json!({"mode":"foundry", "target":"test/Counter.t.sol"}),
             ),
@@ -540,13 +560,17 @@ mod tests {
                 target: target.into(),
                 r#match: None,
                 trusted: true,
+                run_to_breakpoint: false,
+                breakpoints: Vec::new(),
             };
             assert!(request.prepare().is_err(), "accepted target {target:?}");
         }
         assert!(DebugLaunchRequest::Foundry {
             target: "test/file.sol".into(),
             r#match: None,
-            trusted: false
+            trusted: false,
+            run_to_breakpoint: false,
+            breakpoints: Vec::new()
         }
         .prepare()
         .is_err());
@@ -554,7 +578,9 @@ mod tests {
             assert!(DebugLaunchRequest::Foundry {
                 target: "test/file.sol".into(),
                 r#match: Some(pattern.into()),
-                trusted: true
+                trusted: true,
+                run_to_breakpoint: false,
+                breakpoints: Vec::new()
             }
             .prepare()
             .is_err());
@@ -562,10 +588,28 @@ mod tests {
         assert!(DebugLaunchRequest::Foundry {
             target: "test/file.sol".into(),
             r#match: Some("a".repeat(4097)),
-            trusted: true
+            trusted: true,
+            run_to_breakpoint: false,
+            breakpoints: Vec::new()
         }
         .prepare()
         .is_err());
+        // Launch breakpoints and the entry pause reach the gateway body.
+        let launch = DebugLaunchRequest::Foundry {
+            target: "test/file.sol".into(),
+            r#match: None,
+            trusted: true,
+            run_to_breakpoint: true,
+            breakpoints: vec!["Vault.sol:12".into(), "*0x1a".into()],
+        }
+        .prepare()
+        .unwrap();
+        let body: Value = serde_json::from_slice(&launch.body).unwrap();
+        assert_eq!((body["breakpoints"].clone(), body["pauseAtEntry"].clone()), (json!(["Vault.sol:12", "*0x1a"]), json!(false)));
+        for breakpoints in [vec!["".to_string()], vec!["a
+b".to_string()], vec!["x".to_string(); 33]] {
+            assert!(DebugLaunchRequest::Foundry { target: "test/file.sol".into(), r#match: None, trusted: true, run_to_breakpoint: false, breakpoints }.prepare().is_err());
+        }
         for id in [
             "".to_string(),
             "../capture".into(),
@@ -697,6 +741,8 @@ mod tests {
                 target: "test/Counter.t.sol".into(),
                 r#match: Some("testCounter".into()),
                 trusted: true,
+                run_to_breakpoint: false,
+                breakpoints: Vec::new(),
             },
             DebugLaunchRequest::Offline {
                 capture_id: "resource_1".into(),

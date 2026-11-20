@@ -11,6 +11,11 @@ export global DebugData {
     in-out property <string> foundry-target;
     in-out property <string> foundry-match;
     in-out property <bool> foundry-trusted: false;
+    // Set before the test's first step: File.sol:LINE, *PC or function names.
+    in-out property <string> foundry-breakpoints;
+    in-out property <bool> foundry-run-to-break: false;
+    // Compiler notices, launch breakpoints and how the run ended.
+    in property <string> output-text;
     in-out property <string> capture-id;
     in-out property <string> build-info-id;
     in property <string> launch-summary;
@@ -294,6 +299,7 @@ export component DebugInspectionPane inherits Rectangle {
                 DockTab { label: "Logs"; selected: DebugData.inspect-tab == 4; clicked => { DebugLogic.inspect-tab(4); } }
                 DockTab { label: "Gas"; selected: DebugData.inspect-tab == 5; clicked => { DebugLogic.inspect-tab(5); } }
                 DockTab { label: "Last-stop diff"; selected: DebugData.inspect-tab == 6; clicked => { DebugLogic.inspect-tab(6); } }
+                DockTab { label: "Output"; selected: DebugData.inspect-tab == 7; clicked => { DebugLogic.inspect-tab(7); } }
             }
         }
         if DebugData.inspect-tab == 1 || DebugData.inspect-tab == 2: HorizontalLayout {
@@ -313,6 +319,7 @@ export component DebugInspectionPane inherits Rectangle {
             DebugOutput { visible: DebugData.inspect-tab == 4; width: parent.width; height: parent.height; accessible-label: "Debugger logs"; text: DebugData.logs-text; }
             DebugOutput { visible: DebugData.inspect-tab == 5; width: parent.width; height: parent.height; accessible-label: "Debugger gas"; text: DebugData.gas-text; }
             DebugOutput { visible: DebugData.inspect-tab == 6; width: parent.width; height: parent.height; accessible-label: "Debugger last-stop diff"; text: DebugData.diff-text; }
+            DebugOutput { visible: DebugData.inspect-tab == 7; width: parent.width; height: parent.height; accessible-label: "Debugger output"; text: DebugData.output-text; }
         }
     }
 }
@@ -403,6 +410,13 @@ export component DebugSessionPane inherits Rectangle {
                     spacing: 0.375rem;
                     DebugLaunchField { label: "Target .sol"; enabled: DebugData.can-start; text <=> DebugData.foundry-target; }
                     DebugLaunchField { label: "Test match (optional)"; enabled: DebugData.can-start; text <=> DebugData.foundry-match; }
+                    DebugLaunchField { label: "Breakpoints (optional)"; enabled: DebugData.can-start; text <=> DebugData.foundry-breakpoints; }
+                    SelectableText { text: "Comma separated: Vault.sol:42, *0x1a4 or a function name. They are set before the test's first step."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+                    HorizontalLayout {
+                        alignment: start; spacing: 0.25rem;
+                        DockTab { label: "Pause at the test's first line"; selected: !DebugData.foundry-run-to-break; enabled: DebugData.can-start; clicked => { DebugData.foundry-run-to-break = false; DebugLogic.launch-edited(); } }
+                        DockTab { label: "Run to the first breakpoint"; selected: DebugData.foundry-run-to-break; enabled: DebugData.can-start; clicked => { DebugData.foundry-run-to-break = true; DebugLogic.launch-edited(); } }
+                    }
                     HorizontalLayout {
                         alignment: start;
                         IconButton { icon: @image-url("icons/debugger.svg"); label: DebugData.foundry-trusted ? "Trusted for this launch" : "Confirm local code trust"; checkable: true; selected: DebugData.foundry-trusted; enabled: DebugData.can-start; clicked => { DebugData.foundry-trusted = !DebugData.foundry-trusted; DebugLogic.launch-edited(); } }

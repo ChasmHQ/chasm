@@ -70,6 +70,9 @@ pub struct Panes {
     pub gas: Value,
     #[serde(default)]
     pub diff: Value,
+    /// Compiler notices, launch breakpoints and how the run ended.
+    #[serde(default)]
+    pub output: Value,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
