@@ -28,17 +28,7 @@ impl Harness {
         // Keep test execution deterministic without PATH lookup or public downloads.
         config.python = std::env::var_os("CHASM_DEBUGGER_TEST_PYTHON")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap()
-                    .join("debugger")
-                    .join(if cfg!(windows) {
-                        ".venv/Scripts/python.exe"
-                    } else {
-                        ".venv/bin/python"
-                    })
-            });
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("debugger").join(config::WORKER_PYTHON));
         let manager = Manager::new(config).await;
         assert!(
             manager.availability().is_none(),

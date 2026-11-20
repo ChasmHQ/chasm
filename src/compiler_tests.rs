@@ -6,13 +6,13 @@ mod tests {
     #[test]
     fn debugger_build_info_imports_into_python_with_exact_runtime() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let python = root.parent().unwrap().join("debugger/.venv").join(if cfg!(windows) {
+        let python = root.join("debugger/.venv").join(if cfg!(windows) {
             "Scripts/python.exe"
         } else {
             "bin/python"
         });
         if !python.is_file() {
-            eprintln!("Skipping cross-repo build-info check: debugger interpreter absent");
+            eprintln!("Skipping build-info check: run `uv sync --project debugger --locked` to install the worker");
             return;
         }
         let project = tempfile::tempdir().unwrap();

@@ -1,5 +1,7 @@
 # Web debugger integration
 
+Historical setup for the retired web UI. For the current desktop and in-repo worker, see [Installation](../../README.md#installation) and [Offline engine](../../DEBUGGER.md#offline-engine).
+
 The Debugger activity connects this React/Axum workspace to the sibling `chasm-debugger` Python/Rust engine. This is a local development integration across two repositories, not a standalone single-binary debugger distribution.
 
 ## Start on Windows

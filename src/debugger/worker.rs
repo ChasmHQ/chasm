@@ -128,10 +128,9 @@ pub(super) struct Worker {
 
 impl Worker {
     pub fn spawn(config: &Config, provider_env: Option<&str>) -> Result<Arc<Self>, GatewayError> {
-        let python = config
-            .python
-            .canonicalize()
-            .map_err(|_| GatewayError::unavailable())?;
+        // Resolve relative overrides before changing the child's working directory,
+        // but keep the venv's interpreter symlink: Python finds pyvenv.cfg beside it.
+        let python = std::path::absolute(&config.python).map_err(|_| GatewayError::unavailable())?;
         if !python.is_file() {
             return Err(GatewayError::unavailable());
         }

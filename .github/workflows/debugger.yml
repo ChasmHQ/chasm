@@ -1,6 +1,17 @@
-name: Verify
+name: Verify offline debugger
 
-on: [push, pull_request]
+on:
+  push:
+    paths: ['debugger/**', '.github/workflows/debugger.yml']
+  pull_request:
+    paths: ['debugger/**', '.github/workflows/debugger.yml']
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: debugger
 
 jobs:
   test:

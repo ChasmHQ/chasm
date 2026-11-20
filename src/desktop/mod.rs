@@ -634,7 +634,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
         });
     }
     on_void!(ui, state, on_about, |state: &mut DesktopState| {
-        state.notice = "Chasm desktop 0.1.0. Rust binary, local only. Debugger: sibling chasm_debugger worker.".into();
+        state.notice = "Chasm desktop 0.1.0. Rust binary, local only. Offline debugger: local Chasm worker.".into();
     });
     on_void!(ui, state, on_dismiss_notice, |state: &mut DesktopState| state.notice.clear());
     {

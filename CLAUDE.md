@@ -42,11 +42,14 @@ src/
   anvil.rs           Anvil process: local or fork, contained in a Windows job
   compiler.rs        foundry-compilers wrapper; storage layout; locked solc
   config.rs          .chasm/chasm.toml: remappings, [compiler], [network]
-  debugger/          gateway + Python sevm worker for the offline engine
+  debugger/          Rust gateway to the offline worker
   desktop/           the application (state, services, native views)
 ui-slint/            Slint UI, one file per area (main, contract, trace, …)
 contracts/           sample workspace (Bank.sol)
+debugger/            offline engine: REVM Cargo workspace (rust/), Python worker (src/), fixtures and tests
 ```
+
+For offline-engine development, run `uv sync --project debugger --locked` from the repository root before running the gateway tests. Keep the JSONL protocol, process isolation and offline fixtures working when moving individual worker features to Rust. The desktop and REVM still have separate Cargo lockfiles.
 
 ### `src/desktop`, by area
 

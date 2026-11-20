@@ -18,6 +18,7 @@ the `ui/` folder and the npm build are gone.
 - Notices offer the next step, and empty views say what to do.
 
 ### Debugger
+- The desktop and offline engine now share this repository. The gateway loads the worker from `debugger/` in development or the installed payload; it no longer needs an adjacent checkout. Native transaction tracing still works without Python.
 - Step debugger for any transaction or call on the project node, mapped to source through solc source maps.
 - Step into, over and out, and single instructions, each with a reverse step; internal function calls nest correctly.
 - Breakpoints, opcode search, and a Variables tab with decoded arguments and named storage writes.

@@ -132,6 +132,17 @@ Verify in PowerShell before opening a project:
 chasm --help                                        # Chasm desktop workbench for Solidity contracts
 ```
 
+The desktop and the [offline engine](debugger/) live in this checkout. Native transaction tracing does not need Python. For **Captures and Foundry tests**, install [uv](https://docs.astral.sh/uv/) and run `uv sync --project debugger --locked` from the repository root. This builds the REVM extension and creates `debugger/.venv`; start Chasm as usual, with no second checkout or service to launch. The worker still runs in a separate local process.
+
+To install the checkout build outside the repository, build `target/release/chasm` (or `chasm.exe`) first, then run **one** of these from the checkout root:
+
+| Platform | Desktop with offline worker | Desktop only |
+|---|---|---|
+| Windows (PowerShell) | `.\install.ps1 -WithDebugger` | `.\install.ps1 -NativeOnly` |
+| Linux / macOS | `bash install.sh --with-debugger` | `bash install.sh --native-only` |
+
+Full installation builds a locked REVM wheel and installs it with the examples and a private Python environment, so the installed app does not need the checkout at runtime. It requires uv, Rust 1.91+ and a native build toolchain. Windows installs under `%LOCALAPPDATA%\Chasm` (`-NoPath` leaves PATH unchanged); Unix defaults to `~/.local` and accepts `--prefix /absolute/path`. Use `-DryRun` or `--dry-run` to preview. The no-argument download scripts above still fetch the older published release.
+
 There is no Node.js step: the UI is compiled from `ui-slint/`. A debug build
 of the large generated UI needs several GB of memory; see
 [CLAUDE.md](CLAUDE.md#build-and-run).

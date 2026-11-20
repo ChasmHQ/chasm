@@ -41,15 +41,14 @@ Chasm is an interactive, gdb-style Solidity/EVM debugger on REVM, built for red-
 
 ## Install
 
-Clone the repository and install `chasm` as a global command:
+For the [Chasm desktop app](../README.md#build-from-source), run `uv sync --project debugger --locked` at the repository root. Desktop launches the worker itself; no global Python command is needed.
+
+For the standalone debugger CLI, run it inside its project environment to avoid shadowing the desktop `chasm` executable on PATH:
 
 ```bash
-git clone https://github.com/ChasmHQ/debugger && cd debugger
-
-# if uv is not installed
-pipx install uv
-
-uv tool install .
+cd debugger
+uv sync --locked
+uv run chasm --help
 ```
 
 Building from this checkout needs Python 3.10+, Rust 1.91+, and `git`. chasm downloads solc
