@@ -2069,7 +2069,7 @@ fn project(
         })
         .unwrap_or_default();
     data.set_result_raw(raw.into());
-    data.set_result_simple(selected_result.map(|run| format!("{}\n{} step(s) reported.\nDuration: {} ms.\nEvidence contains public summaries and digests, not raw inputs or outputs.", run_status(run.report.status), run.report.steps.len(), run.elapsed_ms)).unwrap_or_default().into());
+    data.set_result_simple(selected_result.map(|run| format!("{}\n{}\n{} step(s) reported.\nDuration: {} ms.\nEvidence contains public summaries and digests, not raw inputs or outputs.", run_status(run.report.status), macro_runner::chain_effect(&run.report), run.report.steps.len(), run.elapsed_ms)).unwrap_or_default().into());
     let log = selected_result
         .map(|run| {
             run.report

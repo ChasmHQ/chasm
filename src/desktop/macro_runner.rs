@@ -1916,6 +1916,38 @@ where
     Ok(report)
 }
 
+/// What a run left on the chain, in plain words: how many transactions were
+/// confirmed (each is its own transaction; a later failure does not undo
+/// them), whether any outcome is unknown, and whether a revert restored state.
+pub fn chain_effect(report: &RunReport) -> String {
+    use StepKind::*;
+    let sends = |step: &&StepReport| matches!(step.kind, Deploy | AbiCall | RawSend | GasSweep | ProbeGasSweep);
+    let confirmed = report.steps.iter().filter(sends).filter(|step| step.output.submission == Some(SubmissionState::Confirmed)).count();
+    let unknown = report.steps.iter().filter(sends).filter(|step| step.output.submission == Some(SubmissionState::Unknown) || step.status == StepStatus::Unknown).count();
+    let reverted = report.steps.iter().any(|step| step.kind == Revert && step.status == StepStatus::Succeeded);
+    let unverified = report.steps.iter().any(|step| step.status == StepStatus::RevertAcknowledgedUnverified);
+    if report.dry_run {
+        return "Dry run: nothing was signed or sent. Reads ran on current state; steps that write (and steps that need their output) were skipped, so this is not a simulation of the whole sequence.".into();
+    }
+    let mut lines = vec![match confirmed {
+        0 => "No transaction was confirmed.".to_string(),
+        1 => "1 transaction was confirmed on the workspace chain.".to_string(),
+        n => format!("{n} transactions were confirmed on the workspace chain, each separately: the run is not atomic."),
+    }];
+    if matches!(report.status, RunStatus::Failed | RunStatus::Cancelled | RunStatus::Unknown) && confirmed > 0 && !reverted {
+        lines.push("The run stopped early; confirmed transactions stay applied. Revert to a snapshot (a Revert step or Explorer > Timeline) to undo them.".into());
+    }
+    if unknown > 0 {
+        lines.push(format!("{unknown} submission(s) have an unknown outcome; check the chain before running again."));
+    }
+    if reverted {
+        lines.push("A Revert step restored an earlier snapshot, verified by its probes.".into());
+    } else if unverified {
+        lines.push("A revert was acknowledged by the node but not verified by probes; check state before relying on it.".into());
+    }
+    lines.join("\n")
+}
+
 /// Evidence intentionally omits inputs, outputs, signer aliases, RPC handles,
 /// snapshot IDs, and backend messages. Digests establish integrity, not truth.
 /// The digest covers compact JSON for `evidence` with object keys sorted.

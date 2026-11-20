@@ -253,6 +253,10 @@ def macro():
         time.sleep(1)
     statuses = [step["status"] for step in state["steps"]]
     check("steps 1-4 succeeded", statuses[:4] == ["Succeeded"] * 4, str(statuses))
+    command("macros.result.select", index=0)
+    simple = query("macros.state")["macros"]["resultSimple"]
+    print("  | " + " || ".join(simple.splitlines())[:400])
+    check("the result says what reached the chain", "confirmed on the workspace chain" in simple and "revert" in simple.lower(), simple[:300])
 
 
 def fork():

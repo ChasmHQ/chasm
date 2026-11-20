@@ -1621,3 +1621,20 @@ async fn assertions_can_reference_prior_pass_and_dry_run_dependency_is_skipped()
     assert_eq!(report.status, RunStatus::PreflightComplete);
     assert_eq!(report.steps[1].skipped, Some(SkipReason::DryRunDependency));
 }
+
+#[tokio::test]
+async fn the_chain_effect_says_sends_are_separate_and_what_stays_applied() {
+    let send = || Operation::RawSend { transaction: transaction(), gas: GasLimit::Exact(70_000), signer: SignerAlias::Active };
+    let backend = FakeBackend::new();
+    let report = run(plan(false, vec![send(), send()]), &backend).await;
+    let text = chain_effect(&report);
+    assert!(text.contains("2 transactions were confirmed") && text.contains("not atomic"), "{text}");
+
+    let unknown = FakeBackend::new();
+    unknown.state.lock().unwrap().submission = FakeSubmission::Unknown;
+    let text = chain_effect(&run(plan(false, vec![send(), send()]), &unknown).await);
+    assert!(text.contains("No transaction was confirmed") && text.contains("unknown outcome"), "{text}");
+
+    let dry = chain_effect(&run(plan(true, vec![send()]), &FakeBackend::new()).await);
+    assert!(dry.starts_with("Dry run: nothing was signed"), "{dry}");
+}

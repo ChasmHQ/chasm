@@ -6,6 +6,7 @@ Chasm is now a native Rust + Slint desktop app. The Axum + React web UI,
 the `ui/` folder and the npm build are gone.
 
 ### Workspace
+- A macro result says what reached the chain: how many transactions were confirmed (each separately, so the run is not atomic), what stays applied when it stops early, unknown submissions, and whether a revert was verified. A dry run says that nothing was sent and that it does not simulate the writes.
 - Rate-limited public RPCs: the fork node retries with backoff (`--retries 8 --fork-retry-backoff 1000 --timeout 45000`), and Chasm's own upstream reads (Test RPC, Sourcify, replay block lookup) retry HTTP 429/503 following `Retry-After`, at most 5 attempts and 20 s of waiting. Sends are never retried.
 - `toolchain.state.network` states both chain ids: `sourceChainId` (the forked chain) and `executionChainId` (31337, where workspace transactions run and are signed), with a note on `block.chainid`.
 - The offline engine's workspace build-info is built with the same build source, settings and **locked solc** as the workspace, and records them (`chasmSettings`). A workspace that needs several solc versions names them instead of failing with a unit count.
