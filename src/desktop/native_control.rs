@@ -455,6 +455,7 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
             }
         }
         Command::Attach { address } => contract.invoke_attach(owner().into(), address.as_str().into()),
+        Command::Import { address } => ui.global::<Logic>().invoke_import_contract(address.as_str().into()),
         Command::Simulate {} | Command::Send {} => {
             let document = owner();
             {

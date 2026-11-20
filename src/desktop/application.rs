@@ -59,6 +59,8 @@ pub enum Command {
     // They return "accepted"; read app.state or a view query for the outcome.
     #[serde(rename = "contracts.request.edit")]
     EditRequest { arguments: Option<String>, value: Option<String> },
+    #[serde(rename = "contracts.import")]
+    Import { address: String },
     #[serde(rename = "contracts.attach")]
     Attach { address: String },
     #[serde(rename = "contracts.simulate")]
@@ -347,6 +349,7 @@ impl Command {
             Self::OpenWorkspace { .. } => "workspace.open",
             Self::EditRequest { .. } => "contracts.request.edit",
             Self::Attach { .. } => "contracts.attach",
+            Self::Import { .. } => "contracts.import",
             Self::Simulate {} => "contracts.simulate",
             Self::Send {} => "contracts.send",
             Self::Trace {} => "contracts.trace",
@@ -704,6 +707,14 @@ pub fn validate(state: &DesktopState, command: &Command) -> Result<(), AppError>
                 return Err(invalid("Arguments are limited to 64 KiB and value to a uint256 decimal."));
             }
         }
+        Command::Import { address } => {
+            if address.parse::<ethers::types::Address>().is_err() {
+                return Err(invalid("Give an exact 20-byte address."));
+            }
+            if state.fork_chain_id.is_none() {
+                return Err(AppError::new("context_unavailable", "Importing verified source needs a fork of a public chain (toolchain.action network)."));
+            }
+        }
         Command::Attach { address } => {
             if active_kind(state) != Some(0) || address.parse::<ethers::types::Address>().is_err() {
                 return Err(invalid("Open a contract tab and give an exact 20-byte address."));
@@ -1006,6 +1017,7 @@ fn contract_view(state: &DesktopState) -> Value {
         "sendBlockReason":super::native_contract::call_block_reason(state, doc, true).unwrap_or_default(),
         "readBlockReason":super::native_contract::call_block_reason(state, doc, false).unwrap_or_default(),
         "targetBound":view.target_bound,
+        "proxy":doc.contract_view.proxy_note, "abiOrigin":doc.contract_view.abi_origin,
         "callStatus":view.call_status.as_str(), "simple":view.simple_output.as_str(),
         "raw":view.raw_output.as_str(), "trace":view.trace_output.as_str(),
         "storageStatus":view.storage_status.as_str(), "storage":view.storage_output.as_str(),
@@ -1116,6 +1128,7 @@ pub fn command_schema() -> Value {
             ),
         ),
         ("contracts.attach", object(json!({"address":{"type":"string","maxLength":42}}), vec!["address"])),
+        ("contracts.import", object(json!({"address":{"type":"string","maxLength":42,"description":"A contract on the forked chain. Its verified ABI, source and layout come from Sourcify; a proxy uses its implementation's. Opens a tab bound to the address; poll app.state notice and contracts.view.abiOrigin"}}), vec!["address"])),
         ("contracts.simulate", object(json!({}), vec![])),
         ("contracts.send", object(json!({}), vec![])),
         ("contracts.trace", object(json!({}), vec![])),

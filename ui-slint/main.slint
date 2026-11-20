@@ -177,6 +177,7 @@ export global Logic {
     callback simulate-call();
     callback send-call();
     callback explorer-search(string);
+    callback import-contract(string);
     callback explorer-edited(string);
     callback explorer-open(string);
     callback fetch-block();
@@ -640,6 +641,7 @@ component ExplorerWorkspace inherits Rectangle {
                 Field { label: "Search address, transaction hash, block hash or block number"; placeholder-text: "Address, tx hash, block hash or block number"; text <=> AppData.explorer-input; edited => { Logic.explorer-edited(self.text); } accepted => { Logic.explorer-search(self.text); } }
                 IconButton { icon: @image-url("icons/search.svg"); label: "Look up"; primary: true; clicked => { Logic.explorer-search(AppData.explorer-input); } }
                 IconButton { icon: @image-url("icons/refresh.svg"); label: "Refresh"; clicked => { Logic.fetch-block(); } }
+                IconButton { icon: @image-url("icons/contracts.svg"); label: "Open verified contract"; enabled: AppData.explorer-input != ""; clicked => { Logic.import-contract(AppData.explorer-input); } }
             }
             SelectableText { text: "Lists show the newest 100 blocks and transactions on the workspace node. Search reaches anything older on the same node. Address history on public networks is not indexed yet."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
             if AppData.explorer-status != "": SelectableText { text: AppData.explorer-status; color: Theme.muted; font-size: 0.75rem; }

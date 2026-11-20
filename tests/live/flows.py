@@ -319,6 +319,26 @@ def fork():
         names = [row["text"] for row in trace()["calls"]]
         command("debugger.trace.view", tab=0)
         check("verified source is shown", t["file"] != "" or any(not name.startswith("0x") for name in names), f"{t['file']} {names[:4]}")
+    # Open USDC by address: it is a proxy, so the ABI is its implementation's.
+    command("contracts.import", address=usdc)
+    for _ in range(120):
+        view = query("contracts.view")
+        if view.get("abiOrigin"):
+            break
+        time.sleep(0.5)
+    check("USDC imported as a bound tab", view.get("address", "").lower() == usdc.lower() and "Sourcify" in view.get("abiOrigin", ""), str(view.get("abiOrigin")) + " " + query("app.state")["notice"])
+    check("the proxy and its implementation are named", "proxy" in view.get("proxy", "") and "runs the code of 0x" in view.get("proxy", ""), view.get("proxy"))
+    names = [f["name"] for f in view["functions"]]
+    check("the implementation's ABI is used", "transferWithAuthorization" in names and "name" in names, str(names[:12]))
+    index = names.index("name")
+    command("contracts.function.select", id=view["functions"][index]["id"])
+    out = command("contracts.simulate")
+    for _ in range(60):
+        job = next((j for j in query("jobs.list")["jobs"] if j["id"] == out["jobId"]), None)
+        if job and job["status"] != "running":
+            break
+        time.sleep(0.5)
+    check("a read through the proxy decodes", "USD Coin" in query("contracts.view")["simple"], query("contracts.view")["simple"][-200:])
     command("toolchain.action", action="network", fork_url="")
     reopened(None)
     check("back to a local chain", rpc("eth_getCode", [usdc, "latest"]) == "0x")

@@ -470,7 +470,16 @@ impl DesktopState {
         }
     }
 
-    pub fn replace_compiled_contracts(&mut self, contracts: Vec<ContractItem>) {
+    pub fn replace_compiled_contracts(&mut self, mut contracts: Vec<ContractItem>) {
+        // Verified imports stay listed across recompiles, read from their cache.
+        for imported in super::contract_import::reload(&self.workspace) {
+            if !contracts.iter().any(|item| item.name == imported.contract.name) {
+                if let Some(layout) = imported.layout {
+                    self.storage_layouts.insert(imported.contract.name.clone(), layout);
+                }
+                contracts.push(imported.contract);
+            }
+        }
         let mut cleared = 0;
         for doc in self.documents.iter_mut().filter(|doc| doc.kind == 0) {
             let old_index = doc.contract_view.selected_function;
@@ -744,6 +753,38 @@ impl DesktopState {
                 .unwrap_or_default();
             self.storage_output = view.storage;
         }
+    }
+
+    /// Adds a verified import to the Contracts list and opens a tab bound to
+    /// its address, so it can be called at once.
+    pub fn open_import(&mut self, imported: super::contract_import::Imported) {
+        let name = imported.contract.name.clone();
+        let mut imports = super::contract_import::saved(&self.workspace);
+        imports.retain(|item| !(item.chain == imported.import.chain && item.address == imported.import.address));
+        imports.push(imported.import.clone());
+        if let Err(error) = super::contract_import::save(&self.workspace, &imports) {
+            self.notice = format!("Imported, but the import list was not saved: {error}");
+        }
+        if let Some(layout) = imported.layout {
+            self.storage_layouts.insert(name.clone(), layout);
+        }
+        self.contracts.retain(|item| item.name != name);
+        self.contracts.push(imported.contract);
+        let title = self.next_contract_title(&name);
+        let mut doc = Document::new(title, String::new(), 0);
+        doc.contract_name = Some(name.clone());
+        doc.contract_view.target = Some(super::contract_state::Target {
+            contract: name.clone(),
+            address: imported.import.address.clone(),
+            deployment_id: None,
+            network_epoch: self.network_epoch,
+        });
+        doc.contract_view.abi_origin = imported.origin;
+        doc.contract_view.proxy_note = if imported.import.note.is_empty() { "Not a recognised proxy.".into() } else { imported.import.note };
+        self.documents.push(doc);
+        self.select_document(self.documents.len() as i32 - 1);
+        self.view_revision = self.view_revision.wrapping_add(1);
+        self.status_left = format!("Imported {name}");
     }
 
     fn open_contract_doc(&mut self, name: String, functions: Vec<FunctionInfo>) {

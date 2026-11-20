@@ -6,6 +6,8 @@ Chasm is now a native Rust + Slint desktop app. The Axum + React web UI,
 the `ui/` folder and the npm build are gone.
 
 ### Workspace
+- **Open verified contract** (Explorer, `contracts.import`): on a fork, any verified address opens as a bound tab with its Sourcify ABI and storage layout, without building it. A proxy uses its implementation's ABI. Imports are reloaded from the cache when the project opens.
+- Attach and import detect EIP-1967 (implementation and beacon), legacy OpenZeppelin and EIP-1167 clone proxies; Details names the implementation while calls still go to the attached address.
 - Send and Simulate say why they cannot run (`sendBlockReason`), and the button, `contracts.view` and the call itself use one check. Through the API a refused call fails with `not_ready` instead of reporting completed; an accepted one returns its `jobId`, and `jobs.list` gives that job's document, summary and transaction hash.
 - Native workspace with an activity rail (Contracts, Explorer, Converter, Macros, Debugger), dockable panes, saved layouts and Chasm-styled scrollbars.
 - An undeployed contract tab shows its constructor form and deploys in place; the tab then binds to the new address.

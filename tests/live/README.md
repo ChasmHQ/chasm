@@ -40,7 +40,7 @@ key is stored here.
 | `foundry_import` | a via-IR build in another folder, added as an import, maps to source with args and `p total` from its layout; a missing folder is refused |
 | `build_source` | Auto follows `foundry.toml`; a duplicate library names both copies |
 | `revert_explained` | a keeper revert names `MiniToken.transfer` and its custom error; an oversized deploy names EIP-170; unsent calls trace through the API |
-| `fork` | mainnet fork, real transaction replay matches the receipt, Sourcify source |
+| `fork` | mainnet fork, real transaction replay matches the receipt, Sourcify source; USDC imported by address as a proxy with its implementation's ABI, `name()` read through it |
 | `stress` (only when named) | 20-field form, 200k-step trace, 30 deployments, 500 History rows, 128-step macro, three zooms |
 
 `CHASM_STRESS_SHOTS=<folder>` saves a screenshot of each view per zoom.

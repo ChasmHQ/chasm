@@ -1,6 +1,6 @@
 # Rencana perbaikan workspace Chasm
 
-**Status:** P0 selesai (lihat Progres); P1–P4 berikutnya. **Baseline:** `UI` di `4c288d3`. Rilis baseline dipakai untuk membandingkan hasil sebelum dan sesudah perbaikan; membangun ulang binary tidak mengimplementasikan item di bawah.
+**Status:** P0 dan P1 selesai (lihat Progres); P2–P4 berikutnya. **Baseline:** `UI` di `4c288d3`. Rilis baseline dipakai untuk membandingkan hasil sebelum dan sesudah perbaikan; membangun ulang binary tidak mengimplementasikan item di bawah.
 
 ## Tujuan dan kriteria lulus
 
@@ -50,3 +50,4 @@ Untuk retest Windows, catat revision sumber **dan** SHA-256 executable. Dari ter
 | Fase | Status |
 |---|---|
 | P0 | Selesai: `call_block_reason` dipakai tombol, `contracts.view` (`sendBlockReason`, `readBlockReason`, `targetBound`) dan eksekutor. `contracts.send/simulate` lewat API: `failed/not_ready` + alasan tanpa job, atau `job_started` + `jobId` + `documentId`. `jobs.list` memberi `documentId`, `summary`, `transactionHash` untuk job panggilan kontrak. Live flow `call_jobs` (tab tanpa deployment ditolak, Send pada deployment terikat dilacak lewat job walau tab berpindah). Kasus “alamat terisi tetapi diminta Attach” tetap belum direproduksi; kini alasan penolakan terlihat sebelum dan sesudah klik. |
+| P1 | Selesai untuk Sourcify: `proxy.rs` (slot EIP-1967 implementation/beacon, slot OpenZeppelin lama, clone EIP-1167) dipanggil saat Attach dan import; `contract_import.rs` + `contracts.import {address}` / tombol **Open verified contract** di Explorer membuka tab terikat dengan ABI dan layout Sourcify; proxy memakai ABI implementation; `abiOrigin` dan `proxy` di `contracts.view`. Import dimuat ulang dari cache tanpa jaringan. Diuji di fork mainnet (USDC → FiatToken, `name()` terdekode). Blockscout/Etherscan belum: perlu kunci API dan pengujian kegagalan provider. |

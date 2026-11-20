@@ -43,6 +43,11 @@ pub struct ContractView {
     /// eth_call object of the last Send that reverted before broadcast, so
     /// the step debugger can replay it. Cleared when the next call starts.
     pub reverted_call: Option<Value>,
+    /// What the attached address runs, when it is a proxy (or why that is
+    /// unknown). Empty until checked.
+    pub proxy_note: String,
+    /// Where this tab's ABI came from: the workspace build or a verified import.
+    pub abi_origin: String,
     pub scroll: std::collections::HashMap<String, f32>,
     pub function_width: f32,
     pub result_height: f32,

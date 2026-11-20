@@ -33,6 +33,8 @@ mod sourcify;
 mod foundry_import;
 mod trace_condition;
 mod trace_compare;
+mod proxy;
+mod contract_import;
 mod gas_profile;
 mod trace_locals;
 mod captures;
@@ -1077,6 +1079,12 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     let runtime_search = runtime.clone();
     ui.global::<Logic>().on_explorer_search(move |query| {
         search_chain(weak.clone(), held.clone(), runtime_search.clone(), query.to_string());
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
+    let runtime_import = runtime.clone();
+    ui.global::<Logic>().on_import_contract(move |address| {
+        native_contract::import(weak.clone(), held.clone(), runtime_import.clone(), address.trim().to_string());
     });
     let weak = ui.as_weak();
     let held = state.clone();

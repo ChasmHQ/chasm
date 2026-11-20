@@ -240,6 +240,7 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
         });
     let weak = ui.as_weak();
     let held = state.clone();
+    let rt = runtime.clone();
     ui.global::<ContractLogic>()
         .on_attach(move |owner, address| {
             let mut state = held.lock().unwrap();
@@ -276,8 +277,11 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                     view.result = None;
                     view.call_status.clear();
                     view.attach_address.clear();
+                    view.proxy_note = "Checking whether this address is a proxy…".into();
+                    let revision = view.revision;
                     state.view_revision = state.view_revision.wrapping_add(1);
                     state.restore_contract_view();
+                    check_proxy(weak.clone(), held.clone(), rt.clone(), owner.to_string(), format!("{address:#x}"), revision, state.rpc.clone());
                 }
             }
             drop(state);
@@ -485,6 +489,72 @@ fn call_is_current(view: &ContractView, stamp: &CallStamp) -> bool {
     view.call_generation == stamp.generation
         && view.revision == stamp.revision
         && view.target.as_ref() == Some(&stamp.target)
+}
+
+/// `contracts.import`: a verified contract by address, bound to a new tab.
+pub fn import(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, address: String) {
+    let prepared = {
+        let mut state = held.lock().unwrap();
+        if state.transition_pending() || !state.workspace_ready {
+            return;
+        }
+        match state.fork_chain_id {
+            None => {
+                state.notice = "Importing verified source needs a fork of a public chain. Set one in Compiler and libraries > Network.".into();
+                None
+            }
+            Some(chain) => {
+                state.notice = format!("Looking up {address} on Sourcify…");
+                Some((state.workspace.clone(), state.rpc.clone(), chain, state.workspace_epoch))
+            }
+        }
+    };
+    super::paint(&weak, &held);
+    let Some((workspace, rpc, chain, epoch)) = prepared else { return };
+    runtime.spawn(async move {
+        let result = super::contract_import::fetch(&workspace, &rpc, chain, &address).await;
+        let _ = slint::invoke_from_event_loop(move || {
+            {
+                let mut state = held.lock().unwrap();
+                if !state.active || state.workspace_epoch != epoch {
+                    return;
+                }
+                match result {
+                    Ok(imported) => {
+                        state.notice = format!("Imported {} from {}.", imported.contract.name, imported.origin);
+                        state.open_import(imported);
+                    }
+                    Err(error) => state.notice = error,
+                }
+            }
+            super::paint(&weak, &held);
+        });
+    });
+}
+
+/// Reads the proxy slots of a freshly attached address and records which
+/// code it runs. Calls are not redirected; the note names the implementation.
+pub fn check_proxy(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, owner: String, address: String, revision: u64, rpc: String) {
+    runtime.spawn(async move {
+        let result = super::proxy::detect(&rpc, &address, "latest").await;
+        let _ = slint::invoke_from_event_loop(move || {
+            {
+                let mut state = held.lock().unwrap();
+                let Some(index) = document_index(&state, &owner) else { return };
+                let view = &mut state.documents[index].contract_view;
+                if view.revision != revision || view.target.as_ref().map(|target| target.address.as_str()) != Some(address.as_str()) {
+                    return;
+                }
+                view.proxy_note = match result {
+                    Ok(Some(proxy)) => proxy.describe(&address),
+                    Ok(None) => "Not a recognised proxy (EIP-1967, beacon, legacy OpenZeppelin or EIP-1167 clone).".into(),
+                    Err(error) => format!("Could not check for a proxy: {error}"),
+                };
+                state.view_revision = state.view_revision.wrapping_add(1);
+            }
+            super::paint(&weak, &held);
+        });
+    });
 }
 
 fn functions_for<'a>(
@@ -1076,7 +1146,7 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
         function_width: view.function_width,
         result_height: view.result_height,
         details: format!(
-            "Contract: {}\nAddress: {}\nNetwork epoch: {}\nDocument: {}",
+            "Contract: {}\nAddress: {}\nNetwork epoch: {}\nDocument: {}{}{}",
             doc.contract_name().unwrap_or(&doc.title),
             view.target
                 .as_ref()
@@ -1086,7 +1156,9 @@ pub fn presentation(state: &DesktopState, doc: &Document) -> ContractViewData {
                 .as_ref()
                 .map(|target| target.network_epoch)
                 .unwrap_or(state.network_epoch),
-            doc.id
+            doc.id,
+            if view.abi_origin.is_empty() { String::new() } else { format!("\nABI: {}", view.abi_origin) },
+            if view.proxy_note.is_empty() { String::new() } else { format!("\nProxy: {}", view.proxy_note) },
         )
         .into(),
         ..Default::default()
