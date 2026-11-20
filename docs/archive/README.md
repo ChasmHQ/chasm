@@ -2,7 +2,7 @@
 
 Status notes and plans from the native redesign (2026-11-13 to 2026-11-18).
 They describe intermediate stages and are kept for history. For the
-current design, read `CLAUDE.md`, `DEBUGGER.md`, `AI_CONTROL.md` and `NEXT_PLAN.md`.
+current design, read `CLAUDE.md`, `DEBUGGER.md`, `AI_CONTROL.md` and `CHANGELOG.md`.
 
 | File | What it was |
 |---|---|

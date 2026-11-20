@@ -121,5 +121,5 @@ debugger's commands and keys.
 ## Workflow
 
 - Branch `UI` holds the native redesign and tracks `origin/native-ui`. Never merge into `main`; ask before every push. `origin/UI` is a different line of work (rust/revm, python sevm) and is not merged.
-- Plans and progress: `NEXT_PLAN.md` (current); earlier plans are in `docs/archive/`.
+- Plans and progress: all finished plans (latest: `REVERT_DEBUG_PLAN.md`) are in `docs/archive/`.
 - Each change gets its tests and a live check through the API, then its own commit.
