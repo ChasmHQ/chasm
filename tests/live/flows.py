@@ -806,4 +806,40 @@ def call_tree():
     check("and decodes its arguments", "amount = 1" in trace()["console"].split("(trace) args")[-1], trace()["console"][-200:])
     command("debugger.trace.view", tab=0)
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, locals, captures, revert_explained, call_tree, external_build, build_source, fork]
+
+def storage_names():
+    """State variables by name at any step, named writes and the transaction's state diff."""
+    bank = next(d for d in query("app.state")["documents"] if d["title"] == "Bank")
+    command("ui.document.select", id=bank["id"])
+    _deposit(10**18)
+    command("debugger.trace", hash=None)
+    for _ in range(60):
+        t = trace()
+        if t["loaded"] and not t["busy"]:
+            break
+        time.sleep(0.5)
+    owner_key = OWNER.lower()
+
+    def console(line):
+        command("debugger.trace.console", line=line)
+        return trace()["console"].split(f"(trace) {line}")[-1]
+
+    console("goto 1")
+    before = console(f"p balanceOf[{OWNER}]")
+    check("p mapping[key] at the first step reads the value before", "balanceOf[" in before and "(uint256) =" in before, before)
+    check("p owner reads a variable the call never touched", OWNER[2:10].lower() in console("p owner").lower(), console("p owner"))
+    lucky = console("p luckyNumbers[1]")
+    check("p array[i] reads an element", "= 13" in lucky, lucky)
+    check("p on a struct-less path names the problem", "No state variable" in console("p nothing"))
+    console("goto 999999")
+    after = console(f"p balanceOf[{OWNER}]")
+    value = lambda text: int(text.split("=")[1].split()[0])
+    check("the deposit shows at the last step", value(after) == value(before) + 10**18, f"{before} / {after}")
+    writes = console("writes")
+    check("writes are named", f"balanceOf[{OWNER}]".lower() in writes.lower(), writes)
+    diff = console("diff")
+    check("diff names the slot with before and after", f"balanceOf[{OWNER}]".lower() in diff.lower() and str(value(before)) in diff and str(value(after)) in diff, diff)
+    check("diff shows the bank's balance change", "balance 0x" in diff and "wei" in diff, diff)
+    print("  | " + " || ".join(diff.strip().splitlines())[:300])
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, inline_deploy, template, panes, gas, storage_names, locals, captures, revert_explained, call_tree, external_build, build_source, fork]

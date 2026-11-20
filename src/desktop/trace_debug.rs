@@ -27,6 +27,9 @@ pub struct Step {
     pub storage: Vec<(String, String)>,
     /// Address whose code runs at this step.
     pub address: String,
+    /// Account whose storage and balance the step uses: the code's address,
+    /// or the caller's under DELEGATECALL and CALLCODE.
+    pub context: String,
     /// Frame nesting: external call depth plus internal function calls.
     pub nest: u32,
 }
@@ -55,9 +58,37 @@ pub struct Program {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StorageWrite {
     pub step: usize,
+    /// Code that wrote, whose layout names the slot.
     pub address: String,
+    /// Account whose storage changed.
+    pub account: String,
     pub slot: ethers::types::U256,
     pub before: ethers::types::H256,
+    pub after: ethers::types::H256,
+    /// Last step of the reverted frame that undoes this write, if any.
+    pub undone_at: Option<usize>,
+}
+
+/// State before the execution, read from the node when it was recorded and
+/// saved with the trace, so a reopened trace diffs without the node.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Prestate {
+    /// account -> 0x slot -> 0x value before the execution.
+    #[serde(default)]
+    pub storage: HashMap<String, HashMap<String, String>>,
+    /// account -> (balance before, balance after); mined transactions only.
+    #[serde(default)]
+    pub balances: HashMap<String, (String, String)>,
+}
+
+/// One slot the execution changed, with its value before and after.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotChange {
+    pub account: String,
+    pub address: String,
+    pub slot: ethers::types::U256,
+    /// None when the slot was neither read first nor fetched from the node.
+    pub before: Option<ethers::types::H256>,
     pub after: ethers::types::H256,
 }
 
@@ -97,6 +128,12 @@ pub struct Session {
     pub preimages: HashMap<ethers::types::U256, Vec<u8>>,
     /// Every SSTORE with the slot value before and after.
     pub writes: Vec<StorageWrite>,
+    /// (account, slot) -> value before the execution: read by an SLOAD
+    /// before any write, or fetched from the node (`prestate`).
+    observed: HashMap<(String, ethers::types::U256), ethers::types::H256>,
+    prestate: HashMap<(String, ethers::types::U256), ethers::types::H256>,
+    /// account -> (balance before, balance after).
+    pub balances: Vec<(String, ethers::types::U256, ethers::types::U256)>,
     /// Calldata of the outermost call, for decoding arguments.
     pub calldata: Vec<u8>,
     /// Per program: byte offset where each source line starts, so a step's
@@ -306,6 +343,8 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
     let truncated = logs.len() > MAX_STEPS;
     // Track which address runs at each depth from CALL-family operands.
     let mut address_at: Vec<String> = vec![String::new(), target.to_ascii_lowercase()];
+    // Storage context per depth: DELEGATECALL and CALLCODE keep the caller's.
+    let mut context_at: Vec<String> = address_at.clone();
     let mut steps = Vec::with_capacity(logs.len().min(MAX_STEPS));
     let mut previous: Option<(u64, String, Vec<String>)> = None;
     for log in logs.iter().take(MAX_STEPS) {
@@ -319,12 +358,20 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
                     "CALL" | "CALLCODE" | "STATICCALL" | "DELEGATECALL" => stack.get(stack.len().wrapping_sub(2)).map(|word| word_address(word)),
                     _ => None, // CREATE/CREATE2: unknown until it returns
                 };
+                let context = match op.as_str() {
+                    "DELEGATECALL" | "CALLCODE" => context_at.get(prev_depth as usize).cloned().unwrap_or_default(),
+                    _ => callee.clone().unwrap_or_default(),
+                };
                 address_at.truncate(depth as usize);
                 address_at.resize(depth as usize, String::new());
                 address_at.push(callee.unwrap_or_default());
+                context_at.truncate(depth as usize);
+                context_at.resize(depth as usize, String::new());
+                context_at.push(context);
             }
         }
         address_at.truncate(depth as usize + 1);
+        context_at.truncate(depth as usize + 1);
         let stack: Vec<String> = log["stack"].as_array().map(|items| items.iter().filter_map(|item| item.as_str().map(normalize_word)).collect()).unwrap_or_default();
         let op = log["op"].as_str().unwrap_or("").to_string();
         steps.push(Step {
@@ -336,6 +383,7 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
             memory: log["memory"].as_array().map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string)).collect()).unwrap_or_default(),
             storage: log["storage"].as_object().map(|map| map.iter().map(|(slot, value)| (slot.clone(), value.as_str().unwrap_or("").to_string())).collect()).unwrap_or_default(),
             address: address_at.get(depth as usize).cloned().unwrap_or_default(),
+            context: context_at.get(depth as usize).cloned().unwrap_or_default(),
             nest: 0,
             stack: stack.clone(),
         });
@@ -412,7 +460,12 @@ impl Session {
             let bytes = ethers::utils::hex::decode(format!("{:0>64}", text.trim_start_matches("0x"))).ok()?;
             (bytes.len() == 32).then(|| H256::from_slice(&bytes))
         };
-        let mut known: HashMap<(String, U256), H256> = HashMap::new();
+        // Values before the execution: fetched from the node when known.
+        let mut known: HashMap<(String, U256), H256> = self.prestate.clone();
+        self.writes.clear();
+        self.observed.clear();
+        // Writes of each open frame, to mark them undone when it reverts.
+        let mut open: Vec<Vec<usize>> = vec![Vec::new()];
         for index in 0..self.steps.len() {
             let step = &self.steps[index];
             let top = |back: usize| step.stack.get(step.stack.len().wrapping_sub(1 + back)).and_then(|text| U256::from_str_radix(text.trim_start_matches("0x"), 16).ok());
@@ -433,19 +486,56 @@ impl Session {
                 "SLOAD" => {
                     let Some(slot) = top(0) else { continue };
                     if let Some(value) = self.steps.get(index + 1).and_then(|next| next.stack.last()).and_then(|text| word(text)) {
-                        known.entry((step.address.clone(), slot)).or_insert(value);
+                        let key = (step.context.clone(), slot);
+                        if !known.contains_key(&key) {
+                            self.observed.insert(key.clone(), value);
+                            known.insert(key, value);
+                        }
                     }
                 }
                 "SSTORE" => {
                     let (Some(slot), Some(value)) = (top(0), step.stack.get(step.stack.len().wrapping_sub(2)).and_then(|text| word(text))) else { continue };
-                    let key = (step.address.clone(), slot);
+                    let key = (step.context.clone(), slot);
                     let before = known.get(&key).copied().unwrap_or_default();
                     known.insert(key, value);
                     if self.writes.len() < 4096 {
-                        self.writes.push(StorageWrite { step: index, address: step.address.clone(), slot, before, after: value });
+                        self.writes.push(StorageWrite { step: index, address: step.address.clone(), account: step.context.clone(), slot, before, after: value, undone_at: None });
+                        if let Some(frame) = open.last_mut() {
+                            frame.push(self.writes.len() - 1);
+                        }
                     }
                 }
                 _ => {}
+            }
+            let step = &self.steps[index];
+            match self.steps.get(index + 1) {
+                Some(next) if next.depth > step.depth => open.push(Vec::new()),
+                Some(next) if next.depth < step.depth => {
+                    // Leaving a frame: a revert (or failure) undoes its writes;
+                    // otherwise they become the caller's.
+                    let mine = open.pop().unwrap_or_default();
+                    if step.op == "RETURN" || step.op == "STOP" || step.op == "SELFDESTRUCT" {
+                        if let Some(parent) = open.last_mut() {
+                            parent.extend(mine);
+                        }
+                    } else {
+                        for at in mine.into_iter().rev() {
+                            self.writes[at].undone_at = Some(index);
+                            // The slot reads its value from before the frame again.
+                            let write = &self.writes[at];
+                            known.insert((write.account.clone(), write.slot), write.before);
+                        }
+                    }
+                    if open.is_empty() {
+                        open.push(Vec::new());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if self.failed {
+            for write in &mut self.writes {
+                write.undone_at.get_or_insert(self.steps.len().saturating_sub(1));
             }
         }
         let _ = logs;
@@ -494,6 +584,130 @@ impl Session {
         // Only the outermost call's input is recorded; inner calls show calldata as pointers.
         let calldata = if step.depth == self.steps.first().map(|first| first.depth).unwrap_or(1) { &self.calldata[..] } else { &[] };
         Some(super::trace_locals::read(index, frame, offset, &step.stack, &step.memory, calldata).into_iter().map(|value| (value.name, value.type_label, value.value)).collect())
+    }
+
+    /// Values before the execution, from the node. Recomputes the writes'
+    /// previous values, which were zero for slots the trace never read.
+    pub fn set_prestate(&mut self, prestate: &Prestate) {
+        use ethers::types::{H256, U256};
+        let parse = |text: &str| U256::from_str_radix(text.trim_start_matches("0x"), 16).ok();
+        self.prestate = prestate
+            .storage
+            .iter()
+            .flat_map(|(account, slots)| slots.iter().filter_map(move |(slot, value)| Some(((account.to_ascii_lowercase(), parse(slot)?), { let mut bytes = [0u8; 32]; parse(value)?.to_big_endian(&mut bytes); H256::from(bytes) }))))
+            .collect();
+        self.balances = prestate
+            .balances
+            .iter()
+            .filter_map(|(account, (before, after))| Some((account.to_ascii_lowercase(), parse(before)?, parse(after)?)))
+            .filter(|(_, before, after)| before != after)
+            .collect();
+        self.balances.sort();
+        self.collect_storage(&[]);
+    }
+
+    /// Every (account, slot) the trace wrote, to fetch their earlier values.
+    pub fn written_slots(&self) -> Vec<(String, ethers::types::U256)> {
+        let mut out: Vec<(String, ethers::types::U256)> = Vec::new();
+        for write in &self.writes {
+            if !out.iter().any(|(account, slot)| account == &write.account && *slot == write.slot) {
+                out.push((write.account.clone(), write.slot));
+            }
+        }
+        out
+    }
+
+    /// (account, code address) pairs that ran, so a proxy's storage is read
+    /// with its implementation's layout.
+    pub fn storage_views(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for step in &self.steps {
+            if !step.context.is_empty() && !out.iter().any(|(account, address)| account == &step.context && address == &step.address) {
+                out.push((step.context.clone(), step.address.clone()));
+            }
+        }
+        out
+    }
+
+    /// Accounts whose code ran, for balance changes.
+    pub fn accounts(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for step in &self.steps {
+            if !step.context.is_empty() && !out.contains(&step.context) {
+                out.push(step.context.clone());
+            }
+        }
+        out
+    }
+
+    /// Value of a slot at step `at`: the last write up to it (undone writes
+    /// restored), else the value before the execution if known.
+    pub fn storage_at(&self, account: &str, slot: ethers::types::U256, at: usize) -> Option<ethers::types::H256> {
+        let key = (account.to_ascii_lowercase(), slot);
+        let initial = self.prestate.get(&key).or_else(|| self.observed.get(&key)).copied();
+        let mut value = initial;
+        // (step, order, value): writes, then undos in reverse write order. An
+        // undo restores the write's previous value; for the first write of a
+        // slot that is only known when the value before the execution is.
+        let mut events: Vec<(usize, usize, Option<ethers::types::H256>)> = Vec::new();
+        for (order, write) in self.writes.iter().filter(|write| write.account == key.0 && write.slot == slot).enumerate() {
+            events.push((write.step, order, Some(write.after)));
+            if let Some(undone) = write.undone_at {
+                let restored = if order == 0 { initial } else { Some(write.before) };
+                events.push((undone, usize::MAX - order, restored));
+            }
+        }
+        events.sort_by_key(|(step, order, _)| (*step, *order));
+        for (step, _, after) in events {
+            if step > at {
+                break;
+            }
+            value = after;
+        }
+        value
+    }
+
+    /// Net storage changes of the whole execution, in order of first write.
+    pub fn state_diff(&self) -> Vec<SlotChange> {
+        let mut out = Vec::new();
+        let end = self.steps.len().saturating_sub(1);
+        for (account, slot) in self.written_slots() {
+            let key = (account.clone(), slot);
+            let before = self.prestate.get(&key).or_else(|| self.observed.get(&key)).copied();
+            let Some(after) = self.storage_at(&account, slot, end) else { continue };
+            if before == Some(after) {
+                continue;
+            }
+            let address = self.writes.iter().rev().find(|write| write.account == account && write.slot == slot).map(|write| write.address.clone()).unwrap_or_default();
+            out.push(SlotChange { account, address, slot, before, after });
+        }
+        out
+    }
+
+    /// keccak preimages for naming slots: the trace's own, plus mapping
+    /// entries keyed by any address in the trace or word of its calldata.
+    pub fn naming_preimages(&self, layout: &super::storage_layout::Layout) -> HashMap<ethers::types::U256, Vec<u8>> {
+        let mut keys: Vec<[u8; 32]> = Vec::new();
+        let mut add = |key: [u8; 32]| {
+            if keys.len() < 64 && !keys.contains(&key) {
+                keys.push(key);
+            }
+        };
+        for account in self.accounts().iter().chain(std::iter::once(&self.target)) {
+            if let Ok(bytes) = ethers::utils::hex::decode(account.trim_start_matches("0x")) {
+                if bytes.len() == 20 {
+                    let mut key = [0u8; 32];
+                    key[12..].copy_from_slice(&bytes);
+                    add(key);
+                }
+            }
+        }
+        for chunk in self.calldata.get(4..).unwrap_or_default().chunks(32).filter(|chunk| chunk.len() == 32) {
+            add(chunk.try_into().unwrap());
+        }
+        let mut out = layout.guessed_preimages(&keys);
+        out.extend(self.preimages.iter().map(|(hash, bytes)| (*hash, bytes.clone())));
+        out
     }
 
     /// Storage layout of the code running at `address`.

@@ -53,7 +53,8 @@ macros, and fork a live chain to debug real transactions.
   - Every storage write by variable name, with its old and new value. Mapping keys and array indexes are recovered from the trace.
 - **sevm-style console**:
   - `s`, `n`, `si`, `fin`, `c`, `rc`;
-  - `b 28`, `p stack[0]`, `x 0x40`, `sload 0`, `find SSTORE`, `args`, `writes`, `locals`, `gas`.
+  - `b 28`, `p stack[0]`, `x 0x40`, `sload 0`, `find SSTORE`, `args`, `writes`, `locals`, `gas`;
+  - `p balanceOf[0xf39F…]`, `p position.amount` at any step, and `diff` for the whole state change, without `cast index`.
 - **Panes float and dock** like any other pane; *Panels > Trace debugger layout (sevm)* lays them out like the sevm TUI.
 - **Offline engine captures** are saved in `.chasm/captures/` and replay without the network.
 - **Saved traces** in `.chasm/traces/`. They reopen without the node.

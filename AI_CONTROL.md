@@ -112,7 +112,7 @@ Commands added for the native app (all in `app.catalog`):
 |---|---|
 | Deploy in place | `contracts.deploy.open`, `contracts.constructor.edit`, `contracts.deploy`; `contracts.deploy_form` reads the unbound tab's constructor form |
 | Templates | `contracts.template {kind: erc20 \| erc721 \| ownable, name}` |
-| Step debugger | `debugger.trace {hash?}`, `debugger.trace.step`, `.seek`, `.breakpoint`, `.console` (`locals`, `gas`, `args`, `writes`, …), `.view {tab: 0-5}` (5 = Gas), `.open_saved`; `debugger.state.trace` has `variables` (locals first) and `gas` |
+| Step debugger | `debugger.trace {hash?}`, `debugger.trace.step`, `.seek`, `.breakpoint`, `.console` (`locals`, `gas`, `args`, `writes`, `diff`, `p <variable path>`, …), `.view {tab: 0-5}` (5 = Gas), `.open_saved`; `debugger.state.trace` has `variables` (locals first) and `gas` |
 | Offline captures | `debugger.capture.save`, `debugger.capture.open {name}`; `debugger.state.captures` |
 | Panes | `ui.panel {pane, action: dock \| float \| hide \| maximize \| reset \| preset, zone?}`; trace panes are `trace_ops`, `trace_state`, `trace_console`; presets `contracts`, `debugging`, `investigation`, `tracing`; `app.state.layout.panes` |
 | History, timeline, cheats | `history.list`, `history.action`, `chain.timeline.revert`, `chain.cheat` |

@@ -433,6 +433,10 @@ pub struct SavedTrace {
     /// 0x calldata of the outermost call.
     #[serde(default)]
     pub input: String,
+    /// Written slots and balances before (and, for a mined transaction,
+    /// after) the execution, read when it was recorded.
+    #[serde(default)]
+    pub prestate: Option<trace_debug::Prestate>,
 }
 
 pub const TRACE_FORMAT: &str = "chasm-trace/1";
@@ -446,6 +450,9 @@ impl SavedTrace {
             .collect();
         let mut session = trace_debug::from_trace(self.title.clone(), &self.target, &self.trace, programs, &code)?;
         session.calldata = ethers::utils::hex::decode(self.input.trim_start_matches("0x")).unwrap_or_default();
+        if let Some(prestate) = &self.prestate {
+            session.set_prestate(prestate);
+        }
         Ok(session)
     }
 }
@@ -660,7 +667,7 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
             }
         }
     }
-    let saved = SavedTrace {
+    let mut saved = SavedTrace {
         format: TRACE_FORMAT.into(),
         title,
         target: target_address,
@@ -668,7 +675,25 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
         trace,
         code: code_at.iter().map(|(address, code)| (address.clone(), format!("0x{}", ethers::utils::hex::encode(code)))).collect(),
         input,
+        prestate: None,
     };
+    // State before the execution: the parent block of a mined transaction,
+    // the replay node's own block, or the block a call ran on.
+    let (before, after) = if replay_node.is_some() {
+        ("latest".to_string(), None)
+    } else if hash.is_some() {
+        match u64::from_str_radix(saved.block.trim_start_matches("0x"), 16) {
+            Ok(number) if number > 0 => (format!("{:#x}", number - 1), Some(saved.block.clone())),
+            _ => (String::new(), None),
+        }
+    } else {
+        (saved.block.clone(), None)
+    };
+    if !before.is_empty() {
+        if let Ok(session) = saved.session(programs.clone()) {
+            saved.prestate = Some(prestate(&client, &code_rpc, &session, &before, after.as_deref()).await);
+        }
+    }
     drop(replay_node);
     if let Some((workspace, chain)) = verified {
         let (found, missing) = verified_programs(workspace, chain, &code_at, &programs).await;
@@ -680,6 +705,76 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
     }
     let session = saved.session(programs)?;
     Ok((session, saved, hash, replay_note))
+}
+
+/// Slots the trace wrote and balances of the accounts that ran, read at
+/// `before` (and `after`). At most 256 slots; unread ones stay unknown.
+async fn prestate(client: &reqwest::Client, rpc: &str, session: &Session, before: &str, after: Option<&str>) -> trace_debug::Prestate {
+    let mut out = trace_debug::Prestate::default();
+    let mut budget = 256usize;
+    let mut fetch = |slots: Vec<(String, ethers::types::U256)>, out: &mut trace_debug::Prestate| {
+        let todo: Vec<(String, ethers::types::U256)> = slots
+            .into_iter()
+            .filter(|(account, slot)| !out.storage.get(account).is_some_and(|known| known.contains_key(&format!("{slot:#x}"))))
+            .take(budget)
+            .collect();
+        budget -= todo.len();
+        todo
+    };
+    // Written slots first, then what `p` reads without the execution touching
+    // it: each variable's base slot, array elements, and mapping entries keyed
+    // by an address or argument in the trace.
+    let views: Vec<(String, super::storage_layout::Layout, HashMap<ethers::types::U256, Vec<u8>>)> = session
+        .storage_views()
+        .into_iter()
+        .filter_map(|(account, address)| {
+            let layout = session.layout_at(&address)?;
+            let preimages = session.naming_preimages(&layout);
+            Some((account, layout, preimages))
+        })
+        .collect();
+    let mut passes: Vec<Vec<(String, ethers::types::U256)>> = vec![session.written_slots()];
+    passes.push(views.iter().flat_map(|(account, layout, _)| layout.base_slots().into_iter().map(move |slot| (account.clone(), slot))).collect());
+    for pass in 0..3 {
+        let slots = if pass < passes.len() {
+            std::mem::take(&mut passes[pass])
+        } else {
+            // Array elements, once the lengths are known, and mapping entries.
+            let mut slots = Vec::new();
+            for (account, layout, preimages) in &views {
+                let known = out.storage.get(account).cloned().unwrap_or_default();
+                let read = |slot: ethers::types::U256| known.get(&format!("{slot:#x}")).and_then(|value| ethers::utils::hex::decode(format!("{:0>64}", value.trim_start_matches("0x"))).ok()).filter(|bytes| bytes.len() == 32).map(|bytes| ethers::types::H256::from_slice(&bytes));
+                slots.extend(layout.array_slots(&read).into_iter().map(|slot| (account.clone(), slot)));
+                // Top-level entries only: nested guesses (allowances) are too many.
+                let bases = layout.base_slots();
+                slots.extend(
+                    preimages
+                        .iter()
+                        .filter(|(slot, bytes)| !session.preimages.contains_key(slot) && bytes.len() == 64 && bases.contains(&ethers::types::U256::from_big_endian(&bytes[32..])))
+                        .map(|(slot, _)| (account.clone(), *slot)),
+                );
+            }
+            slots
+        };
+        for (account, slot) in fetch(slots, &mut out) {
+            if let Ok(value) = rpc_call(client, rpc, "eth_getStorageAt", json!([account, format!("{slot:#x}"), before])).await {
+                if let Some(value) = value.as_str() {
+                    out.storage.entry(account).or_default().insert(format!("{slot:#x}"), value.to_string());
+                }
+            }
+        }
+    }
+    if let Some(after) = after {
+        for account in session.accounts().into_iter().take(32) {
+            let read = |block: &str| rpc_call(client, rpc, "eth_getBalance", json!([account, block]));
+            if let (Ok(old), Ok(new)) = (read(before).await, read(after).await) {
+                if let (Some(old), Some(new)) = (old.as_str(), new.as_str()) {
+                    out.balances.insert(account.clone(), (old.to_string(), new.to_string()));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Looks up every traced address whose code no workspace program matches.
@@ -952,10 +1047,14 @@ fn variables(session: &Session, labels: &HashMap<String, String>) -> Vec<TraceVa
             rows.push(TraceValue { label: name.into(), value: value.into(), changed: false });
         }
     }
-    let mut layouts: HashMap<String, Option<super::storage_layout::Layout>> = HashMap::new();
+    let mut layouts: HashMap<String, Option<(super::storage_layout::Layout, HashMap<ethers::types::U256, Vec<u8>>)>> = HashMap::new();
     for write in &session.writes {
-        let layout = layouts.entry(write.address.clone()).or_insert_with(|| session.layout_at(&write.address));
-        let named = layout.as_ref().and_then(|layout| layout.name_slot(write.slot, &session.preimages));
+        let layout = layouts.entry(write.address.clone()).or_insert_with(|| {
+            let layout = session.layout_at(&write.address)?;
+            let preimages = session.naming_preimages(&layout);
+            Some((layout, preimages))
+        });
+        let named = layout.as_ref().and_then(|(layout, preimages)| layout.name_slot(write.slot, preimages));
         let later = write.step > session.cursor;
         let fields = named.unwrap_or_else(|| vec![super::storage_layout::SlotField { path: format!("slot {:#x}", write.slot), type_label: "bytes32".into(), offset: 0, size: 32 }]);
         for field in fields {
@@ -978,6 +1077,9 @@ fn variables(session: &Session, labels: &HashMap<String, String>) -> Vec<TraceVa
                 value.push_str("  (later, step ");
                 value.push_str(&(write.step + 1).to_string());
                 value.push(')');
+            }
+            if write.undone_at.is_some() {
+                value.push_str("  (undone by a revert)");
             }
             rows.push(TraceValue { label: super::address_book::annotate(&field.path, labels).into(), value: value.into(), changed: !later && write.step + 1 >= session.cursor && write.step <= session.cursor });
         }
@@ -1034,6 +1136,7 @@ mod tests {
             trace: json!({"failed":true,"gas":21000,"returnValue":"","structLogs":logs}),
             code: HashMap::from([("0x00000000000000000000000000000000000000aa".to_string(), "0x00".to_string())]),
             input: String::new(),
+            prestate: None,
         };
         let hash = format!("0x{}", "ab".repeat(32));
         let path = save_trace(workspace.path(), &saved, Some(&hash)).unwrap();

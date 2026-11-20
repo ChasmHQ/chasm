@@ -30,6 +30,7 @@ key is stored here.
 | `inline_deploy` | deploy from the contract tab, call and debug in five clicks |
 | `panes` | trace panes dock, float and hide |
 | `gas`, `locals` | gas profile per call and line; Solidity locals (`i`, `result`, calldata array) |
+| `storage_names` | `p balanceOf[owner]` before and after a deposit, `p owner`, `p luckyNumbers[1]`, named `writes`, `diff` with the balance change |
 | `captures` | offline replay saved to `.chasm/captures/`, uploaded and replayed |
 | `call_tree` | keeper → token frames with outcomes, per-frame args, entry and opcode breaks, an attached ABI naming code Chasm did not build |
 | `external_build` | a via-IR, optimizer, no-metadata contract with an immutable, deployed by `cast`, maps to source with matching `[compiler]` settings |

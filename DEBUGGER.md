@@ -128,10 +128,12 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 | `goto <step>` | | Jump to a step number (1-based) |
 | `find <OP>` | `rfind <OP>` | Next step running an opcode |
 | `p stack[i]`, `p $i`, `p stack` | | Stack words, 0 is the top |
+| `p <variable>` | | A state variable at the cursor, by Solidity path: `p owner`, `p balanceOf[0xf39F…]`, `p allowance[0xA…][0xB…]`, `p list[2]`, `p position.amount`. A struct lists its members. |
 | `x <offset> [bytes]` | | Memory bytes, 32 by default |
-| `sload <slot>` | | Storage value of a slot touched so far |
+| `sload <slot>` | | A raw slot of the running account at the cursor |
 | `args` | | Decoded arguments of the call |
-| `writes` | | Storage writes up to the cursor, by slot |
+| `writes` | | Storage writes up to the cursor, named by the layout; writes a reverting frame undid are marked |
+| `diff` | | Net effect of the execution: each changed slot by name, before and after, then balance changes |
 | `locals` | | Solidity locals of the function at the cursor |
 | `gas`, `gas lines` | | Gas per call frame, or per source line |
 | `calls`, `frame <n>` | | The call tree; jump to a frame's first step |
@@ -143,6 +145,12 @@ The console at the bottom takes sevm-style commands over the recorded steps. Up 
 - **Stack:** top first. Changed entries are highlighted.
 - **Memory:** 32-byte words.
 - **Storage:** slots touched so far in this frame's contract.
+
+### Storage at any step
+
+When a trace is recorded, Chasm reads the state before the execution from the node: every slot the execution wrote, each state variable's base slot, array elements, and mapping entries keyed by an address or argument from the trace. A mined transaction reads the parent block, and its balance changes are also read. These values are saved with the trace, so `p`, `sload` and `diff` work on a reopened trace without the node.
+
+The value at the cursor is the value before the execution, plus every write up to the cursor. A write inside a frame that reverted is undone when that frame ends. A DELEGATECALL writes the caller's storage: the slot belongs to the caller, and the library's layout names it. A slot that was never read, written or fetched shows as unknown, never as zero.
 - **Calls:** the external call tree. Each frame shows its kind, `Contract.function`, value, how it ended (returned, reverted, stopped, out of gas) and its steps. The frame holding the cursor is highlighted; click a frame to jump to its first step.
   - Frames are named with the matched contract's ABI, an ABI attached to that address in a contract tab, or a workspace ABI when exactly one declares the selector.
   - If several do, the frame lists the candidates; attach the address to choose.

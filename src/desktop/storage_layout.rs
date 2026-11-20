@@ -268,6 +268,136 @@ impl Layout {
     }
 }
 
+impl Layout {
+    /// Value of a storage path as written in Solidity: `owner`,
+    /// `balanceOf[0xf39F…]`, `allowance[a][b]`, `list[2]`, `position.amount`.
+    /// Structs list their members; mappings and arrays say what to add.
+    pub fn show(&self, path: &str, read: &dyn Fn(U256) -> Option<H256>) -> Result<String, String> {
+        let (slot, offset, type_id) = self.resolve(path)?;
+        let info = self.type_info(&type_id);
+        let label = self.label_of(&type_id);
+        let size = self.bytes(&type_id);
+        let unread = || format!("{path} ({label}) at slot {slot:#x}: not read in this trace and no state before it.");
+        Ok(match info["encoding"].as_str().unwrap_or("inplace") {
+            "mapping" => format!("{path} is a {label}; add a key, e.g. {path}[0x…]."),
+            "dynamic_array" => match read(slot) {
+                Some(length) => format!("{path} ({label}) length {}; add an index, e.g. {path}[0].", U256::from_big_endian(length.as_bytes())),
+                None => unread(),
+            },
+            "bytes" => match read(slot) {
+                Some(word) => {
+                    let (value, note) = short_bytes(word);
+                    format!("{path} ({label}) = {value}  ({note})")
+                }
+                None => unread(),
+            },
+            _ if info["members"].is_array() => {
+                let mut lines = vec![format!("{path} ({label}) at slot {slot:#x}")];
+                for member in info["members"].as_array().into_iter().flatten() {
+                    let name = member["label"].as_str().unwrap_or("?");
+                    match self.show(&format!("{path}.{name}"), read) {
+                        Ok(text) => lines.push(format!("  {}", text.trim_start_matches(path).trim_start_matches('.'))),
+                        Err(error) => lines.push(format!("  {name}: {error}")),
+                    }
+                }
+                lines.join("\n")
+            }
+            _ if size > 32 || info["base"].is_string() => format!("{path} ({label}) spans {} slots from {slot:#x}; add an index.", size.div_ceil(32)),
+            _ => match read(slot) {
+                Some(word) => format!("{path} ({label}) = {}  (slot {slot:#x}{})", scalar(&label, word, offset, size), if offset > 0 { format!(", offset {offset}") } else { String::new() }),
+                None => unread(),
+            },
+        })
+    }
+
+    /// Slot, byte offset and type id of a storage path.
+    pub fn resolve(&self, path: &str) -> Result<(U256, u64, String), String> {
+        let path = path.trim();
+        let end = path.find(['[', '.']).unwrap_or(path.len());
+        let name = &path[..end];
+        let entry = self.entries.iter().find(|entry| entry.label == name).ok_or_else(|| format!("No state variable named {name}."))?;
+        let (mut slot, mut offset, mut type_id) = (entry.slot, entry.offset, entry.type_id.clone());
+        let mut rest = &path[end..];
+        while !rest.is_empty() {
+            let info = self.type_info(&type_id).clone();
+            if let Some(after) = rest.strip_prefix('[') {
+                let close = after.find(']').ok_or("Missing ].")?;
+                let key = &after[..close];
+                rest = &after[close + 1..];
+                match info["encoding"].as_str().unwrap_or("inplace") {
+                    "mapping" => {
+                        let key_type = self.label_of(info["key"].as_str().unwrap_or(""));
+                        let mut data = encode_key(&key_type, key)?;
+                        data.extend_from_slice(&word(slot));
+                        slot = U256::from_big_endian(&keccak256(data));
+                        offset = 0;
+                        type_id = info["value"].as_str().unwrap_or("").to_string();
+                    }
+                    encoding @ ("dynamic_array" | "inplace") if info["base"].is_string() => {
+                        let index: u64 = key.trim().parse().map_err(|_| format!("Index {key} is not a whole number."))?;
+                        let base = if encoding == "dynamic_array" { U256::from_big_endian(&keccak256(word(slot))) } else { slot };
+                        let element = info["base"].as_str().unwrap_or("").to_string();
+                        let size = self.bytes(&element).max(1);
+                        if size >= 32 {
+                            slot = base + U256::from(index) * U256::from(size.div_ceil(32));
+                            offset = 0;
+                        } else {
+                            let per_slot = 32 / size;
+                            slot = base + U256::from(index / per_slot);
+                            offset = (index % per_slot) * size;
+                        }
+                        type_id = element;
+                    }
+                    _ => return Err(format!("{} cannot be indexed.", self.label_of(&type_id))),
+                }
+            } else if let Some(after) = rest.strip_prefix('.') {
+                let end = after.find(['[', '.']).unwrap_or(after.len());
+                let member_name = &after[..end];
+                rest = &after[end..];
+                let member = info["members"]
+                    .as_array()
+                    .and_then(|members| members.iter().find(|member| member["label"] == member_name))
+                    .ok_or_else(|| format!("{} has no member {member_name}.", self.label_of(&type_id)))?;
+                slot += U256::from_dec_str(member["slot"].as_str().unwrap_or("0")).unwrap_or_default();
+                offset = member["offset"].as_u64().unwrap_or(0);
+                type_id = member["type"].as_str().unwrap_or("").to_string();
+            } else {
+                return Err(format!("Unexpected `{rest}` in the path."));
+            }
+        }
+        Ok((slot, offset, type_id))
+    }
+
+    /// Mapping-entry preimages for keys that were not hashed in the trace:
+    /// each candidate key under every top-level mapping, and one level of
+    /// nested mappings (allowances). Merged with the trace's own preimages,
+    /// `name_slot` then names those entries too.
+    pub fn guessed_preimages(&self, keys: &[[u8; 32]]) -> std::collections::HashMap<U256, Vec<u8>> {
+        let mut out = std::collections::HashMap::new();
+        for entry in &self.entries {
+            let info = self.type_info(&entry.type_id);
+            if info["encoding"] != "mapping" {
+                continue;
+            }
+            let nested = self.type_info(info["value"].as_str().unwrap_or(""))["encoding"] == "mapping";
+            for key in keys {
+                let mut data = key.to_vec();
+                data.extend_from_slice(&word(entry.slot));
+                let inner = U256::from_big_endian(&keccak256(&data));
+                out.insert(inner, data);
+                if nested {
+                    for second in keys {
+                        let mut data = second.to_vec();
+                        data.extend_from_slice(&word(inner));
+                        out.insert(U256::from_big_endian(&keccak256(&data)), data);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 /// A mapping key as written in source: addresses checksummed, integers decimal.
 fn key_text(key_type: &str, word: &[u8]) -> String {
     let value = U256::from_big_endian(word);
@@ -461,6 +591,89 @@ mod tests {
         assert_eq!(format!("{slot:#x}"), "0x723077b8a1b173adc35e5f0e7e3662fd1208212cb629f9c128551ea7168da722");
         assert_eq!(value_type, "uint256");
         assert!(bank().mapping_slot("owner", "1").is_err());
+    }
+
+    fn vault() -> Layout {
+        Layout::from_json(&json!({
+            "storage": [
+                {"label":"owner","slot":"0","offset":0,"type":"t_address"},
+                {"label":"paused","slot":"0","offset":20,"type":"t_bool"},
+                {"label":"allowance","slot":"1","offset":0,"type":"t_mapping(t_address,t_mapping(t_address,t_uint256))"},
+                {"label":"total","slot":"2","offset":0,"type":"t_struct(Total)"},
+                {"label":"small","slot":"4","offset":0,"type":"t_array(t_uint64)dyn_storage"}
+            ],
+            "types": {
+                "t_address":{"encoding":"inplace","label":"address","numberOfBytes":"20"},
+                "t_bool":{"encoding":"inplace","label":"bool","numberOfBytes":"1"},
+                "t_uint64":{"encoding":"inplace","label":"uint64","numberOfBytes":"8"},
+                "t_uint128":{"encoding":"inplace","label":"uint128","numberOfBytes":"16"},
+                "t_uint256":{"encoding":"inplace","label":"uint256","numberOfBytes":"32"},
+                "t_mapping(t_address,t_uint256)":{"encoding":"mapping","key":"t_address","label":"mapping(address => uint256)","numberOfBytes":"32","value":"t_uint256"},
+                "t_mapping(t_address,t_mapping(t_address,t_uint256))":{"encoding":"mapping","key":"t_address","label":"mapping(address => mapping(address => uint256))","numberOfBytes":"32","value":"t_mapping(t_address,t_uint256)"},
+                "t_struct(Total)":{"encoding":"inplace","label":"struct Vault.Total","numberOfBytes":"64","members":[
+                    {"label":"amount","slot":"0","offset":0,"type":"t_uint128"},
+                    {"label":"shares","slot":"0","offset":16,"type":"t_uint128"},
+                    {"label":"updated","slot":"1","offset":0,"type":"t_uint256"}
+                ]},
+                "t_array(t_uint64)dyn_storage":{"base":"t_uint64","encoding":"dynamic_array","label":"uint64[]","numberOfBytes":"32"}
+            }
+        })).unwrap()
+    }
+
+    #[test]
+    fn paths_resolve_to_slots_like_solidity() {
+        let layout = vault();
+        let a = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+        let b = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+        // cast index address b (cast index address a 1)
+        let inner = U256::from_big_endian(&keccak256([encode_key("address", a).unwrap(), word(U256::one()).to_vec()].concat()));
+        let outer = U256::from_big_endian(&keccak256([encode_key("address", b).unwrap(), word(inner).to_vec()].concat()));
+        assert_eq!(layout.resolve(&format!("allowance[{a}][{b}]")).unwrap(), (outer, 0, "t_uint256".into()));
+        assert_eq!(layout.resolve("total.shares").unwrap(), (U256::from(2), 16, "t_uint128".into()));
+        assert_eq!(layout.resolve("total.updated").unwrap().0, U256::from(3));
+        let base = U256::from_big_endian(&keccak256(word(U256::from(4))));
+        assert_eq!(layout.resolve("small[5]").unwrap(), (base + 1, 8, "t_uint64".into()));
+        assert!(layout.resolve("nothing").unwrap_err().contains("No state variable"));
+        assert!(layout.resolve("total.nope").unwrap_err().contains("no member nope"));
+        assert!(layout.resolve("owner[1]").unwrap_err().contains("cannot be indexed"));
+
+        let mut slot0 = [0u8; 32];
+        slot0[11] = 1;
+        slot0[12..].copy_from_slice(&ethers::utils::hex::decode(&a[2..]).unwrap());
+        let mut slot2 = [0u8; 32];
+        slot2[15] = 3; // shares = 3 (upper 16 bytes)
+        slot2[31] = 9; // amount = 9
+        let read = move |slot: U256| -> Option<H256> {
+            if slot == outer {
+                return Some(H256::from(word(U256::from(500))));
+            }
+            match slot.low_u64() {
+                _ if slot > U256::from(u64::MAX) => None,
+                0 => Some(H256::from(slot0)),
+                2 => Some(H256::from(slot2)),
+                3 => Some(H256::from(word(U256::from(77)))),
+                _ => None,
+            }
+        };
+        assert_eq!(layout.show("paused", &read).unwrap(), "paused (bool) = true  (slot 0x0, offset 20)");
+        assert!(layout.show(&format!("allowance[{a}][{b}]"), &read).unwrap().contains("= 500"));
+        let total = layout.show("total", &read).unwrap();
+        assert!(total.contains("amount (uint128) = 9") && total.contains("shares (uint128) = 3") && total.contains("updated (uint256) = 77"), "{total}");
+        assert!(layout.show("allowance", &read).unwrap().contains("add a key"));
+        assert!(layout.show("small", &read).unwrap().contains("not read"));
+    }
+
+    #[test]
+    fn candidate_keys_name_entries_the_trace_never_hashed() {
+        let layout = vault();
+        let mut a = [0u8; 32];
+        a[12..].copy_from_slice(&ethers::utils::hex::decode("f39fd6e51aad88f6f4ce6ab8827279cfffb92266").unwrap());
+        let mut b = [0u8; 32];
+        b[12..].copy_from_slice(&ethers::utils::hex::decode("70997970c51812dc3a010c7d01b50e0d17dc79c8").unwrap());
+        let (slot, ..) = layout.resolve("allowance[0x70997970C51812dc3A010C7d01b50e0d17dc79C8][0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266]").unwrap();
+        assert!(layout.name_slot(slot, &Default::default()).is_none());
+        let guessed = layout.guessed_preimages(&[a, b]);
+        assert_eq!(layout.name_slot(slot, &guessed).unwrap()[0].path, "allowance[0x70997970C51812dc3A010C7d01b50e0d17dc79C8][0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266]");
     }
 
     #[test]
