@@ -8,11 +8,14 @@ use std::sync::{Arc, Mutex};
 
 type State = Arc<Mutex<DesktopState>>;
 
-/// Entries shown under the current filter, newest first.
+/// Entries shown under the current filter, newest first. Filter 0 is this
+/// network (untagged entries count as unknown, not foreign); 3 is everything.
 fn visible(state: &DesktopState, filter: i32) -> Vec<Entry> {
+    let current = state.network_identity.as_ref().map(|identity| identity.key());
     history::load(&state.workspace)
         .into_iter()
         .filter(|entry| match filter {
+            0 => entry.network.as_deref().map(|network| Some(network) == current.as_deref()).unwrap_or(true),
             1 => entry.kind == "send",
             2 => entry.status != "ok",
             _ => true,
@@ -28,12 +31,15 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
         .map(|entry| {
             let target = labels.get(&entry.address.to_ascii_lowercase()).cloned().unwrap_or_else(|| short(&entry.address));
             let value = if entry.value.is_empty() || entry.value == "0" { String::new() } else { format!("  value {} wei", entry.value) };
+            let (usable, note) = entry_network_note(state, entry);
             HistoryRow {
                 title: format!("{} {}.{}", if entry.kind == "send" { "SEND" } else { "CALL" }, entry.contract, entry.function).into(),
                 detail: format!("{}  {target}  args {}{value}  from {}", history::when(entry.time), if entry.arguments.is_empty() { "[]" } else { entry.arguments.as_str() }, labels.get(&entry.from.to_ascii_lowercase()).cloned().unwrap_or_else(|| short(&entry.from))).into(),
                 status: entry.status.clone().into(),
                 summary: entry.summary.clone().into(),
                 can_debug: !entry.tx.is_empty() || !entry.data.is_empty(),
+                usable,
+                note: note.into(),
             }
         })
         .collect();
@@ -42,6 +48,24 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
     }
     data.set_rows(super::model(rows));
     data.set_file(history::path(&state.workspace).display().to_string().trim_start_matches(r"\\?\").into());
+}
+
+/// Whether the entry may repeat, debug or become a macro step on the network
+/// that runs now, with the reason when it may not. Untagged entries predate
+/// profiles and are treated as unknown, not foreign.
+fn entry_network_note(state: &DesktopState, entry: &Entry) -> (bool, String) {
+    let Some(network) = &entry.network else {
+        return (true, String::new());
+    };
+    let Some(identity) = state.network_identity.as_ref() else {
+        return (true, String::new());
+    };
+    if network == &identity.key() {
+        return (true, String::new());
+    }
+    let recorded = super::network::NetworkTag::from_key(network).map(|tag| tag.describe()).unwrap_or_else(|| network.clone());
+    let current = identity.tag().describe();
+    (false, format!("recorded on {recorded}; the current network is {current}. Repeat and Debug would hit another chain."))
 }
 
 fn short(address: &str) -> String {
@@ -53,7 +77,7 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     let held = state.clone();
     ui.global::<HistoryLogic>().on_set_filter(move |filter| {
         if let Some(ui) = weak.upgrade() {
-            ui.global::<HistoryData>().set_filter(filter.clamp(0, 2));
+            ui.global::<HistoryData>().set_filter(filter.clamp(0, 3));
             ui.global::<HistoryData>().set_selected(-1);
         }
         super::paint(&weak, &held);
@@ -132,8 +156,14 @@ fn with_entry<T>(weak: &Weak<MainWindow>, held: &State, index: i32, action: impl
         return Err("Wait for the current operation to finish.".into());
     }
     let entries = visible(&state, filter);
-    let entry = usize::try_from(index).ok().and_then(|index| entries.get(index)).ok_or("That history entry is gone. Refresh the list.")?;
-    action(&mut state, entry)
+    let entry = usize::try_from(index).ok().and_then(|index| entries.get(index)).ok_or("That history entry is gone. Refresh the list.")?.clone();
+    // The row buttons are disabled for another network's entries; this guard
+    // backs them up for callers that arrive through the control API.
+    let (usable, note) = entry_network_note(&state, &entry);
+    if !usable {
+        return Err(format!("That entry was {note}"));
+    }
+    action(&mut state, &entry)
 }
 
 fn report(weak: &Weak<MainWindow>, held: &State, message: Result<String, String>) {

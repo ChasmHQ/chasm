@@ -139,6 +139,9 @@ pub struct Session {
     pub breakpoints: Vec<usize>,
     /// address -> program index, for addresses whose runtime code matched.
     pub mapped: HashMap<String, usize>,
+    /// address -> runtime code recorded when the trace was taken, for
+    /// checks that need to compare the code a frame ran.
+    pub code: HashMap<String, Vec<u8>>,
     pub programs: Vec<Program>,
     /// Per program: pc -> instruction index, and instruction index -> source range.
     pc_index: Vec<HashMap<u64, usize>>,
@@ -157,6 +160,9 @@ pub struct Session {
     pub balances: Vec<(String, ethers::types::U256, ethers::types::U256)>,
     /// Calldata of the outermost call, for decoding arguments.
     pub calldata: Vec<u8>,
+    /// The network the trace was recorded on, when known. Frame decoding
+    /// trusts a bound tab only on the network it was made for.
+    pub network: Option<super::network::NetworkTag>,
     /// Per program: byte offset where each source line starts, so a step's
     /// line is a binary search instead of a scan.
     line_starts: Vec<Vec<usize>>,
@@ -503,6 +509,7 @@ pub fn from_trace(title: String, target: &str, trace: &Value, programs: Vec<Prog
         session.ranges.push(parse_source_map(&program.source_map, program.source_id));
     }
     for (address, code) in code_at {
+        session.code.insert(address.to_ascii_lowercase(), code.clone());
         if let Some(index) = programs.iter().position(|program| program_matches(program, code)) {
             session.mapped.insert(address.to_ascii_lowercase(), index);
         }
@@ -982,7 +989,6 @@ fn without_metadata(code: &[u8]) -> usize {
 }
 
 /// Runtime code equality ignoring the CBOR metadata tail solc appends.
-#[cfg(test)]
 pub fn same_code(compiled: &[u8], deployed: &[u8]) -> bool {
     same_code_except(compiled, deployed, &[])
 }

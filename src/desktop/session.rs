@@ -474,14 +474,26 @@ impl DesktopState {
     }
 
     pub fn replace_compiled_contracts(&mut self, mut contracts: Vec<ContractItem>) {
-        // Verified imports stay listed across recompiles, read from their cache.
-        for imported in super::contract_import::reload(&self.workspace) {
-            if !contracts.iter().any(|item| item.name == imported.contract.name) {
-                if let Some(layout) = imported.layout {
-                    self.storage_layouts.insert(imported.contract.name.clone(), layout);
-                }
-                contracts.push(imported.contract);
+        // Verified imports stay listed across recompiles, read from their
+        // cache — only the ones for the chain this node forks, if known.
+        let mut names: HashSet<String> = contracts.iter().map(|item| item.name.clone()).collect();
+        for imported in super::contract_import::reload(&self.workspace, self.fork_chain_id) {
+            if contracts.iter().any(|item| item.name == imported.contract.name) {
+                continue;
             }
+            // Two imports can share the `Name@abcd` shape; with the chain in
+            // the name they stay distinguishable in the Contracts list.
+            let name = match names.contains(&imported.contract.name) {
+                true => format!("{}@{}", imported.contract.name, imported.import.chain),
+                false => imported.contract.name.clone(),
+            };
+            if let Some(layout) = imported.layout {
+                self.storage_layouts.insert(name.clone(), layout);
+            }
+            names.insert(name.clone());
+            let mut item = imported.contract;
+            item.name = name;
+            contracts.push(item);
         }
         let mut cleared = 0;
         for doc in self.documents.iter_mut().filter(|doc| doc.kind == 0) {
@@ -1283,6 +1295,17 @@ impl DesktopState {
         self.wallet_key.as_deref().is_some_and(|key| super::contract_service::impersonated(key).is_some())
     }
 
+    /// Record a deployment restored from a saved profile; it belongs to the
+    /// network that runs now. False when it is already recorded.
+    pub fn restore_deployment(&mut self, name: String, address: String) -> bool {
+        if self.deployments.iter().any(|item| item.name == name && item.address.eq_ignore_ascii_case(&address)) {
+            return false;
+        }
+        self.deployment_epochs.insert((name.clone(), address.to_lowercase()), self.network_epoch);
+        self.deployments.push(Deployment { name, address });
+        true
+    }
+
     /// Deployments of the current network context, as timeline keys.
     pub fn current_deployment_keys(&self) -> HashSet<(String, String)> {
         self.deployments
@@ -1290,6 +1313,40 @@ impl DesktopState {
             .filter(|deployment| self.deployment_epoch(deployment) == self.network_epoch)
             .map(deployment_key)
             .collect()
+    }
+
+    /// Deployments of the network that runs now: (contract name, address),
+    /// as the per-profile saved state records them.
+    pub fn current_network_deployments(&self) -> Vec<(String, String)> {
+        self.deployments
+            .iter()
+            .filter(|deployment| self.deployment_epoch(deployment) == self.network_epoch)
+            .map(|deployment| (deployment.name.clone(), deployment.address.clone()))
+            .collect()
+    }
+
+    /// Contract tabs bound to the network that runs now:
+    /// (contract name, address).
+    pub fn current_network_tabs(&self) -> Vec<(String, String)> {
+        self.documents
+            .iter()
+            .filter_map(|doc| {
+                let target = doc.contract_view.target.as_ref().filter(|target| target.network_epoch == self.network_epoch)?;
+                Some((target.contract.clone(), target.address.clone()))
+            })
+            .collect()
+    }
+
+    /// The signer choice only: a dev key index or an impersonated address. A
+    /// keystore unlock is never saved; it must be unlocked again.
+    pub fn saved_signer(&self) -> Option<super::network::SignerChoice> {
+        let key = self.wallet_key.as_deref()?;
+        if let Some(address) = super::contract_service::impersonated(key) {
+            return Some(super::network::SignerChoice::Impersonate { address: format!("{address:#x}") });
+        }
+        (0..=2u8)
+            .find(|index| anvil_dev_account(*index as i32).is_some_and(|(_, dev_key)| dev_key == key))
+            .map(|index| super::network::SignerChoice::DevAccount { index })
     }
 
     pub fn push_timeline(&mut self, id: String, block: u64, label: String, deployments: HashSet<(String, String)>) {

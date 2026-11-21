@@ -22,6 +22,7 @@ fn definition(steps: Vec<MacroStep>) -> MacroDefinition {
         revert_on_failure: false,
         rollback_probes: Vec::new(),
         bundle: false,
+        network: None,
         steps,
         legacy_notes: Vec::new(),
     }

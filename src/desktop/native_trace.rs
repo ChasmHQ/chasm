@@ -146,17 +146,26 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                 if saved.format != TRACE_FORMAT {
                     return Err(format!("{} uses an unknown trace format.", path.display()));
                 }
+                let saved_network = saved.network.clone();
+                let note = match &saved.network {
+                    Some(network) if network.is_foreign(state.network_identity.as_ref()) => {
+                        format!("Recorded on {}; read offline. ", network.describe())
+                    }
+                    _ => String::new(),
+                };
                 let mut known = programs(&state);
-                // Verified source fetched when it was recorded, from the cache.
-                if let Some(chain) = state.fork_chain_id {
+                // Verified source is looked up on the chain it was recorded
+                // on, from the cache — not on the network that runs now.
+                if let Some(chain) = saved.network.as_ref().map(|network| network.chain).flatten().or(state.fork_chain_id) {
                     let code = saved.code.iter().filter_map(|(address, code)| Some((address.clone(), ethers::utils::hex::decode(code.trim_start_matches("0x")).ok()?))).collect();
                     known.extend(load_verified(&state.workspace, chain, &code));
                 }
-                Ok((saved.session(known)?, path))
+                Ok((saved.session(known)?, path, note, saved_network))
             });
             match result {
-                Ok((mut session, path)) => {
-                    state.trace_status = format!("Opened {}", shown_path(&path));
+                Ok((mut session, path, note, recorded_network)) => {
+                    state.trace_status = format!("{note}Opened {}", shown_path(&path));
+                    session.network = recorded_network;
                     session.abis = frame_abis(&state, &session);
                     if let Some(cause) = open_at_cause(&state, &mut session) {
                         state.trace_status = format!("{cause} {}", state.trace_status);
@@ -228,13 +237,24 @@ fn compare_saved(state: &DesktopState, name: &str) -> String {
         }
         return format!("compare <file>, one of:\n{}", saved.iter().take(20).map(|(file, label, _)| format!("  {file}  {label}")).collect::<Vec<_>>().join("\n"));
     }
-    let loaded = saved_path(&state.workspace, name).and_then(|path| {
-        let bytes = std::fs::read(&path).map_err(|_| format!("No saved trace {name}."))?;
-        let saved: SavedTrace = serde_json::from_slice(&bytes).map_err(|_| format!("{name} is not a Chasm trace."))?;
-        saved.session(programs(state))
-    });
+    // The name may be given without its network prefix: match by the file
+    // that ends with it, so a bare transaction hash keeps working.
+    let path = match saved_path(&state.workspace, name) {
+        Ok(path) if path.is_file() => path,
+        _ => match saved_traces(&state.workspace).into_iter().find(|(file, _, _)| file.ends_with(name)) {
+            Some((file, _, _)) => match saved_path(&state.workspace, &file) {
+                Ok(path) => path,
+                Err(error) => return error,
+            },
+            None => return format!("No saved trace {name}."),
+        },
+    };
+    let loaded = std::fs::read(&path)
+        .map_err(|_| format!("No saved trace {name}."))
+        .and_then(|bytes| serde_json::from_slice::<SavedTrace>(&bytes).map_err(|_| format!("{name} is not a Chasm trace.")))
+        .and_then(|saved| saved.session(programs(state)));
     match loaded {
-        Ok(other) => super::trace_compare::compare(session, &other, name.trim_end_matches(".json")),
+        Ok(other) => super::trace_compare::compare(session, &other, path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default().trim_end_matches(".json")),
         Err(error) => error,
     }
 }
@@ -263,13 +283,28 @@ fn known_abis(state: &DesktopState, session: &Session) -> Vec<(String, ethers::a
 }
 
 /// ABIs for frame decoding: contract tabs bound to an address (deployed or
-/// attached), then every workspace contract by name.
+/// attached), then every workspace contract by name. A trace recorded on
+/// another network only trusts a bound tab when the code the frame ran
+/// matches the contract's own runtime — the same address elsewhere runs
+/// other code. A trace from this network (or an old untagged one) trusts
+/// the tab, including an explicit `contracts.attach`.
 fn frame_abis(state: &DesktopState, session: &Session) -> super::call_tree::Abis {
     let mut abis = super::call_tree::Abis { named: known_abis(state, session), ..Default::default() };
+    let foreign = session.network.as_ref().is_some_and(|tag| tag.is_foreign(state.network_identity.as_ref()));
     for doc in &state.documents {
         if let Some(target) = &doc.contract_view.target {
             if let Some(contract) = state.contracts.iter().find(|contract| contract.name == target.contract) {
-                abis.by_address.insert(target.address.to_ascii_lowercase(), (contract.name.clone(), contract.abi.clone()));
+                let trusted = if foreign {
+                    state.runtimes.get(&target.contract).and_then(|runtime| {
+                        let recorded = session.code.get(&target.address.to_ascii_lowercase())?;
+                        Some(trace_debug::same_code(&runtime.code, recorded))
+                    }).unwrap_or(false)
+                } else {
+                    true
+                };
+                if trusted {
+                    abis.by_address.insert(target.address.to_ascii_lowercase(), (contract.name.clone(), contract.abi.clone()));
+                }
             }
         }
     }
@@ -427,6 +462,7 @@ pub fn load_scenario(weak: Weak<MainWindow>, held: State, hashes: Vec<String>) {
             state.trace_busy = false;
             match result {
                 Ok(mut session) => {
+                    session.network = state.network_identity.as_ref().map(|identity| identity.tag());
                     session.abis = frame_abis(&state, &session);
                     state.trace_status = format!("{} transactions in one session; txs lists them, tx <n> jumps to one. Not saved.", session.parts.len());
                     if let Some(cause) = open_at_cause(&state, &mut session) {
@@ -492,7 +528,10 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
     let Some((target, rpc, programs, epoch, network_epoch, fork_url, chain)) = prepared else { return };
     let workspace = held.lock().unwrap().workspace.clone();
     runtime.spawn(async move {
-        let result = record(&rpc, target, programs, &fork_url, chain.map(|chain| (workspace.as_path(), chain))).await.map(|(session, saved, hash, note)| {
+        let result = record(&rpc, target, programs, &fork_url, chain.map(|chain| (workspace.as_path(), chain))).await.map(|(session, mut saved, hash, note)| {
+            // The trace remembers the network it was recorded on, so a later
+            // one never overwrites it and its own chain answers for source.
+            saved.network = Some(held.lock().unwrap().network_identity.as_ref().map(|identity| identity.tag()).unwrap_or(super::network::NetworkTag { profile: String::new(), chain: None, fork_block: None }));
             let path = save_trace(&workspace, &saved, hash.as_deref());
             (session, path, note)
         });
@@ -504,6 +543,7 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
             state.trace_busy = false;
             match result {
                 Ok((mut session, path, note)) => {
+                    session.network = state.network_identity.as_ref().map(|identity| identity.tag());
                     state.trace_status = match path {
                         Ok(path) => format!("Saved to {}", shown_path(&path)),
                         Err(error) => format!("Not saved: {error}"),
@@ -546,6 +586,10 @@ pub struct SavedTrace {
     /// after) the execution, read when it was recorded.
     #[serde(default)]
     pub prestate: Option<trace_debug::Prestate>,
+    /// The network the trace was recorded on. Untagged traces predate
+    /// network profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<super::network::NetworkTag>,
 }
 
 pub const TRACE_FORMAT: &str = "chasm-trace/1";
@@ -576,15 +620,18 @@ pub fn traces_dir(workspace: &std::path::Path) -> std::path::PathBuf {
     workspace.join(".chasm").join("traces")
 }
 
-/// File name for a recording: the transaction hash, or a timestamped call.
+/// File name for a recording: a network prefix (so two networks never
+/// overwrite each other, and local hashes never collide across profiles),
+/// then the transaction hash, or a timestamped call.
 fn trace_file_name(saved: &SavedTrace, hash: Option<&str>) -> String {
+    let prefix = saved.network.as_ref().map(|tag| format!("{}-", tag.slug())).unwrap_or_default();
     match hash {
-        Some(hash) => format!("{hash}.json"),
+        Some(hash) => format!("{prefix}{hash}.json"),
         None => {
             let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_secs()).unwrap_or(0);
             let label: String = saved.title.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
             let label = label.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-");
-            format!("{stamp}-{}.json", &label[..label.len().min(48)])
+            format!("{prefix}{stamp}-{}.json", &label[..label.len().min(48)])
         }
     }
 }
@@ -615,11 +662,21 @@ pub fn saved_traces(workspace: &std::path::Path) -> Vec<(String, String, String)
         .take(100)
         .map(|(modified, name, size)| {
             let stem = name.trim_end_matches(".json");
-            // Transaction files are named by hash; calls by time and title.
-            let label = if stem.len() == 66 && stem.starts_with("0x") {
-                format!("Transaction {}…{}", &stem[..10], &stem[stem.len() - 6..])
+            // A transaction file ends with its 66-char hash, whatever network
+            // prefix precedes it. A call file is [<net>-]<stamp>-<label>.
+            let label = if stem.len() >= 66 && stem[stem.len() - 66..].starts_with("0x") && stem[stem.len() - 66..][2..].bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                let hash = &stem[stem.len() - 66..];
+                format!("Transaction {}…{}", &hash[..10], &hash[hash.len() - 6..])
             } else {
-                let title = stem.split_once('-').map(|(_, rest)| rest).unwrap_or(stem).replace('-', " ");
+                let rest = match stem.split_once('-') {
+                    Some((head, rest)) if !head.chars().all(|c| c.is_ascii_digit()) => rest,
+                    _ => stem,
+                };
+                let title = match rest.split_once('-') {
+                    Some((stamp, title)) if stamp.chars().all(|c| c.is_ascii_digit()) => title,
+                    _ => rest,
+                }
+                .replace('-', " ");
                 let mut chars = title.chars();
                 chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
             };
@@ -786,6 +843,7 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
         code: code_at.iter().map(|(address, code)| (address.clone(), format!("0x{}", ethers::utils::hex::encode(code)))).collect(),
         input,
         prestate: None,
+        network: None,
     };
     // State before the execution: the parent block of a mined transaction,
     // the replay node's own block, or the block a call ran on.
@@ -1247,6 +1305,7 @@ mod tests {
             code: HashMap::from([("0x00000000000000000000000000000000000000aa".to_string(), "0x00".to_string())]),
             input: String::new(),
             prestate: None,
+            network: None,
         };
         let hash = format!("0x{}", "ab".repeat(32));
         let path = save_trace(workspace.path(), &saved, Some(&hash)).unwrap();
@@ -1274,6 +1333,30 @@ mod tests {
         assert_eq!(programs.len(), 1);
         // Offset 9 is the start of line two in the LF text solc compiled.
         assert_eq!(&programs[0].source[9..17], "line two");
+    }
+
+    /// A trace records its network, the file name carries it, and the list
+    /// labels stay readable for prefixed names.
+    #[test]
+    fn traces_carry_their_network_in_name_and_file() {
+        let mainnet = super::super::network::NetworkTag { profile: "mainnet".into(), chain: Some(1), fork_block: Some(21_000_000) };
+        let mut saved = SavedTrace { format: TRACE_FORMAT.into(), title: "Transaction 0xabc".into(), target: "0x00000000000000000000000000000000000000aa".into(), block: "latest".into(), trace: json!({"failed":false,"gas":21000,"returnValue":"","structLogs":[]}), code: HashMap::new(), input: String::new(), prestate: None, network: Some(mainnet.clone()) };
+        let hash = format!("0x{}", "ab".repeat(32));
+        assert_eq!(trace_file_name(&saved, Some(&hash)), format!("mainnet-21000000-{hash}.json"));
+        let call_name = trace_file_name(&saved, None);
+        assert!(call_name.starts_with("mainnet-21000000-"), "{call_name}");
+        // No network: the old unprefixed names.
+        saved.network = None;
+        assert_eq!(trace_file_name(&saved, Some(&hash)), format!("{hash}.json"));
+        // The saved list strips the prefix and recognizes the hash.
+        let workspace = tempfile::tempdir().unwrap();
+        let dir = traces_dir(workspace.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("mainnet-21000000-{hash}.json")), b"{}").unwrap();
+        let listed = saved_traces(workspace.path());
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].0.starts_with("mainnet-21000000-"), "the file name keeps the network");
+        assert!(listed[0].1.starts_with("Transaction 0xab"), "{}", listed[0].1);
     }
 
     /// A reopened project builds a new runtime; its `wire` must replace the

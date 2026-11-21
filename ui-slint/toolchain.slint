@@ -24,6 +24,9 @@ export global ToolchainData {
     in property <[NetworkProfileRow]> profiles;
     in property <string> fork-saved;
     in property <string> fork-running;
+    // How Switch applies the target: resume its saved state, or discard it
+    // first (always confirmed locally).
+    in-out property <bool> switch-fresh: false;
     in-out property <string> selected-profile;
     in-out property <string> profile-name;
     // 0 = chain id Local (31337), 1 = the forked chain's own id.
@@ -107,6 +110,14 @@ export component ToolchainWorkspace inherits ScrollView {
         }
         SelectableText { text: "Network"; font-weight: 600; font-size: 0.9375rem; }
         SelectableText { text: "The project node is \{ToolchainData.fork-running}. Fork a live chain to call and debug real contracts locally: the node copies state on demand from the RPC and, in chain id Local, keeps id 31337 so nothing is ever valid on the real network."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 0.25rem;
+            Text { text: "Switch"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+            DockTab { label: "Resume (keeps the target's saved state)"; selected: !ToolchainData.switch-fresh; horizontal-stretch: 0; clicked => { ToolchainData.switch-fresh = false; } }
+            DockTab { label: "Clean fork (discards it, asks first)"; selected: ToolchainData.switch-fresh; horizontal-stretch: 0; clicked => { ToolchainData.switch-fresh = true; } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        SelectableText { text: "Each network keeps its own state in .chasm/networks/<id>: the node's dump, deployments, bound tabs and the signer choice (never keys; a keystore must be unlocked again). Switching away saves the network that runs now; Switch restores the target's, and a rejected target leaves the current network running."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
         for row in ToolchainData.profiles: Rectangle {
             height: network-row.preferred-height + 0.75rem;
             background: row.active ? Theme.panel : transparent;
@@ -125,7 +136,7 @@ export component ToolchainWorkspace inherits ScrollView {
                 Small { text: "Edit"; enabled: !ToolchainData.busy && !row.builtin; clicked => { ToolchainLogic.profile-select(row.id); } }
                 Small { text: "Duplicate"; enabled: !ToolchainData.busy && !row.builtin; clicked => { ToolchainLogic.profile-duplicate(row.id); } }
                 Small { text: "Delete"; enabled: !ToolchainData.busy && !row.builtin; clicked => { ToolchainLogic.profile-remove(row.id); } }
-                Small { text: "Switch"; enabled: !ToolchainData.busy && !row.active; clicked => { ToolchainLogic.profile-switch(row.id, false); } }
+                Small { text: "Switch"; enabled: !ToolchainData.busy && !row.active; clicked => { ToolchainLogic.profile-switch(row.id, ToolchainData.switch-fresh); } }
             }
         }
         HorizontalLayout {

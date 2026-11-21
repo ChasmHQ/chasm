@@ -12,6 +12,7 @@ fn definition(name: &str) -> MacroDefinition {
         revert_on_failure: false,
         rollback_probes: Vec::new(),
         bundle: false,
+        network: None,
         steps: Vec::new(),
         legacy_notes: Vec::new(),
     }

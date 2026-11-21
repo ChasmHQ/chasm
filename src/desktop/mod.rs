@@ -295,6 +295,83 @@ async fn recover_startup<T>(future: impl std::future::Future<Output = anyhow::Re
         .unwrap_or_else(|_| Err(anyhow::anyhow!("Project startup failed unexpectedly. Check dependencies and try another project.")))
 }
 
+/// Per-profile state (N3): resume what a previous session saved for this
+/// network — the node's dumped state, deployments, bound tabs and the signer
+/// choice — or pin a fresh starting point on the timeline. A saved state from
+/// another chain is rejected with a notice; the saved files are never deleted
+/// automatically.
+async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
+    let Some(identity) = state.network_identity.clone() else { return };
+    let fresh_label = if state.network.is_local() {
+        "Fresh local chain".to_string()
+    } else {
+        format!("Fork at block {}", identity.fork_block.map(|block| block.to_string()).unwrap_or_else(|| "latest".into()))
+    };
+    match network::load_profile_state(root, &state.network.profile_id, &identity) {
+        network::LoadOutcome::None => {
+            let snapshot = network::snapshot(&state.rpc).await.ok();
+            let keys = state.current_deployment_keys();
+            state.push_timeline(snapshot.unwrap_or_default(), state.block_number, fresh_label, keys);
+        }
+        network::LoadOutcome::Rejected { reason } => {
+            state.notice = reason.clone();
+            state.push_log(reason);
+            let snapshot = network::snapshot(&state.rpc).await.ok();
+            let keys = state.current_deployment_keys();
+            state.push_timeline(snapshot.unwrap_or_default(), state.block_number, fresh_label, keys);
+        }
+        network::LoadOutcome::Restored { saved, moved_blocks } => {
+            let mut notes = Vec::new();
+            if let Some(hex) = &saved.state {
+                if let Err(error) = network::load_node_state(&state.rpc, hex).await {
+                    notes.push(format!("The saved chain state could not be loaded ({error}); the chain started from a clean fork."));
+                }
+            }
+            // Deployments first, then their tabs (they need the compiled
+            // contracts, which the compile above already produced), then the
+            // signer choice.
+            let mut restored = 0;
+            for (name, address) in &saved.deployments {
+                if state.restore_deployment(name.clone(), address.clone()) {
+                    restored += 1;
+                }
+            }
+            let mut rebound = 0;
+            for (contract, address) in &saved.tabs {
+                let Some(index) = state.deployments.iter().position(|item| item.name == *contract && item.address.eq_ignore_ascii_case(address)) else { continue };
+                let Some(id) = state.deployment_id(index) else { continue };
+                if state.select_deployment_by_id(&id) {
+                    rebound += 1;
+                }
+            }
+            match &saved.signer {
+                Some(network::SignerChoice::DevAccount { index }) => state.use_anvil_key(*index as i32),
+                Some(network::SignerChoice::Impersonate { address }) => {
+                    if network::impersonate(&state.rpc, address).await.is_ok() {
+                        state.impersonate(address);
+                    } else {
+                        notes.push(format!("The saved signer ({address}) could not be impersonated on the new node; choose a signer again."));
+                    }
+                }
+                None => {}
+            }
+            let snapshot = network::snapshot(&state.rpc).await.ok();
+            let keys = state.current_deployment_keys();
+            let mut label = format!("Restored from the previous session: {restored} deployment(s), {rebound} tab(s)");
+            if moved_blocks {
+                if let Some(recorded) = saved.identity.fork_block {
+                    label.push_str(&format!(" (state recorded at fork block {recorded}; this fork is at {})", identity.fork_block.map(|block| block.to_string()).unwrap_or_else(|| "?".into())));
+                }
+            }
+            state.push_timeline(snapshot.unwrap_or_default(), state.block_number, label, keys);
+            if !notes.is_empty() {
+                state.notice = notes.join(" ");
+            }
+            state.push_log(format!("Resumed profile {} ({}).", state.network.profile_id, identity.key()));
+        }
+    }
+}
+
 /// Start the node for `network` and wait until it answers with the chain id
 /// this profile must run. Returns the source chain id (forks), the chain id
 /// the node reports, and why the source id is unknown when it is. A Source
@@ -471,6 +548,15 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
     }
     let rpc = state.rpc.clone();
     state.block_number = tokio::task::spawn_blocking(move || cast_block_number(&rpc)).await.ok().and_then(Result::ok).unwrap_or(0);
+    apply_saved_state(&mut state, &root).await;
+    // Imports verified on this chain but absent at this fork point: the node
+    // has no code at the address yet, so calling them would fail.
+    let missing = contract_import::missing_code(&root, &state.rpc, state.fork_chain_id).await;
+    if !missing.is_empty() && state.notice.is_empty() {
+        let text = format!("{} imported contract(s) have no code at this fork point; they were verified at other blocks. Imports stay listed; attach again once the chain reaches them.", missing.len());
+        state.notice = text.clone();
+        state.push_log(text);
+    }
     match establish_debugger(&state.client).await {
         Ok(csrf) => {
             state.csrf = csrf;

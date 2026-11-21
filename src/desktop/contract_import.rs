@@ -103,16 +103,46 @@ fn type_label(param: &Value) -> String {
     }
 }
 
-/// Imports reloaded from the Sourcify cache only: no network on open.
-pub fn reload(workspace: &Path) -> Vec<Imported> {
+/// Imports reloaded from the Sourcify cache only: no network on open. With
+/// `chain` given, only imports of that chain load — a fork of another chain
+/// must not show contracts that live somewhere else.
+pub fn reload(workspace: &Path, chain: Option<u64>) -> Vec<Imported> {
     saved(workspace)
         .into_iter()
+        .filter(|import| chain.is_none_or(|chain| import.chain == chain))
         .filter_map(|import| {
             let path = workspace.join(".chasm").join("sources").join(import.chain.to_string()).join(format!("{}.json", import.source));
             let answer: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
             from_answer(&import, &answer).ok()
         })
         .collect()
+}
+
+/// Addresses of the chain's imports that the node has no code for: they were
+/// verified at other blocks, and this fork (an older block, or another chain
+/// after a profile switch) cannot call them. Read from the node with bounded
+/// retries; used for one boot-time notice.
+pub async fn missing_code(workspace: &Path, rpc: &str, chain: Option<u64>) -> Vec<String> {
+    let Some(chain) = chain else { return Vec::new() };
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build() {
+        Ok(client) => client,
+        Err(_) => return Vec::new(),
+    };
+    let mut missing = Vec::new();
+    for import in saved(workspace).into_iter().filter(|import| import.chain == chain).take(32) {
+        let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":[import.address, "latest"]});
+        let code = match super::retry::send(|| client.post(rpc).json(&body)).await {
+            Ok(response) => match response.json::<Value>().await {
+                Ok(value) => value["result"].as_str().unwrap_or_default().to_string(),
+                Err(_) => String::new(),
+            },
+            Err(_) => String::new(),
+        };
+        if code == "0x" {
+            missing.push(import.address);
+        }
+    }
+    missing
 }
 
 /// Looks the address up: proxy first (on the workspace node), then Sourcify
@@ -164,13 +194,35 @@ mod tests {
     fn imports_reload_from_the_cache_without_the_network() {
         let dir = tempfile::tempdir().unwrap();
         let import = Import { chain: 1, address: "0x00000000000000000000000000000000000000aa".into(), source: "0x00000000000000000000000000000000000000aa".into(), note: String::new() };
-        save(dir.path(), &[import.clone()]).unwrap();
-        assert!(reload(dir.path()).is_empty(), "nothing cached yet");
+        let sepolia = Import { chain: 11155111, address: "0x00000000000000000000000000000000000000aa".into(), source: "0x00000000000000000000000000000000000000aa".into(), note: String::new() };
+        save(dir.path(), &[import.clone(), sepolia.clone()]).unwrap();
+        assert!(reload(dir.path(), None).is_empty(), "nothing cached yet");
         let cache = dir.path().join(".chasm/sources/1");
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("0x00000000000000000000000000000000000000aa.json"), answer().to_string()).unwrap();
-        let reloaded = reload(dir.path());
+        let reloaded = reload(dir.path(), Some(1));
         assert_eq!(reloaded.len(), 1);
         assert_eq!(reloaded[0].import, import);
+        // A fork of another chain loads none of this chain's imports.
+        assert!(reload(dir.path(), Some(11155111)).is_empty());
+        // Without a known chain (an unknown fork), everything cached loads.
+        assert_eq!(reload(dir.path(), None).len(), 1);
+        // The import records its chain, so names can carry it when two
+        // chains' imports collide.
+        assert!(reloaded[0].origin.contains("chain 1"));
+    }
+
+    #[test]
+    fn imports_carry_their_chain_for_unique_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let import = Import { chain: 1, address: "0x00000000000000000000000000000000000000aa".into(), source: "0x00000000000000000000000000000000000000aa".into(), note: String::new() };
+        save(dir.path(), &[import]).unwrap();
+        let cache = dir.path().join(".chasm/sources/1");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("0x00000000000000000000000000000000000000aa.json"), answer().to_string()).unwrap();
+        assert_eq!(reload(dir.path(), Some(1))[0].import.chain, 1);
+        // missing_code only ever reads the chain it is given; none here.
+        let none = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(missing_code(dir.path(), "http://127.0.0.1:1", None));
+        assert!(none.is_empty());
     }
 }

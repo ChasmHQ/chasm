@@ -811,6 +811,7 @@ fn begin_new(controller: &Arc<Controller>) -> bool {
         revert_on_failure: false,
         rollback_probes: Vec::new(),
         bundle: false,
+            network: None,
         steps: Vec::new(),
         legacy_notes: Vec::new(),
     };
@@ -960,20 +961,34 @@ fn validate(controller: &Arc<Controller>) {
     if !unchanged {
         return;
     }
-    let (definition, result) = match parsed {
+    let (definition, result, network_warning) = match parsed {
         Ok(definition) => {
+            // Warn when the macro was first made on another network; the tag
+            // never blocks a run. A definition without one is stamped with
+            // the network it is saved on.
+            let current_key = controller.state.lock().ok().and_then(|state| state.network_identity.as_ref().map(|identity| identity.key()));
+            let mut definition = definition;
+            let network_warning = match (&definition.network, &current_key) {
+                (Some(tagged), Some(current)) if tagged != current => {
+                    Some(format!(" Note: this macro was first validated on {tagged}; the current network is {current}. Steps that read or write it may behave differently. Set \"network\": null in the JSON to re-tag it."))
+                }
+                _ => None,
+            };
+            if definition.network.is_none() {
+                definition.network = current_key.clone();
+            }
             let validation = definition.validate();
             let mut records = library.records.clone();
             if let Some(index) = library.selected_index() {
                 records[index].definition = definition.clone();
             }
             if commit_records(controller, &mut library, records) {
-                (Some(definition), validation)
+                (Some(definition), validation, network_warning)
             } else {
-                (None, Err(vec![storage_error()]))
+                (None, Err(vec![storage_error()]), None)
             }
         }
-        Err(errors) => (None, Err(errors)),
+        Err(errors) => (None, Err(errors), None),
     };
     let success = result.is_ok();
     let snapshot = ValidationSnapshot {
@@ -985,7 +1000,8 @@ fn validate(controller: &Arc<Controller>) {
     };
     if library.install_validation(snapshot) {
         if success {
-            library.set_status("Definition saved and validated. Review preflight before running.");
+            let note = network_warning.unwrap_or_default();
+            library.set_status(&format!("Definition saved and validated. Review preflight before running.{note}"));
         } else if !library.failed {
             library.set_status("Validation found issues. Review the details below.");
         }

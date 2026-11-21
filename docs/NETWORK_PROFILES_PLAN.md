@@ -122,9 +122,11 @@ N0 → N1 → N2 → N3 (spike first) → N4 → N5 → N6. Each phase ships wit
 |---|---|
 | N0 | done: replaceable trace runtime, boot refuses a broken config, retried source chain id with a Retry notice, trace completions check `network_epoch`, `trace_input` removed |
 | N1 | done: `[[networks]]` profiles with migration, `NetworkIdentity` (`key()` = `profile:chain:block`), Anvil chain id per mode, preflight + fallback switch, profile UI, `network.list/save/remove/switch` |
-| N2 | not started |
-| N3 | not started |
+| N2 | done: history entries, saved traces, imports and macro definitions record their network (`Context.network` carries it to captures too); History filters to the active network with *All networks* and locks cross-network Repeat/Debug/To macro; trace files carry a network prefix and open with the **recorded** chain's Sourcify cache; imports load for the forked chain only with unique names and a no-code warning at boot; macro validation warns (never blocks) on another network |
+| N3 | done: switching away saves `.chasm/networks/<id>/` (`state.json` Anvil dump, `deployments.json` with bound tabs, `signer.json` choice only — never keys); boot resumes when the saved identity matches the node (same chain; a moved fork block restores too, per the spike) and pins a revertable *Restored from the previous session* timeline point; Switch offers Resume / Clean fork, `fresh` stays sensitive; a rejected state starts clean and keeps its files |
 | N4 | partially plumbed: `chain_id_mode` runs Anvil with the source id and the probe expects it; signing guards and the keystore block are still N4 |
 | N5–N6 | not started |
 
 N1 notes: `network.switch` and an active-profile `network.save` return `effect: "reopen_pending"` — the event loop must not quit before the preflight decides to reopen. The fallback marker is `.chasm/network-switch.json`; boot clears it after any ready boot and rewrites `network.active` to the profile it fell back to.
+
+N3 notes: the spike (`anvil_dumpState` → restart → `anvil_loadState`) restored balances, code, storage and nonces on a local chain, on a fork at the same block, **and** on a fork one block later, so resume allows a moved `latest` fork and says where the state was recorded. Restored deployments and tabs join the current `network_epoch`.

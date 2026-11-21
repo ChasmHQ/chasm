@@ -479,6 +479,22 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     });
 }
 
+/// Dump and save the state of the profile that runs now, so switching back
+/// to it can resume. Runs on the control runtime thread; the node is local
+/// and the dump is small (only touched accounts).
+async fn save_current_profile(held: &State) -> Result<(), String> {
+    let (workspace, profile, identity, rpc, deployments, tabs, signer) = {
+        let state = held.lock().unwrap();
+        if !state.workspace_ready || !state.active {
+            return Ok(());
+        }
+        let Some(identity) = state.network_identity.clone() else { return Ok(()) };
+        (state.workspace.clone(), state.network.profile_id.clone(), identity, state.rpc.clone(), state.current_network_deployments(), state.current_network_tabs(), state.saved_signer())
+    };
+    let state_hex = super::network::dump_node_state(&rpc).await.ok();
+    super::network::save_profile_state(&workspace, &profile, &identity, state_hex.as_deref(), &deployments, &tabs, signer.as_ref())
+}
+
 /// Switch to profile `id` (or the local chain on an empty id): preflight the
 /// target RPC before anything is torn down, then make it active and reopen
 /// the project. When the RPC fails, nothing changes and the current network
@@ -514,6 +530,10 @@ pub(super) async fn preflight_and_reopen(weak: Weak<MainWindow>, held: State, id
             Ok(lines) => warnings = lines.into_iter().filter(|line| line.starts_with("no ") || line.starts_with("-- ")).collect(),
         }
     }
+    // The network being left saves its state, so switching back can resume
+    // it: the node's dump, deployments and bound tabs, and the signer choice.
+    // Keys and keystores never touch disk.
+    let save_note = save_current_profile(&held).await.err().map(|error| format!(" (this network's state could not be saved: {error})")).unwrap_or_default();
     let _ = slint::invoke_from_event_loop(move || {
         let mut state = held.lock().unwrap();
         if !state.can_change_workspace() {
@@ -533,10 +553,10 @@ pub(super) async fn preflight_and_reopen(weak: Weak<MainWindow>, held: State, id
                 state.wallet_generation = state.wallet_generation.wrapping_add(1);
                 state.workspace_busy = true;
                 state.status_left = if settings.is_local() {
-                    "Reopening with a local chain…".into()
+                    format!("Reopening with a local chain…{save_note}")
                 } else {
                     let warn = if warnings.is_empty() { String::new() } else { format!(" ({})", warnings.join("; ")) };
-                    format!("Reopening as profile {} (fork of {}){warn}…", settings.profile_id, super::fork_host(&settings.fork_url))
+                    format!("Reopening as profile {} (fork of {}){warn}{save_note}…", settings.profile_id, super::fork_host(&settings.fork_url))
                 };
                 state.active = false;
                 drop(state);

@@ -82,6 +82,11 @@ pub struct MacroDefinition {
     /// Send every leading transaction in one block; a failure reverts the run.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bundle: bool,
+    /// The network (`profile:chain:block`) the macro was first validated on;
+    /// set automatically. Validation warns — it does not block — when the
+    /// macro runs on another network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
     pub steps: Vec<MacroStep>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub legacy_notes: Vec<LegacyNote>,
@@ -996,6 +1001,7 @@ pub fn migrate_legacy_notes(
             revert_on_failure: false,
             rollback_probes: Vec::new(),
             bundle: false,
+            network: None,
             steps: Vec::new(),
             legacy_notes: vec![note],
         };

@@ -4,14 +4,14 @@ import { ListView } from "scroll.slint";
 import { ActionControl, DockTab, IconButton, SideHeader, Theme } from "theme.slint";
 import { SelectableText } from "selectable-text.slint";
 
-export struct HistoryRow { title: string, detail: string, status: string, summary: string, can-debug: bool }
+export struct HistoryRow { title: string, detail: string, status: string, summary: string, can-debug: bool, usable: bool, note: string }
 
 export global HistoryData {
     in property <[HistoryRow]> rows;
     in property <string> file;
     in property <string> status;
     in-out property <int> selected: -1;
-    // 0 all, 1 sends only, 2 failures only.
+    // 0 this network, 1 sends only, 2 failures only, 3 all networks.
     in-out property <int> filter: 0;
 }
 
@@ -43,13 +43,14 @@ export component HistoryView inherits Rectangle {
         padding: Theme.pad; spacing: 0.5rem;
         HorizontalLayout {
             spacing: 0.25rem;
-            DockTab { label: "All"; selected: HistoryData.filter == 0; horizontal-stretch: 0; clicked => { HistoryLogic.set-filter(0); } }
+            DockTab { label: "This network"; selected: HistoryData.filter == 0; horizontal-stretch: 0; clicked => { HistoryLogic.set-filter(0); } }
             DockTab { label: "Sends"; selected: HistoryData.filter == 1; horizontal-stretch: 0; clicked => { HistoryLogic.set-filter(1); } }
             DockTab { label: "Failures"; selected: HistoryData.filter == 2; horizontal-stretch: 0; clicked => { HistoryLogic.set-filter(2); } }
+            DockTab { label: "All networks"; selected: HistoryData.filter == 3; horizontal-stretch: 0; clicked => { HistoryLogic.set-filter(3); } }
             Rectangle { horizontal-stretch: 1; }
             IconButton { icon: @image-url("icons/stop.svg"); label: "Clear history"; enabled: HistoryData.rows.length > 0; clicked => { HistoryLogic.clear(); } }
         }
-        SelectableText { text: "Every Send and Simulate in this project, newest first, saved in \{HistoryData.file}. Repeat refills the request tab; To macro adds the call as a step of the selected macro."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        SelectableText { text: "Every Send and Simulate in this project, newest first, saved in \{HistoryData.file}. Repeat refills the request tab; To macro adds the call as a step of the selected macro. Entries recorded on another network stay listed but their actions are disabled."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
         if HistoryData.status != "": SelectableText { text: HistoryData.status; color: Theme.muted; font-size: 0.75rem; wrap: word-wrap; }
         if HistoryData.rows.length == 0: SelectableText { text: "No calls yet. Send or simulate a function from a contract tab."; color: Theme.faint; font-size: 0.8125rem; }
         ListView {
@@ -78,11 +79,12 @@ export component HistoryView inherits Rectangle {
                             }
                             Text { text: row.detail; color: Theme.muted; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
                             Text { text: row.summary; color: Theme.faint; font-family: "Cascadia Mono"; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
+                            if row.note != "": Text { text: row.note; color: Theme.warn; font-size: 0.6875rem; overflow: elide; min-width: 0px; }
                         }
                     }
-                    RowButton { text: "Repeat"; clicked => { HistoryLogic.repeat(index); } }
-                    RowButton { text: "Debug"; enabled: row.can-debug; clicked => { HistoryLogic.debug(index); } }
-                    RowButton { text: "To macro"; clicked => { HistoryLogic.to-macro(index); } }
+                    RowButton { text: "Repeat"; enabled: row.usable; clicked => { HistoryLogic.repeat(index); } }
+                    RowButton { text: "Debug"; enabled: row.usable && row.can-debug; clicked => { HistoryLogic.debug(index); } }
+                    RowButton { text: "To macro"; enabled: row.usable; clicked => { HistoryLogic.to-macro(index); } }
                 }
             }
         }

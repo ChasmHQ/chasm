@@ -33,6 +33,10 @@ pub struct Entry {
     /// 0x calldata, for macros.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub data: String,
+    /// The network the call ran on (profile:chain:block). Entries without
+    /// one predate network profiles; they are shown as unknown network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 pub fn path(workspace: &Path) -> PathBuf {
@@ -128,5 +132,23 @@ mod tests {
     fn summaries_keep_the_first_line_only() {
         assert_eq!(summarize("\n  Return 1: 5\nmore"), "Return 1: 5");
         assert_eq!(summarize(&"x".repeat(200)).chars().count(), 161);
+    }
+
+    #[test]
+    fn entries_carry_their_network_and_old_lines_still_load() {
+        let workspace = tempfile::tempdir().unwrap();
+        let tagged = Entry { time: 1, kind: "send".into(), function: "f()".into(), status: "ok".into(), network: Some("mainnet:1:21000000".into()), ..Default::default() };
+        append(workspace.path(), &tagged).unwrap();
+        // A line saved before network profiles: no network field at all.
+        std::fs::OpenOptions::new().append(true).open(path(workspace.path())).unwrap()
+            .write_all(b"{\"time\":2,\"kind\":\"simulate\",\"contract\":\"\",\"address\":\"\",\"function\":\"g()\",\"arguments\":\"\",\"value\":\"0\",\"from\":\"\",\"status\":\"ok\",\"summary\":\"\"}\n").unwrap();
+        let entries = load(workspace.path());
+        assert_eq!(entries.len(), 2);
+        // Newest first: the old line has no network field at all.
+        assert_eq!(entries[0].network, None, "an old line parses with an unknown network");
+        assert_eq!(entries[1].network.as_deref(), Some("mainnet:1:21000000"));
+        // The network round trips through the file.
+        let back = &entries[1];
+        assert!(serde_json::to_string(back).unwrap().contains("\"network\":\"mainnet:1:21000000\""));
     }
 }

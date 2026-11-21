@@ -9,6 +9,10 @@ pub struct Context {
     pub workspace_id: String,
     pub network_epoch: u64,
     pub view_revision: u64,
+    /// The network the context was read on (`profile:chain:block`), so a
+    /// capture or result carries its network. Optional for older clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -442,6 +446,7 @@ pub fn context(state: &DesktopState) -> Context {
         workspace_id: format!("workspace-{:016x}", state.workspace_epoch),
         network_epoch: state.network_epoch,
         view_revision: state.view_revision,
+        network: state.network_identity.as_ref().map(|identity| identity.key()),
     }
 }
 

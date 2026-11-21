@@ -770,6 +770,7 @@ fn execute(
             }
             let mut record = record;
             record.tx = tx.clone().unwrap_or_default();
+            record.network = state.network_identity.as_ref().map(|identity| identity.key());
             match &result {
                 Ok(result) => {
                     let reverted = result.raw["result"]["status"] == "0x0" || result.raw.get("error").is_some_and(|error| !error.is_null());
