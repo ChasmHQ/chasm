@@ -68,7 +68,8 @@ Chasm is a desktop workbench for Solidity development. Compile a project, deploy
 - **History.**
   - Every Send and Simulate is saved per project.
   - *Repeat* refills the request, *Debug* opens the trace, *To macro* adds it as a macro step.
-- **Fork a live chain** at the latest or a chosen block: pick Ethereum, Base, Arbitrum, Optimism, Polygon or Sepolia, or paste any EVM RPC. The status bar names the forked chain.
+- **Fork a live chain** at the latest or a chosen block: pick Ethereum, Base, Arbitrum, Optimism, Polygon or Sepolia, or paste any EVM RPC. Saved fork targets are **named network profiles** (Workspace > Network): switch between them with a preflight, and a target that never boots falls back to the network that ran before. A profile can keep its provider URL in an env var so keys stay out of `.chasm/chasm.toml`.
+  - A profile can also run with the **source chain id** instead of 31337, so `block.chainid` and EIP-712 domains behave as on the real chain. In that mode Chasm refuses to send; reading, replaying and debugging work as usual.
   - Paste a real transaction hash to replay and step through it. Verified contracts show their source, fetched from Sourcify.
   - The workspace node executes with chain ID 31337, including `block.chainid` on forks. The source chain ID identifies the upstream network; the debugger uses it for unsigned replay on a separate node.
   - In Explorer, **Open verified contract** imports an address from Sourcify on the source chain. If Chasm recognizes a proxy at the local head, it uses the implementation's ABI but calls the entered address. Source and layout depend on what Sourcify supplies. The import records ABI provenance, not proof that the ABI matched local bytecode at a particular block.

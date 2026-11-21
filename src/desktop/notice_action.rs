@@ -4,11 +4,12 @@
 /// Button label and the action id `run` understands, for a notice text.
 pub fn suggest(notice: &str) -> Option<(&'static str, &'static str)> {
     let text = notice.to_ascii_lowercase();
-    let rules: [(&[&str], &str, &str); 10] = [
+    let rules: [(&[&str], &str, &str); 11] = [
         (&["missing libraries"], "Open compiler and libraries", "toolchain"),
         (&["compiler run failed", "compile failed", "parsererror", "typeerror"], "Recompile", "recompile"),
         (&["take a snapshot first", "snapshot is unknown", "already used"], "Open timeline", "timeline"),
         (&["unlock a local keystore", "choose an anvil development account", "select a keystore"], "Use Anvil account #0", "dev_account"),
+        (&["source chain unknown"], "Retry", "retry_chain"),
         (&["the fork of", "fork rpc"], "Open network settings", "toolchain"),
         (&["select a contract document", "choose a deployment", "originating contract document"], "Open contracts", "contracts"),
         (&["deployment is missing or ambiguous", "earlier network context"], "Refresh chain", "refresh"),
@@ -32,6 +33,7 @@ mod tests {
         assert_eq!(suggest("Compiler run failed:\nError (6275)").map(|(_, action)| action), Some("recompile"));
         assert_eq!(suggest("Take a snapshot first. Revert only returns…").map(|(_, action)| action), Some("timeline"));
         assert_eq!(suggest("Unlock a local keystore or choose an Anvil development account before Send.").map(|(_, action)| action), Some("dev_account"));
+        assert_eq!(suggest("Source chain unknown: no answer (HTTP 429). Import, verified source and the chain name wait.").map(|(label, action)| (label, action)), Some(("Retry", "retry_chain")));
         assert_eq!(suggest("Removed the Bank deployment record."), None);
     }
 }

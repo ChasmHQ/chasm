@@ -20,6 +20,7 @@ The panel announces a random loopback port. The production API is `http://127.0.
 | Change step-debugger presentation (`debugger.trace.view`) | No | Yes | Yes |
 | `ui.screenshot` (PNG of the main window) | No | No | Yes |
 | Remove a deployment record | No | Local approval | Local approval |
+| `network.switch {mode: "fresh"}` (discards the profile's saved state) | No | Local approval | Local approval |
 | Open another project by remote path (`workspace.open`) | No | No | No |
 
 Never available at any tier, because no command exists for them:
@@ -121,7 +122,8 @@ Commands added for the native app (all in `app.catalog`):
 | Foundry tests | `debugger.launch {mode: 1, foundry_target, foundry_match, trusted, breakpoints, run_to_breakpoint}` then `debugger.start`; `debugger.state.output` has compile errors, launch breakpoints and how the run ended |
 | Panes | `ui.panel {pane, action: dock \| float \| hide \| maximize \| reset \| preset, zone?}`; trace panes are `trace_ops`, `trace_state`, `trace_console`; presets `contracts`, `debugging`, `investigation`, `tracing`; `app.state.layout.panes` |
 | History, timeline, cheats | `history.list`, `history.action`, `chain.timeline.revert`, `chain.cheat` |
-| Compiler, libraries, fork | `toolchain.state` (incl. `network.forkChain`, `network.sourceChainId` / `executionChainId`, `publicRpcs`), `toolchain.action {open, lock_solc, install, use, remove, network, settings, build_source, test_rpc, add_import, remove_import}` (`test_rpc` takes `fork_url` and `fork_block`, saves nothing, and reports in `toolchain.state.status`; `add_import`/`remove_import` take `folder`, a Foundry project whose `out/` artifacts the debugger maps; `toolchain.state.imports` lists them); `toolchain.state.build` shows the active source |
+| Compiler, libraries, fork | `toolchain.state` (incl. `network.profile`, `network.chainIdMode`, `network.forkChain`, `network.sourceChainId` / `executionChainId`, `network.key`, `network.profiles`, `publicRpcs`), `toolchain.action {open, lock_solc, install, use, remove, network, settings, build_source, test_rpc, add_import, remove_import}` (`test_rpc` takes `fork_url` and `fork_block`, saves nothing, and reports in `toolchain.state.status`; `network` edits the active profile's `fork_url`/`fork_block` with chain id Local and reopens the project; `add_import`/`remove_import` take `folder`, a Foundry project whose `out/` artifacts the debugger maps; `toolchain.state.imports` lists them); `toolchain.state.build` shows the active source |
+| Network profiles | `network.list` returns the active id and saved profiles with **hosts only** (never URLs, so a provider key in a URL never crosses the API); `network.save {profile}` inserts or replaces one (`{id, name?, fork_url?, fork_url_env?, fork_block?, chain_id_mode? "local"\|"source"}`; `local` is built in). Saving the active profile tests its RPC and reopens the project. `network.remove {id}` refuses `local` and the active profile. `network.switch {id, mode: resume \| fresh}` tests the target RPC first: a refused test changes nothing, and a target that never boots falls back to the previous network at boot with a banner notice. `fresh` discards the profile's saved state and is `sensitive` (always asks for local approval). Results carry `effect: "reopen_pending"` — poll `toolchain.state.network` for what actually runs |
 | Palette, notices | `ui.palette`, `ui.notice.action` |
 
 ### Reading a macro result

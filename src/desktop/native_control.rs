@@ -18,10 +18,12 @@ pub fn wire(
     let weak = ui.as_weak();
     let held = state.clone();
     let hub_bridge = hub.clone();
+    let runtime_bridge = runtime.clone();
     hub.bind(Arc::new(move |request| {
         let weak = weak.clone();
         let held = held.clone();
         let hub = hub_bridge.clone();
+        let runtime = runtime_bridge.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else { return };
             match request {
@@ -81,7 +83,7 @@ pub fn wire(
                     let mut result = hub.execute_ui(&principal, &request, &mut held.lock().unwrap());
                     if let Ok(value) = &result {
                         if value["effect"] == "native" {
-                            let outcome = perform(&ui, &held, &request.command);
+                            let outcome = perform(&ui, &held, &request.command, runtime.clone());
                             hub.amend_result(&principal, &request.request_id, outcome.clone());
                             result = Ok(outcome);
                         }
@@ -211,6 +213,7 @@ pub fn wire(
         let weak = ui.as_weak();
         let held = state.clone();
         let hub = hub.clone();
+        let runtime = runtime.clone();
         let callback = move |id: slint::SharedString| {
             let Some(ui) = weak.upgrade() else { return };
             let result = hub.resolve_local(id.as_str(), accepted, &mut held.lock().unwrap());
@@ -223,7 +226,7 @@ pub fn wire(
             sync(&ui, &hub);
             match result {
                 Ok((value, request)) if value["effect"] == "native" => {
-                    let outcome = perform(&ui, &held, &request.command);
+                    let outcome = perform(&ui, &held, &request.command, runtime.clone());
                     if let Some(client) = hub.client_of(&request.request_id) {
                         hub.amend_result(&client, &request.request_id, outcome);
                     }
@@ -438,7 +441,7 @@ pub(super) fn wire_shared(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>) {
 
 /// Run an accepted command through the same callbacks as the native buttons,
 /// so remote control and local clicks share validation, gates and jobs.
-fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) -> Value {
+fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command, runtime: tokio::runtime::Handle) -> Value {
     use super::{ContractLogic, DebugData, DebugLogic, Logic, MacroData, MacroLogic, PanelLogic};
     let owner = || held.lock().unwrap().current_document_id().unwrap_or_default();
     let contract = ui.global::<ContractLogic>();
@@ -539,6 +542,51 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command) 
                 ),
                 _ => {}
             }
+        }
+        Command::NetworkList {} => {
+            let (workspace, running) = { let state = held.lock().unwrap(); (state.workspace.clone(), state.network.profile_id.clone()) };
+            return json!({
+                "status":"completed",
+                "active": if running.is_empty() { json!("local") } else { json!(running) },
+                "profiles": super::network::list(&workspace),
+                "note":"Switch runs network.switch {id}; the target RPC is tested first and a failed switch falls back to the previous network at boot.",
+            });
+        }
+        Command::NetworkSave { profile } => {
+            let (workspace, running) = { let state = held.lock().unwrap(); (state.workspace.clone(), state.network.profile_id.clone()) };
+            return match super::toolchain::save_profile(&workspace, profile.clone()) {
+                Ok(saved) => {
+                    let saved = json!({"id":saved.id,"name":saved.name,"chainIdMode":saved.chain_id_mode.as_str(),"forkBlock":saved.fork_block});
+                    if saved["id"].as_str() == Some(running.as_str()) {
+                        runtime.spawn(super::native_toolchain::preflight_and_reopen(ui.as_weak(), held.clone(), running, false));
+                        // Not "workspace_switch": that would quit the event loop
+                        // before the preflight has decided to reopen anything.
+                        json!({"status":"completed","effect":"reopen_pending","saved":saved,
+                            "message":"Saved the active profile. Testing its RPC; the project reopens on it, or keeps running with the current network."})
+                    } else {
+                        json!({"status":"completed","saved":saved,"message":"Saved. network.switch {id} runs it."})
+                    }
+                }
+                Err(error) => json!({"status":"failed","error":{"code":"invalid_params","message":error}}),
+            };
+        }
+        Command::NetworkRemove { id } => {
+            let workspace = held.lock().unwrap().workspace.clone();
+            return match super::toolchain::remove_profile(&workspace, id.trim()) {
+                Ok(()) => json!({"status":"completed","message":format!("Removed profile {}. The running network is untouched.", id.trim())}),
+                Err(error) => json!({"status":"failed","error":{"code":"not_ready","message":error}}),
+            };
+        }
+        Command::NetworkSwitch { id, mode } => {
+            let fresh = mode.as_deref() == Some("fresh");
+            let id = id.trim().to_string();
+            runtime.spawn(super::native_toolchain::preflight_and_reopen(ui.as_weak(), held.clone(), id.clone(), fresh));
+            // Not "workspace_switch": the preflight decides whether to reopen,
+            // and the event loop must not quit before it has.
+            return json!({
+                "status":"accepted","effect":"reopen_pending",
+                "message":format!("Preflighting network {id}; the project reopens on it when its RPC passes, and keeps the current network when it does not. toolchain.state.network shows what runs afterwards."),
+            });
         }
         Command::Palette { query, index } => {
             let data = ui.global::<super::PaletteData>();

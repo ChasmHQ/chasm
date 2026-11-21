@@ -199,7 +199,6 @@ pub struct DesktopState {
     pub last_call_rejection: Option<String>,
     pub trace_busy: bool,
     pub trace_status: String,
-    pub trace_input: String,
     /// Trace console transcript and command history (newest last).
     pub trace_console: String,
     pub trace_history: Vec<String>,
@@ -268,10 +267,14 @@ pub struct DesktopState {
     snapshot_deployments: HashSet<(String, String)>,
     /// Snapshots taken before each Send, Deploy and cheat, oldest first.
     pub timeline: Vec<TimelinePoint>,
-    /// The fork the node was started with (empty URL: local chain).
-    pub network: crate::config::NetworkConfig,
+    /// The network the node was started with, resolved from the active
+    /// profile (empty URL: local chain).
+    pub network: crate::config::NetworkSettings,
     /// Chain id of the forked network, read from its RPC at boot.
     pub fork_chain_id: Option<u64>,
+    /// The identity pinned at boot: profile, source chain, fork block and
+    /// what the node reports as its chain id.
+    pub network_identity: Option<super::network::NetworkIdentity>,
     pub menu_open: i32,
     pub deployment_menu: i32,
     pub dock_tab: i32,
@@ -367,7 +370,6 @@ impl DesktopState {
             last_call_rejection: None,
             trace_busy: false,
             trace_status: String::new(),
-            trace_input: String::new(),
             trace_console: String::new(),
             trace_history: Vec::new(),
             trace_history_at: 0,
@@ -430,6 +432,7 @@ impl DesktopState {
             timeline: Vec::new(),
             network: Default::default(),
             fork_chain_id: None,
+            network_identity: None,
             menu_open: -1,
             deployment_menu: -1,
             dock_tab: 0,

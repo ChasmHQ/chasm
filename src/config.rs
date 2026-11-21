@@ -11,9 +11,14 @@ pub struct ChasmConfig {
     /// `[compiler]`: a locked solc version, or none to pick one per pragma.
     #[serde(default, skip_serializing_if = "CompilerConfig::is_auto")]
     pub compiler: CompilerConfig,
-    /// `[network]`: fork a remote chain into the local node when set.
-    #[serde(default, skip_serializing_if = "NetworkConfig::is_local")]
+    /// `[network]`: which saved profile is active. The old fork fields here
+    /// are migrated into a profile on load and never written back.
+    #[serde(default, skip_serializing_if = "NetworkConfig::is_default")]
     pub network: NetworkConfig,
+    /// `[[networks]]`: named fork targets. The built-in `local` profile is
+    /// not listed; it is what an empty active id means.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub networks: Vec<NetworkProfile>,
     /// `[build]`: where remappings and solc settings come from.
     #[serde(default, skip_serializing_if = "BuildConfig::is_default")]
     pub build: BuildConfig,
@@ -63,19 +68,192 @@ impl BuildConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
-pub struct NetworkConfig {
+/// The chain id the workspace node reports. `Local` keeps 31337, so a signed
+/// transaction can never be valid on the forked network. `Source` runs the
+/// node with the forked chain's own id (EIP-712 domains and `block.chainid`
+/// behave as on the real chain); sending is then restricted to Anvil dev keys
+/// and impersonation, because a keystore signature would be replayable there.
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChainIdMode {
+    #[default]
+    Local,
+    Source,
+}
+
+impl ChainIdMode {
+    pub fn is_local(&self) -> bool {
+        matches!(self, Self::Local)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Source => "source",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "local" | "" => Some(Self::Local),
+            "source" => Some(Self::Source),
+            _ => None,
+        }
+    }
+}
+
+/// One named fork target in `[[networks]]`. `local` is built in: it is the
+/// empty active id, never listed and never removed.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkProfile {
+    /// Short stable id ("mainnet"); referenced by `network.active`.
+    pub id: String,
+    /// Display name ("Ethereum mainnet"); the id is shown when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     /// HTTPS RPC of the chain to fork; empty runs a fresh local chain.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub fork_url: String,
+    /// Env var that holds the RPC URL instead, so a provider key stays out of
+    /// this file. Shown only as a name; UI and API never print its value.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fork_url_env: String,
     /// Block to fork at; none forks the latest block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_block: Option<u64>,
+    #[serde(default, skip_serializing_if = "ChainIdMode::is_local")]
+    pub chain_id_mode: ChainIdMode,
+}
+
+impl NetworkProfile {
+    pub const LOCAL_ID: &str = "local";
+
+    /// Whether this profile runs a fresh local chain (no RPC at all).
+    pub fn is_local(&self) -> bool {
+        self.fork_url.is_empty() && self.fork_url_env.is_empty()
+    }
+
+    /// Display title: the name, else the id.
+    pub fn title(&self) -> &str {
+        if self.name.trim().is_empty() { &self.id } else { &self.name }
+    }
+
+    /// The RPC URL, read from the env var when `fork_url_env` is set. The
+    /// error names the variable, never its value.
+    pub fn resolve_url(&self) -> Result<String, String> {
+        if !self.fork_url.is_empty() {
+            return Ok(self.fork_url.clone());
+        }
+        if !self.fork_url_env.is_empty() {
+            let value = std::env::var(&self.fork_url_env)
+                .map_err(|_| format!("Environment variable {} (fork_url_env of profile {}) is not set.", self.fork_url_env, self.id))?;
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                return Err(format!("Environment variable {} (fork_url_env of profile {}) is empty.", self.fork_url_env, self.id));
+            }
+            return Ok(value);
+        }
+        Ok(String::new())
+    }
+
+    /// Check values before they are saved or booted, so a typo names the field.
+    pub fn validate(&self) -> Result<(), String> {
+        let id = self.id.trim();
+        if id.is_empty() {
+            return Err("A profile needs an id.".into());
+        }
+        if id.len() > 40 || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+            return Err(format!("Profile id {:?} must be up to 40 lowercase letters, digits, - or _.", id));
+        }
+        if id == Self::LOCAL_ID {
+            return Err("\"local\" is the built-in profile and cannot be redefined.".into());
+        }
+        if self.name.len() > 80 {
+            return Err("Profile name is limited to 80 characters.".into());
+        }
+        if !self.fork_url.is_empty() && !self.fork_url_env.is_empty() {
+            return Err(format!("Profile {}: set either fork_url or fork_url_env, not both.", id));
+        }
+        if !self.fork_url.is_empty() {
+            Self::check_url(&self.fork_url)?;
+        }
+        if !self.fork_url_env.is_empty() && (self.fork_url_env.contains(|c: char| c.is_whitespace()) || self.fork_url_env.len() > 128) {
+            return Err(format!("Profile {}: fork_url_env must be a plain environment variable name.", id));
+        }
+        Ok(())
+    }
+
+    /// http(s) URL with a host; provider keys often sit in the path, so only
+    /// the host is echoed back.
+    pub fn check_url(url: &str) -> Result<(), String> {
+        let parsed = reqwest::Url::parse(url).map_err(|_| "Enter an RPC URL such as https://ethereum-rpc.publicnode.com.".to_string())?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return Err("The fork RPC must be an http(s) URL.".into());
+        }
+        Ok(())
+    }
+}
+
+/// The network the node actually runs, resolved from the active profile at
+/// boot. Kept in `DesktopState`; the config file only holds profiles.
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
+pub struct NetworkSettings {
+    /// Active profile id, or the built-in local chain when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub profile_id: String,
+    /// Resolved RPC URL (env var applied); empty for a local chain.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fork_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_block: Option<u64>,
+    #[serde(default)]
+    pub chain_id_mode: ChainIdMode,
+}
+
+impl NetworkSettings {
+    pub fn local() -> Self {
+        Self::default()
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.fork_url.is_empty()
+    }
+
+    pub fn execution_chain_id(&self, source_chain_id: Option<u64>) -> u64 {
+        match self.chain_id_mode {
+            ChainIdMode::Local => 31337,
+            // A Source profile without a readable source id is refused at boot.
+            ChainIdMode::Source => source_chain_id.unwrap_or(31337),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
+pub struct NetworkConfig {
+    /// Id of the active profile in `[[networks]]`; empty runs a local chain.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub active: String,
+    /// Old single-network setting, migrated into a profile on load. Kept in
+    /// the struct so an old file parses; never written back.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fork_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_block: Option<u64>,
 }
 
 impl NetworkConfig {
-    pub fn is_local(&self) -> bool {
-        self.fork_url.is_empty()
+    pub fn is_default(&self) -> bool {
+        self.active.is_empty() && self.fork_url.is_empty() && self.fork_block.is_none()
+    }
+
+    /// The fork profile the active id names, if any.
+    pub fn active_profile<'a>(&self, networks: &'a [NetworkProfile]) -> Option<&'a NetworkProfile> {
+        let id = self.active.trim();
+        if id.is_empty() || id == NetworkProfile::LOCAL_ID {
+            return None;
+        }
+        networks.iter().find(|profile| profile.id == id)
     }
 }
 
@@ -131,13 +309,81 @@ impl ChasmConfig {
         let config_path = root_dir.join(".chasm").join("chasm.toml");
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
-            let config: ChasmConfig = toml::from_str(&content).map_err(|error| {
+            let mut config: ChasmConfig = toml::from_str(&content).map_err(|error| {
                 anyhow::anyhow!("{} is not valid TOML: {error}", config_path.display())
             })?;
+            config.migrate_network();
             Ok(config)
         } else {
             Ok(ChasmConfig::default())
         }
+    }
+
+    /// Move the old single-network setting into a `[[networks]]` profile, so
+    /// projects saved before network profiles keep their fork. The old fields
+    /// are cleared so a save never writes them back next to the profile.
+    fn migrate_network(&mut self) {
+        if self.networks.is_empty() && !self.network.fork_url.is_empty() {
+            self.networks.push(NetworkProfile {
+                id: "fork-1".into(),
+                name: String::new(),
+                fork_url: std::mem::take(&mut self.network.fork_url),
+                fork_url_env: String::new(),
+                fork_block: self.network.fork_block.take(),
+                chain_id_mode: ChainIdMode::Local,
+            });
+            self.network.active = "fork-1".into();
+        }
+    }
+
+    /// The network the project boots with: the active profile with its URL
+    /// resolved (env var applied), or the built-in local chain. An active id
+    /// with no profile is refused, never silently replaced by local.
+    pub fn resolve_network(&self) -> Result<NetworkSettings, String> {
+        let active = self.network.active.trim();
+        let Some(profile) = self.network.active_profile(&self.networks) else {
+            if active.is_empty() || active == NetworkProfile::LOCAL_ID {
+                return Ok(NetworkSettings::local());
+            }
+            return Err(format!("Active network profile {active:?} has no [[networks]] entry. Fix [network] active or add the profile."));
+        };
+        let url = profile.resolve_url()?;
+        Ok(NetworkSettings {
+            profile_id: profile.id.clone(),
+            fork_url: url,
+            fork_block: profile.fork_block,
+            chain_id_mode: profile.chain_id_mode,
+        })
+    }
+
+    /// The saved profile with this id, if any.
+    pub fn profile(&self, id: &str) -> Option<&NetworkProfile> {
+        self.networks.iter().find(|profile| profile.id == id)
+    }
+
+    /// Insert or replace a profile, keeping list order by id. Call
+    /// `NetworkProfile::validate` first; this trusts its input.
+    pub fn upsert_profile(&mut self, profile: NetworkProfile) {
+        match self.networks.iter_mut().find(|saved| saved.id == profile.id) {
+            Some(saved) => *saved = profile,
+            None => self.networks.push(profile),
+        }
+    }
+
+    /// Remove a profile; refuse the built-in local one and the active id.
+    pub fn remove_profile(&mut self, id: &str) -> Result<(), String> {
+        if id == NetworkProfile::LOCAL_ID {
+            return Err("\"local\" is built in and cannot be removed.".into());
+        }
+        if self.network.active.trim() == id {
+            return Err(format!("Profile {id} is active. Switch to another network first."));
+        }
+        let before = self.networks.len();
+        self.networks.retain(|profile| profile.id != id);
+        if self.networks.len() == before {
+            return Err(format!("No profile with id {id}."));
+        }
+        Ok(())
     }
 
     /// Tulis config ke {root_dir}/.chasm/chasm.toml (buat direktori jika belum ada).
@@ -311,5 +557,103 @@ mod tests {
         assert!(ChasmConfig::update(root.path(), |config| config.add_remapping("b/=b/".into())).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
         assert!(ChasmConfig::load(&root.path().join("missing")).unwrap().remappings.is_empty());
+    }
+
+    fn profile(id: &str, url: &str, block: Option<u64>) -> NetworkProfile {
+        NetworkProfile { id: id.into(), name: format!("Profile {id}"), fork_url: url.into(), fork_url_env: String::new(), fork_block: block, chain_id_mode: ChainIdMode::Local }
+    }
+
+    #[test]
+    fn the_old_network_setting_migrates_into_a_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let path = write(root.path(), "[network]\nfork_url = \"https://rpc.example/key\"\nfork_block = 21000000\n");
+        let config = ChasmConfig::load(root.path()).unwrap();
+        assert_eq!(config.network.active, "fork-1");
+        assert!(config.network.fork_url.is_empty(), "the old field is cleared after migration");
+        let settings = config.resolve_network().unwrap();
+        assert_eq!(settings.profile_id, "fork-1");
+        assert_eq!(settings.fork_url, "https://rpc.example/key");
+        assert_eq!(settings.fork_block, Some(21_000_000));
+        assert_eq!(settings.chain_id_mode, ChainIdMode::Local);
+        // Saving rewrites the old format; loading it again keeps the fork.
+        config.save(root.path()).unwrap();
+        let saved: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(saved.get("networks").is_some(), "{}", saved);
+        assert_eq!(saved["network"]["active"].as_str(), Some("fork-1"));
+        assert!(saved["network"].get("fork_url").is_none(), "the legacy field is not written back: {}", saved);
+        let reloaded = ChasmConfig::load(root.path()).unwrap();
+        assert_eq!(reloaded.resolve_network().unwrap(), settings);
+    }
+
+    #[test]
+    fn a_config_without_network_boots_local() {
+        let root = tempfile::tempdir().unwrap();
+        let config = ChasmConfig::load(root.path()).unwrap();
+        let settings = config.resolve_network().unwrap();
+        assert!(settings.is_local() && settings.profile_id.is_empty());
+        assert_eq!(settings.execution_chain_id(None), 31337);
+        assert!(config.network.active_profile(&config.networks).is_none());
+    }
+
+    #[test]
+    fn an_active_id_without_a_profile_is_refused() {
+        let config = ChasmConfig { network: NetworkConfig { active: "mainnet".into(), ..Default::default() }, networks: vec![profile("sepolia", "https://s.example", None)], ..Default::default() };
+        assert_eq!(config.resolve_network().unwrap_err(), "Active network profile \"mainnet\" has no [[networks]] entry. Fix [network] active or add the profile.");
+    }
+
+    #[test]
+    fn profiles_are_validated_field_by_field() {
+        assert!(profile("mainnet", "https://rpc.example", None).validate().is_ok());
+        assert!(profile("ok_id-2", "", None).validate().is_ok(), "a profile may also be local");
+        assert!(profile("Local", "https://rpc.example", None).validate().is_err(), "uppercase ids are refused");
+        assert!(profile("local", "https://rpc.example", None).validate().is_err());
+        assert!(profile("x y", "https://rpc.example", None).validate().is_err());
+        assert!(profile("", "https://rpc.example", None).validate().is_err());
+        assert!(profile("mainnet", "ftp://rpc.example", None).validate().is_err());
+        let both = NetworkProfile { fork_url_env: "MY_RPC".into(), ..profile("mainnet", "https://rpc.example", None) };
+        assert!(both.validate().is_err(), "fork_url and fork_url_env exclude each other");
+    }
+
+    #[test]
+    fn fork_url_env_resolves_from_the_environment_and_never_prints_it() {
+        let name = "CHASM_TEST_FORK_URL_ENV";
+        std::env::set_var(name, "https://rpc.example/secret-path");
+        let profile = NetworkProfile { fork_url: String::new(), fork_url_env: name.into(), ..profile("mainnet", "", None) };
+        assert_eq!(profile.resolve_url().unwrap(), "https://rpc.example/secret-path");
+        std::env::remove_var(name);
+        assert!(profile.resolve_url().unwrap_err().contains(name));
+        assert!(!profile.resolve_url().unwrap_err().contains("secret-path"), "the value never reaches the error");
+    }
+
+    #[test]
+    fn chain_id_modes_round_trip_through_toml() {
+        let root = tempfile::tempdir().unwrap();
+        let path = write(root.path(), "[[networks]]\nid = \"mainnet\"\nname = \"Ethereum mainnet\"\nfork_url = \"https://rpc.example\"\nchain_id_mode = \"source\"\n[network]\nactive = \"mainnet\"\n");
+        let config = ChasmConfig::load(root.path()).unwrap();
+        let settings = config.resolve_network().unwrap();
+        assert_eq!(settings.chain_id_mode, ChainIdMode::Source);
+        assert_eq!(settings.execution_chain_id(Some(1)), 1);
+        config.save(root.path()).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("chain_id_mode = \"source\""), "{saved}");
+        assert_eq!(ChainIdMode::parse("source"), Some(ChainIdMode::Source));
+        assert_eq!(ChainIdMode::parse("nope"), None);
+    }
+
+    #[test]
+    fn profiles_upsert_and_cannot_be_removed_while_active() {
+        let mut config = ChasmConfig::default();
+        config.upsert_profile(profile("mainnet", "https://a.example", None));
+        config.upsert_profile(profile("sepolia", "https://b.example", None));
+        config.upsert_profile(profile("mainnet", "https://c.example", Some(9)));
+        assert_eq!(config.networks.len(), 2, "upsert replaces, never duplicates");
+        assert_eq!(config.profile("mainnet").unwrap().fork_block, Some(9));
+        config.network.active = "mainnet".into();
+        assert_eq!(config.remove_profile("mainnet").unwrap_err(), "Profile mainnet is active. Switch to another network first.");
+        config.network.active = "sepolia".into();
+        config.remove_profile("mainnet").unwrap();
+        assert!(config.profile("mainnet").is_none());
+        assert_eq!(config.remove_profile("local").unwrap_err(), "\"local\" is built in and cannot be removed.");
+        assert_eq!(config.remove_profile("ghost").unwrap_err(), "No profile with id ghost.");
     }
 }

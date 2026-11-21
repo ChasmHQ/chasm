@@ -36,10 +36,10 @@ impl AnvilNode {
         Ok(())
     }
 
-    pub fn start_fork(&mut self, fork_url: String, fork_block: Option<u64>) -> anyhow::Result<()> {
+    pub fn start_fork(&mut self, fork_url: String, fork_block: Option<u64>, chain_id_mode: crate::config::ChainIdMode) -> anyhow::Result<()> {
         self.ensure_not_running()?;
         let mut cmd = self.base_command();
-        apply_fork_args(&mut cmd, &fork_url, fork_block);
+        apply_fork_args(&mut cmd, &fork_url, fork_block, chain_id_mode);
 
         let child = cmd.spawn()?;
         self.adopt(child)?;
@@ -174,12 +174,16 @@ impl AnvilNode {
 /// (public RPCs answer 429 under load) and a per-request timeout.
 const FORK_RETRY_ARGS: [&str; 6] = ["--retries", "8", "--fork-retry-backoff", "1000", "--timeout", "45000"];
 
-fn apply_fork_args(cmd: &mut Command, fork_url: &str, fork_block: Option<u64>) {
+fn apply_fork_args(cmd: &mut Command, fork_url: &str, fork_block: Option<u64>, chain_id_mode: crate::config::ChainIdMode) {
     cmd.arg("--fork-url").arg(fork_url);
     cmd.args(FORK_RETRY_ARGS);
-    // Keep the local chain id: signing is restricted to 31337, so a fork can
-    // never produce a transaction that is valid on the real network.
-    cmd.arg("--chain-id").arg("31337");
+    // Local mode keeps the local chain id: signing is restricted to 31337, so
+    // a fork can never produce a transaction that is valid on the real
+    // network. Source mode drops the flag so the node reports the forked
+    // chain's own id; sending is then restricted further before it is used.
+    if chain_id_mode.is_local() {
+        cmd.arg("--chain-id").arg("31337");
+    }
     if let Some(block) = fork_block {
         cmd.arg("--fork-block-number").arg(block.to_string());
     }
@@ -263,7 +267,7 @@ mod tests {
     #[test]
     fn fork_arguments_survive_the_shared_builder() {
         let mut cmd = Command::new("anvil");
-        apply_fork_args(&mut cmd, "https://example.test/rpc", Some(42));
+        apply_fork_args(&mut cmd, "https://example.test/rpc", Some(42), crate::config::ChainIdMode::Local);
         assert_eq!(
             args(&cmd),
             [
@@ -283,8 +287,17 @@ mod tests {
         );
 
         let mut cmd = Command::new("anvil");
-        apply_fork_args(&mut cmd, "https://example.test/rpc", None);
+        apply_fork_args(&mut cmd, "https://example.test/rpc", None, crate::config::ChainIdMode::Local);
         assert_eq!(args(&cmd)[..2], ["--fork-url", "https://example.test/rpc"]);
         assert_eq!(args(&cmd)[8..], ["--chain-id", "31337"]);
+    }
+
+    #[test]
+    fn source_chain_id_mode_keeps_the_forked_chains_own_id() {
+        let mut cmd = Command::new("anvil");
+        apply_fork_args(&mut cmd, "https://example.test/rpc", Some(7), crate::config::ChainIdMode::Source);
+        let argv = args(&cmd);
+        assert!(!argv.iter().any(|arg| arg == "--chain-id"), "{argv:?}");
+        assert!(argv.iter().any(|arg| arg == "--fork-block-number"), "{argv:?}");
     }
 }

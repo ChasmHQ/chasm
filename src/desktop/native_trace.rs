@@ -13,7 +13,7 @@ type State = Arc<Mutex<DesktopState>>;
 const OPS_WINDOW: usize = 400;
 
 pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
-    let _ = RUNTIME.set(runtime.clone());
+    set_runtime(runtime.clone());
     let weak = ui.as_weak();
     let held = state.clone();
     let rt = runtime.clone();
@@ -356,8 +356,18 @@ fn workspace_programs(state: &DesktopState) -> Vec<Program> {
         .collect()
 }
 
-/// Runtime the trace tasks spawn on; set by `wire`.
-static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+/// Runtime the trace tasks spawn on. Every `wire` replaces it, so a reopened
+/// project never spawns on the runtime of a closed one.
+static RUNTIME: Mutex<Option<tokio::runtime::Handle>> = Mutex::new(None);
+
+/// Store the runtime for the trace tasks that only receive state and UI.
+pub fn set_runtime(runtime: tokio::runtime::Handle) {
+    *RUNTIME.lock().unwrap() = Some(runtime);
+}
+
+fn runtime_handle() -> Option<tokio::runtime::Handle> {
+    RUNTIME.lock().unwrap().clone()
+}
 
 /// Most transactions one scenario records.
 pub const MAX_SCENARIO: usize = 16;
@@ -365,7 +375,7 @@ pub const MAX_SCENARIO: usize = 16;
 /// Records mined transactions in order as one session (a scenario). With no
 /// hashes, the selected macro run's transactions are used.
 pub fn load_scenario(weak: Weak<MainWindow>, held: State, hashes: Vec<String>) {
-    let Some(runtime) = RUNTIME.get().cloned() else { return };
+    let Some(runtime) = runtime_handle() else { return };
     let (hashes, title) = if hashes.is_empty() {
         (super::native_macro::selected_run_hashes(&held), "Macro run".to_string())
     } else {
@@ -386,11 +396,11 @@ pub fn load_scenario(weak: Weak<MainWindow>, held: State, hashes: Vec<String>) {
         } else {
             state.trace_busy = true;
             state.trace_status = format!("Recording {} transactions…", hashes.len());
-            Some((state.rpc.clone(), programs(&state), state.workspace_epoch, state.network.fork_url.clone()))
+            Some((state.rpc.clone(), programs(&state), state.workspace_epoch, state.network_epoch, state.network.fork_url.clone()))
         }
     };
     super::paint(&weak, &held);
-    let Some((rpc, programs, epoch, fork_url)) = prepared else { return };
+    let Some((rpc, programs, epoch, network_epoch, fork_url)) = prepared else { return };
     runtime.spawn(async move {
         let mut parts = Vec::new();
         let mut error = None;
@@ -409,7 +419,9 @@ pub fn load_scenario(weak: Weak<MainWindow>, held: State, hashes: Vec<String>) {
         };
         let _ = slint::invoke_from_event_loop(move || {
             let mut state = held.lock().unwrap();
-            if !state.active || state.workspace_epoch != epoch {
+            // A revert or a reopened workspace invalidates the answer, as does
+            // the network the run was recorded on.
+            if !state.active || state.workspace_epoch != epoch || state.network_epoch != network_epoch {
                 return;
             }
             state.trace_busy = false;
@@ -433,7 +445,7 @@ pub fn load_scenario(weak: Weak<MainWindow>, held: State, hashes: Vec<String>) {
 
 /// Traces an unsent call (from the control API). Nothing is signed or sent.
 pub fn load_call(weak: Weak<MainWindow>, held: State, call: Value, block: String) {
-    let Some(runtime) = RUNTIME.get().cloned() else { return };
+    let Some(runtime) = runtime_handle() else { return };
     let target = call["to"].as_str().unwrap_or_default().to_string();
     let title = if target.is_empty() { "Creation call".to_string() } else { format!("Call to {}…{}", &target[..6], &target[target.len() - 4..]) };
     start(weak, held, runtime, Target::Call { title, call, block, target });
@@ -466,14 +478,9 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
         }
         match Ok::<Target, String>(target) {
             Ok(target) => {
-                // Remembered so a re-fork can debug the same transaction again.
-                state.trace_input = match &target {
-                    Target::Transaction(hash) => hash.clone(),
-                    Target::Call { .. } => String::new(),
-                };
                 state.trace_busy = true;
                 state.trace_status = "Recording the execution…".into();
-                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch, state.network.fork_url.clone(), state.fork_chain_id))
+                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch, state.network_epoch, state.network.fork_url.clone(), state.fork_chain_id))
             }
             Err(error) => {
                 state.trace_status = error;
@@ -482,7 +489,7 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
         }
     };
     super::paint(&weak, &held);
-    let Some((target, rpc, programs, epoch, fork_url, chain)) = prepared else { return };
+    let Some((target, rpc, programs, epoch, network_epoch, fork_url, chain)) = prepared else { return };
     let workspace = held.lock().unwrap().workspace.clone();
     runtime.spawn(async move {
         let result = record(&rpc, target, programs, &fork_url, chain.map(|chain| (workspace.as_path(), chain))).await.map(|(session, saved, hash, note)| {
@@ -491,7 +498,7 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
         });
         let _ = slint::invoke_from_event_loop(move || {
             let mut state = held.lock().unwrap();
-            if !state.active || state.workspace_epoch != epoch {
+            if !state.active || state.workspace_epoch != epoch || state.network_epoch != network_epoch {
                 return;
             }
             state.trace_busy = false;
@@ -1267,5 +1274,20 @@ mod tests {
         assert_eq!(programs.len(), 1);
         // Offset 9 is the start of line two in the LF text solc compiled.
         assert_eq!(&programs[0].source[9..17], "line two");
+    }
+
+    /// A reopened project builds a new runtime; its `wire` must replace the
+    /// stored handle, not keep the dropped one. Driving a task through the
+    /// stored handle after the first runtime is dropped fails unless the
+    /// replacement happened.
+    #[test]
+    fn a_second_runtime_replaces_the_first() {
+        let first = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        set_runtime(first.handle().clone());
+        let second = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        set_runtime(second.handle().clone());
+        drop(first);
+        assert_eq!(runtime_handle().unwrap().block_on(async { 21u8 + 21 }), 42, "the stored handle drives the replacement runtime, not the dropped one");
+        drop(second);
     }
 }

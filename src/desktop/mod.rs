@@ -33,6 +33,7 @@ mod sourcify;
 mod foundry_import;
 mod trace_condition;
 mod trace_compare;
+mod network;
 mod proxy;
 mod retry;
 mod contract_import;
@@ -294,16 +295,68 @@ async fn recover_startup<T>(future: impl std::future::Future<Output = anyhow::Re
         .unwrap_or_else(|_| Err(anyhow::anyhow!("Project startup failed unexpectedly. Check dependencies and try another project.")))
 }
 
+/// Start the node for `network` and wait until it answers with the chain id
+/// this profile must run. Returns the source chain id (forks), the chain id
+/// the node reports, and why the source id is unknown when it is. A Source
+/// profile reads the source id before the spawn: the node has to come up
+/// already reporting it, and nothing starts when the RPC cannot say it.
+async fn start_network(anvil: &mut AnvilNode, network: &crate::config::NetworkSettings) -> Result<(Option<u64>, u64, Option<String>), anyhow::Error> {
+    let mut source = None;
+    let mut source_error = None;
+    if network.is_local() {
+        anvil.start()?;
+    } else {
+        if network.chain_id_mode == crate::config::ChainIdMode::Source {
+            source = Some(network::fetch_source_chain_id(&network.fork_url).await.map_err(|error| {
+                anyhow::anyhow!("Profile {} runs its source chain id, but the RPC did not answer eth_chainId: {error}.", network.profile_id)
+            })?);
+        }
+        anvil.start_fork(network.fork_url.clone(), network.fork_block, network.chain_id_mode)?;
+    }
+    let expected = network.execution_chain_id(source);
+    let probe = reqwest::Client::builder().timeout(std::time::Duration::from_millis(400)).build()?;
+    let mut ready = false;
+    // A fork fetches the remote head first, so it gets longer to come up.
+    let attempts = if network.is_local() { 40 } else { 600 };
+    for _ in 0..attempts {
+        anvil.check_process()?;
+        if let Ok(response) = probe.post("http://127.0.0.1:8545")
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]})).send().await {
+            if let Ok(body) = response.json::<serde_json::Value>().await {
+                if body.get("result").and_then(serde_json::Value::as_str) == Some(format!("{expected:#x}").as_str()) { ready = true; break; }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    if !ready {
+        if network.is_local() {
+            anyhow::bail!("Local Anvil did not become ready. Check Foundry and try opening the project again.");
+        }
+        let block = network.fork_block.map(|block| format!(" at block {block}")).unwrap_or_default();
+        anyhow::bail!("The fork of {}{block} did not become ready within a minute. Check the RPC URL of profile {} in Workspace > Compiler and libraries.", fork_host(&network.fork_url), network.profile_id);
+    }
+    // The forked chain's own id names the network in the UI; read it with
+    // retries. A failure keeps the boot: the notice offers a Retry.
+    if source.is_none() && !network.is_local() {
+        match network::fetch_source_chain_id(&network.fork_url).await {
+            Ok(id) => source = Some(id),
+            Err(error) => source_error = Some(error),
+        }
+    }
+    Ok((source, expected, source_error))
+}
+
 async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
     let root = platform::validate_workspace(&cli.path).map_err(anyhow::Error::msg)?;
-    // A broken chasm.toml is reported and left untouched rather than replaced.
-    let (mut config, mut config_warning) = match ChasmConfig::load(&root) {
-        Ok(config) => (Some(config), None),
-        Err(error) => (None, Some(format!("{error}. Remappings from it are not applied; fix the file and recompile."))),
-    };
+    // A config that exists but cannot be read refuses to boot: silently
+    // starting a local chain would hide the user's saved fork setting.
+    let mut config = ChasmConfig::load(&root).map_err(|error| {
+        anyhow::anyhow!("{error}. Chasm does not open a project with a config it cannot read; fix .chasm/chasm.toml and open the project again.")
+    })?;
     // Only for Chasm-managed builds: a Foundry project brings its own remappings.
     let foundry_build = crate::build_config::resolve(&root).is_ok_and(|effective| effective.active == crate::build_config::Source::Foundry);
-    if let (Some(config), Some(oz), false) = (config.as_mut(), crate::config::scan_openzeppelin(&root), foundry_build) {
+    let mut config_warning = None;
+    if let Some(oz) = crate::config::scan_openzeppelin(&root).filter(|_| !foundry_build) {
         let remapping = crate::config::generate_remapping(&oz, &root);
         if !config.remappings.iter().any(|item| item.contains("@openzeppelin")) {
             config.add_remapping(remapping);
@@ -312,8 +365,8 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
             }
         }
     }
-    let network = config.as_ref().map(|config| config.network.clone()).unwrap_or_default();
-    let remappings = config.map(|config| config.remappings).unwrap_or_default();
+    let mut network = config.resolve_network().map_err(|error| anyhow::anyhow!("{error} Fix [[networks]] or [network] in .chasm/chasm.toml."))?;
+    let remappings = config.remappings.clone();
 
     let mut listener = None;
     for _ in 0..75 {
@@ -331,41 +384,31 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
         .map_err(|_| anyhow::anyhow!("Local Anvil port 8545 is already in use. Close the owning application before opening this project."))?;
     drop(reservation);
     let mut anvil = AnvilNode::new_silent(8545);
-    if network.is_local() {
-        anvil.start()?;
-    } else {
-        anvil.start_fork(network.fork_url.clone(), network.fork_block)?;
-    }
-    let probe = reqwest::Client::builder().timeout(std::time::Duration::from_millis(400)).build()?;
-    let mut ready = false;
-    // A fork fetches the remote head first, so it gets longer to come up.
-    let attempts = if network.is_local() { 40 } else { 600 };
-    for _ in 0..attempts {
-        anvil.check_process()?;
-        if let Ok(response) = probe.post("http://127.0.0.1:8545")
-            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]})).send().await {
-            if let Ok(body) = response.json::<serde_json::Value>().await {
-                if body.get("result").and_then(serde_json::Value::as_str) == Some("0x7a69") { ready = true; break; }
-            }
+    // Start the node, then probe it. A network switch whose target never
+    // becomes ready falls back to the profile that ran before it.
+    let (fork_chain_id, execution_chain_id, source_error, switch_error) = match start_network(&mut anvil, &network).await {
+        Ok((source, exec, source_error)) => (source, exec, source_error, None),
+        Err(error) => {
+            let Some(previous) = network::fallback_settings(&root, &network.profile_id) else { anyhow::bail!("{error:#}") };
+            let target = config.profile(&network.profile_id).map(|profile| profile.title().to_string()).unwrap_or_else(|| network.profile_id.clone());
+            let previous_id = previous.profile_id.clone();
+            anvil.stop();
+            let (source, exec, source_error) = start_network(&mut anvil, &previous).await
+                .map_err(|second| anyhow::anyhow!("{error:#} Booting the previous profile {previous_id} also failed: {second:#}"))?;
+            // Keep the saved config in step with the network that now runs.
+            let _ = ChasmConfig::update(&root, |config| config.network.active = previous_id.clone());
+            network = previous;
+            (source, exec, source_error, Some(format!("Network switch to {target} failed: {error:#}. The previous network is running again.")))
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    if !ready {
-        if network.is_local() {
-            anyhow::bail!("Local Anvil did not become ready. Check Foundry and try opening the project again.");
-        }
-        anyhow::bail!("The fork of {} did not become ready within a minute. Check the RPC URL in Workspace > Network, or clear it to run a local chain.", network.fork_url);
-    }
-    // The node reports 31337; the forked chain's own id names it in the UI.
-    let fork_chain_id = if network.is_local() {
-        None
-    } else {
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build()?;
-        let body = client.post(&network.fork_url)
-            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}))
-            .send().await.ok();
-        let body = match body { Some(response) => response.json::<serde_json::Value>().await.ok(), None => None };
-        body.and_then(|body| body["result"].as_str().and_then(|id| u64::from_str_radix(id.trim_start_matches("0x"), 16).ok()))
+    };
+    let info = network::node_info("http://127.0.0.1:8545").await;
+    let (forked_block, anchor_hash) = network::fork_anchor(info.as_ref());
+    let identity = network::NetworkIdentity {
+        profile_id: network.profile_id.clone(),
+        source_chain_id: fork_chain_id,
+        fork_block: forked_block.or(network.fork_block),
+        anchor_hash,
+        execution_chain_id,
     };
     let mut debugger_config = debugger::Config::new(root.clone(), cli.debugger_python, None, cli.debugger_example);
     let build_root = root.clone();
@@ -385,6 +428,7 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
     let mut state = DesktopState::new(root.clone(), zoom);
     state.network = network;
     state.fork_chain_id = fork_chain_id;
+    state.network_identity = Some(identity);
     state.owned_node = services.anvil.duplicate_process_handle().ok()
         .map(|handle| owned_node::OwnedNode::from_child_handle(handle, services.anvil.port()));
     (state.sidebar_width, state.sidebar_collapsed) = load_sidebar(&root);
@@ -409,6 +453,21 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
     if let Some(warning) = config_warning {
         state.notice = warning.clone();
         state.push_log(warning);
+    }
+    if let Some(error) = switch_error {
+        // The failed switch is the most recent user action; it wins the banner.
+        state.notice = error.clone();
+        state.push_log(error);
+    }
+    // A fork whose source chain id could not be read keeps booting: import,
+    // Sourcify and the chain name are what wait for it. The banner and the
+    // status bar say so; the notice names one action (Retry).
+    if let Some(error) = source_error {
+        let text = format!("Source chain unknown: {error}. Import, verified source and the chain name wait until it is fetched again.");
+        if state.notice.is_empty() {
+            state.notice = text.clone();
+        }
+        state.push_log(text);
     }
     let rpc = state.rpc.clone();
     state.block_number = tokio::task::spawn_blocking(move || cast_block_number(&rpc)).await.ok().and_then(Result::ok).unwrap_or(0);
@@ -651,6 +710,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     {
         let weak = ui.as_weak();
         let held = state.clone();
+        let rt = runtime.clone();
         ui.global::<Logic>().on_notice_action(move |action| {
             let Some(ui) = weak.upgrade() else { return };
             let logic = ui.global::<Logic>();
@@ -666,6 +726,33 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                 "debugger" => logic.invoke_open_activity(4),
                 "contracts" => logic.invoke_open_activity(0),
                 "refresh" => logic.invoke_fetch_block(),
+                "retry_chain" => {
+                    let weak = weak.clone();
+                    let held = held.clone();
+                    rt.spawn(async move {
+                        let url = held.lock().unwrap().network.fork_url.clone();
+                        let result = if url.is_empty() { None } else { Some(network::fetch_source_chain_id(&url).await) };
+                        let _ = slint::invoke_from_event_loop(move || {
+                            let mut state = held.lock().unwrap();
+                            match result {
+                                Some(Ok(id)) => {
+                                    state.fork_chain_id = Some(id);
+                                    if let Some(identity) = state.network_identity.as_mut() {
+                                        identity.source_chain_id = Some(id);
+                                    }
+                                    state.notice.clear();
+                                }
+                                Some(Err(error)) => {
+                                    state.notice = format!("Source chain unknown: {error}. Import, verified source and the chain name wait until it is fetched again.");
+                                }
+                                None => {}
+                            }
+                            drop(state);
+                            paint(&weak, &held);
+                        });
+                    });
+                    return;
+                }
                 "jobs" => ui.global::<PanelLogic>().invoke_dock("jobs".into(), -1),
                 "reopen" => {
                     let mut state = held.lock().unwrap();
@@ -1660,12 +1747,19 @@ fn render(ui: &MainWindow, state: &DesktopState) {
     data.set_mode_label(if state.network.is_local() {
         "Local".into()
     } else {
-        let chain = state.fork_chain_id.map(toolchain::chain_name).unwrap_or_else(|| fork_host(&state.network.fork_url));
-        let block = state.network.fork_block.map(|block| format!(" @ {block}")).unwrap_or_default();
-        format!("Fork of {chain}{block}").into()
+        let block = state.network_identity.as_ref().and_then(|identity| identity.fork_block).map(|block| format!(" @ {block}")).unwrap_or_default();
+        // A fork whose source chain id never loaded says so right in the bar.
+        let chain = state.fork_chain_id.map(toolchain::chain_name).unwrap_or_else(|| format!("source chain unknown ({})", fork_host(&state.network.fork_url)));
+        let profile = if state.network.profile_id.is_empty() { String::new() } else { format!("{} · ", state.network.profile_id) };
+        format!("{profile}Fork of {chain}{block}").into()
     });
-    // Signing always uses the local id, so nothing is valid on the real chain.
-    data.set_chain_label(if state.network.is_local() { "31337" } else { "signs as 31337" }.into());
+    // Local mode signs on 31337, so nothing is valid on the real chain. Source
+    // mode reports the forked chain's id; its extra sending limits land in N4.
+    data.set_chain_label(if state.network.is_local() {
+        "31337".into()
+    } else {
+        format!("signs as {}", state.network_identity.as_ref().map(|identity| identity.execution_chain_id).unwrap_or(31337)).into()
+    });
     data.set_block_label(format!("block {}", state.block_number).into());
     data.set_compile_label(state.compile_label.clone().into());
     data.set_debugger_label(state.debugger_label.clone().into());

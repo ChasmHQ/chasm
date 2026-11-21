@@ -120,5 +120,11 @@ N0 → N1 → N2 → N3 (spike first) → N4 → N5 → N6. Each phase ships wit
 
 | Phase | Status |
 |---|---|
-| N0 | in progress |
-| N1–N6 | not started |
+| N0 | done: replaceable trace runtime, boot refuses a broken config, retried source chain id with a Retry notice, trace completions check `network_epoch`, `trace_input` removed |
+| N1 | done: `[[networks]]` profiles with migration, `NetworkIdentity` (`key()` = `profile:chain:block`), Anvil chain id per mode, preflight + fallback switch, profile UI, `network.list/save/remove/switch` |
+| N2 | not started |
+| N3 | not started |
+| N4 | partially plumbed: `chain_id_mode` runs Anvil with the source id and the probe expects it; signing guards and the keystore block are still N4 |
+| N5–N6 | not started |
+
+N1 notes: `network.switch` and an active-profile `network.save` return `effect: "reopen_pending"` — the event loop must not quit before the preflight decides to reopen. The fallback marker is `.chasm/network-switch.json`; boot clears it after any ready boot and rewrites `network.active` to the profile it fell back to.
