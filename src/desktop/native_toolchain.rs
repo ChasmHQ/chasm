@@ -4,7 +4,11 @@ use super::session::DesktopState;
 use super::toolchain;
 use super::{LibraryRow, MainWindow, NetworkProfileRow, PragmaRow, ToolchainData, ToolchainLogic};
 use slint::{ComponentHandle, Weak};
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 type State = Arc<Mutex<DesktopState>>;
 
@@ -16,9 +20,27 @@ thread_local! {
     static PROFILE_SHOWN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct FreshConfirmation {
+    workspace: PathBuf,
+    target: String,
+    plan: toolchain::NetworkSwitch,
+    expires: Instant,
+}
+
+impl FreshConfirmation {
+    fn consume(pending: &mut Option<Self>, workspace: &Path, target: &str, now: Instant) -> Option<toolchain::NetworkSwitch> {
+        pending.take().filter(|request| request.workspace == workspace && request.target == target && now < request.expires).map(|request| request.plan)
+    }
+}
+
 pub fn render(ui: &MainWindow, state: &DesktopState) {
     // Disk scans only while the view is open.
     if state.current_doc_kind() != 8 {
+        if !ui.global::<ToolchainData>().get_fresh_target().is_empty() {
+            ui.global::<ToolchainLogic>().invoke_cancel_fresh();
+        }
         return;
     }
     let data = ui.global::<ToolchainData>();
@@ -157,6 +179,24 @@ fn recompile(weak: &Weak<MainWindow>) {
 }
 
 pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
+    // MainWindow survives reopen, but these callbacks and their pending
+    // confirmation belong to this session only (even for the same path).
+    let pending = Rc::new(RefCell::new(None::<FreshConfirmation>));
+    let expiry = Rc::new(slint::Timer::default());
+    ui.global::<ToolchainData>().set_fresh_target("".into());
+    ui.global::<ToolchainData>().set_switch_fresh(false);
+    ui.global::<ToolchainData>().set_status("".into());
+    ui.global::<ToolchainData>().set_busy(false);
+    ui.global::<ToolchainLogic>().on_cancel_fresh({
+        let pending = pending.clone();
+        let expiry = expiry.clone();
+        let weak = ui.as_weak();
+        move || {
+            expiry.stop();
+            pending.borrow_mut().take();
+            if let Some(ui) = weak.upgrade() { ui.global::<ToolchainData>().set_fresh_target("".into()); }
+        }
+    });
     let weak = ui.as_weak();
     let held = state.clone();
     ui.global::<ToolchainLogic>().on_build_source({
@@ -283,19 +323,9 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     // Legacy alias behind the API's `toolchain.action network`: save the URL
     // onto the active slot, preflight it, then reopen.
     ui.global::<ToolchainLogic>().on_save_network(move |url, block| {
-        let state = held.lock().unwrap();
-        if !state.can_change_workspace() {
-            drop(state);
-            return status(&weak, "Wait for the current operation to finish, then save again.".into(), false);
-        }
-        let workspace = state.workspace.clone();
-        drop(state);
-        match toolchain::save_network(&workspace, url.as_str(), block.as_str()) {
-            Ok(settings) => {
-                let id = settings.profile_id.clone();
-                rt.spawn(preflight_and_reopen(weak.clone(), held.clone(), id, false));
-            }
-            Err(error) => status(&weak, error, false),
+        let Some(ui) = weak.upgrade() else { return };
+        if let Err(error) = start_switch(&ui, &held, &rt, false, |root| toolchain::prepare_network(root, url.as_str(), block.as_str())) {
+            status(&weak, error, ui.global::<ToolchainData>().get_busy());
         }
     });
     let weak = ui.as_weak();
@@ -391,14 +421,11 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
             if url.is_empty() {
                 return status(&weak, "The local chain is built in. Give a profile a name above and press New profile to fork on top of it.".into(), false);
             }
-            return match toolchain::save_network(&workspace, &url, &block) {
-                Ok(settings) => {
-                    let id = settings.profile_id.clone();
-                    rt.spawn(preflight_and_reopen(weak.clone(), held.clone(), id, false));
-                    status(&weak, "Saved. Testing the RPC before the project reopens…".into(), true)
-                }
-                Err(error) => status(&weak, error, false),
-            };
+            let Some(ui) = weak.upgrade() else { return };
+            if let Err(error) = start_switch(&ui, &held, &rt, false, |root| toolchain::prepare_network(root, &url, &block)) {
+                status(&weak, error, false);
+            }
+            return;
         }
         let (profiles, ..) = toolchain::load_network(&workspace);
         let fork_url_env = profiles.iter().find(|profile| profile.id == id).map(|profile| profile.fork_url_env.clone()).unwrap_or_default();
@@ -411,30 +438,61 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
             }
         };
         let profile = crate::config::NetworkProfile { id: id.clone(), name: name.trim().to_string(), fork_url: url, fork_url_env, fork_block, chain_id_mode: mode };
-        match toolchain::save_profile(&workspace, profile) {
-            Ok(profile) => {
-                if profile.id == running {
-                    rt.spawn(preflight_and_reopen(weak.clone(), held.clone(), profile.id.clone(), false));
-                    status(&weak, format!("Saved profile {}. Testing the RPC before the project reopens…", profile.id), true);
-                } else {
-                    status(&weak, format!("Saved profile {}. Use Switch to run it.", profile.id), false);
-                }
-                super::paint(&weak, &held);
+        let Some(ui) = weak.upgrade() else { return };
+        ui.global::<ToolchainLogic>().invoke_cancel_fresh();
+        if profile.id == running {
+            if let Err(error) = start_switch(&ui, &held, &rt, false, |root| toolchain::NetworkSwitch::prepare(root, &id, Some(profile))) {
+                status(&weak, error, false);
             }
-            Err(error) => status(&weak, error, false),
+        } else {
+            match toolchain::save_profile(&workspace, profile) {
+                Ok(profile) => status(&weak, format!("Saved profile {}. Use Switch to run it.", profile.id), false),
+                Err(error) => status(&weak, error, false),
+            }
+            super::paint(&weak, &held);
         }
     });
     let weak = ui.as_weak();
     let held = state.clone();
     let rt = runtime.clone();
-    ui.global::<ToolchainLogic>().on_profile_switch(move |id, fresh| {
-        let state = held.lock().unwrap();
-        if !state.can_change_workspace() {
-            drop(state);
-            return status(&weak, "Wait for the current operation to finish, then switch again.".into(), false);
+    ui.global::<ToolchainLogic>().on_profile_switch({
+        let pending = pending.clone();
+        move |id, fresh| {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.global::<ToolchainLogic>().invoke_cancel_fresh();
+            if !fresh {
+                if let Err(error) = start_switch(&ui, &held, &rt, false, |root| toolchain::NetworkSwitch::prepare(root, id.as_str(), None)) {
+                    status(&weak, error, ui.global::<ToolchainData>().get_busy());
+                }
+                return;
+            }
+            let state = held.lock().unwrap();
+            if !state.workspace_ready || !state.can_change_workspace() { return; }
+            let plan = match toolchain::NetworkSwitch::prepare(&state.workspace, id.as_str(), None) {
+                Ok(plan) => plan,
+                Err(error) => return status(&weak, error, false),
+            };
+            *pending.borrow_mut() = Some(FreshConfirmation { workspace: state.workspace.clone(), target: id.to_string(), plan, expires: Instant::now() + CONFIRM_TIMEOUT });
+            ui.global::<ToolchainData>().set_fresh_target(id);
+            let weak = weak.clone();
+            expiry.start(slint::TimerMode::SingleShot, CONFIRM_TIMEOUT, move || {
+                if let Some(ui) = weak.upgrade() { ui.global::<ToolchainLogic>().invoke_cancel_fresh(); }
+            });
         }
+    });
+    let weak = ui.as_weak();
+    let held = state.clone();
+    let rt = runtime.clone();
+    ui.global::<ToolchainLogic>().on_confirm_fresh(move |id| {
+        let Some(ui) = weak.upgrade() else { return };
+        let state = held.lock().unwrap();
+        let confirmed = FreshConfirmation::consume(&mut pending.borrow_mut(), &state.workspace, id.as_str(), Instant::now());
         drop(state);
-        rt.spawn(preflight_and_reopen(weak.clone(), held.clone(), id.to_string(), fresh));
+        ui.global::<ToolchainLogic>().invoke_cancel_fresh();
+        let Some(plan) = confirmed else { return };
+        if let Err(error) = start_switch(&ui, &held, &rt, true, |root| { plan.checked_config(root)?; Ok(plan) }) {
+            status(&weak, error, ui.global::<ToolchainData>().get_busy());
+        }
     });
     let weak = ui.as_weak();
     ui.global::<ToolchainLogic>().on_test_rpc({
@@ -479,93 +537,187 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
     });
 }
 
-/// Dump and save the state of the profile that runs now, so switching back
-/// to it can resume. Runs on the control runtime thread; the node is local
-/// and the dump is small (only touched accounts).
-async fn save_current_profile(held: &State) -> Result<(), String> {
-    let (workspace, profile, identity, rpc, deployments, tabs, signer) = {
-        let state = held.lock().unwrap();
-        if !state.workspace_ready || !state.active {
-            return Ok(());
-        }
-        let Some(identity) = state.network_identity.clone() else { return Ok(()) };
-        (state.workspace.clone(), state.network.profile_id.clone(), identity, state.rpc.clone(), state.current_network_deployments(), state.current_network_tabs(), state.saved_signer())
-    };
-    let state_hex = super::network::dump_node_state(&rpc).await.ok();
-    super::network::save_profile_state(&workspace, &profile, &identity, state_hex.as_deref(), &deployments, &tabs, signer.as_ref())
-}
-
-/// Switch to profile `id` (or the local chain on an empty id): preflight the
-/// target RPC before anything is torn down, then make it active and reopen
-/// the project. When the RPC fails, nothing changes and the current network
-/// keeps running. `fresh` also discards the profile's saved state (N3 fills
-/// that folder; today nothing is stored under it).
-pub(super) async fn preflight_and_reopen(weak: Weak<MainWindow>, held: State, id: String, fresh: bool) {
-    let workspace = held.lock().unwrap().workspace.clone();
-    let settings = match toolchain::target_network(&workspace, &id) {
-        Ok(settings) => settings,
-        Err(error) => {
-            // UI state is touched only on the event loop thread.
-            let _ = slint::invoke_from_event_loop(move || status(&weak, error, false));
-            return;
-        }
-    };
-    let message = if settings.is_local() { "Switching to the local chain…".to_string() } else { format!("Testing the RPC of profile {}…", settings.profile_id) };
-    let _ = slint::invoke_from_event_loop({
-        let weak = weak.clone();
-        move || status(&weak, message, true)
-    });
-    let mut warnings = Vec::new();
-    if !settings.is_local() {
-        let block = settings.fork_block.map(|block| block.to_string()).unwrap_or_default();
-        match toolchain::test_rpc(&settings.fork_url, &block).await {
-            Err(error) => {
-                let text = format!("Not switched: the RPC of profile {} did not pass its test: {error} The current network keeps running.", settings.profile_id);
-                let _ = slint::invoke_from_event_loop(move || {
+/// Reserve the workspace synchronously, before another UI or API request can
+/// start a second preflight, change the workspace, or mutate the running node.
+pub(super) fn start_switch(ui: &MainWindow, held: &State, runtime: &tokio::runtime::Handle, fresh: bool,
+    prepare: impl FnOnce(&Path) -> Result<toolchain::NetworkSwitch, String>,
+) -> Result<(), String> {
+    ui.global::<ToolchainLogic>().invoke_cancel_fresh();
+    let mut state = held.lock().unwrap();
+    if !state.workspace_ready || !state.can_change_workspace() || state.pending_workspace.is_some() {
+        return Err("Wait for the current operation to finish, then switch again.".into());
+    }
+    let lease = state.mutation_gate.try_acquire().ok_or_else(|| "Wait for the current chain operation to finish, then switch again.".to_string())?;
+    let plan = prepare(&state.workspace)?;
+    state.workspace_busy = true;
+    let workspace = state.workspace.clone();
+    drop(state);
+    let message = if plan.settings.is_local() { "Switching to a local chain…".into() } else { format!("Testing the RPC of profile {}…", plan.settings.profile_id) };
+    ui.global::<super::AppData>().set_workspace_busy(true);
+    status(&ui.as_weak(), message, true);
+    let weak = ui.as_weak();
+    let held = held.clone();
+    runtime.spawn(async move {
+        let result = preflight(&held, &plan).await;
+        let _ = slint::invoke_from_event_loop(move || {
+            let _lease = lease; // Keep the checkpoint stable through config commit or abort.
+            let mut state = held.lock().unwrap();
+            if !state.active || !state.workspace_busy || state.workspace != workspace { return; }
+            let result = result.and_then(|warnings| commit_switch(&workspace, &plan, fresh).map(|()| warnings));
+            match result {
+                Ok(warnings) => {
+                    let settings = &plan.settings;
+                    super::network::write_switch(&workspace, &state.network.profile_id, &settings.profile_id);
+                    state.profile_state_saved = true; // No second save on close, including a held-state skip.
+                    state.next_workspace = Some(workspace);
+                    state.wallet_generation = state.wallet_generation.wrapping_add(1);
+                    state.status_left = if settings.is_local() { "Reopening with a local chain…".into() } else {
+                        let warn = if warnings.is_empty() { String::new() } else { format!(" ({})", warnings.join("; ")) };
+                        format!("Reopening as profile {} (fork of {}){warn}…", settings.profile_id, super::fork_host(&settings.fork_url))
+                    };
+                    state.active = false;
+                    drop(state);
+                    let _ = slint::quit_event_loop();
+                }
+                Err(error) => {
+                    let text = format!("Not switched: {error} The current network keeps running.");
+                    state.workspace_busy = false;
+                    state.notice = text.clone();
+                    state.status_left = "Network switch cancelled".into();
+                    drop(state);
                     status(&weak, text, false);
                     super::paint(&weak, &held);
-                });
-                return;
-            }
-            Ok(lines) => warnings = lines.into_iter().filter(|line| line.starts_with("no ") || line.starts_with("-- ")).collect(),
-        }
-    }
-    // The network being left saves its state, so switching back can resume
-    // it: the node's dump, deployments and bound tabs, and the signer choice.
-    // Keys and keystores never touch disk.
-    let save_note = save_current_profile(&held).await.err().map(|error| format!(" (this network's state could not be saved: {error})")).unwrap_or_default();
-    let _ = slint::invoke_from_event_loop(move || {
-        let mut state = held.lock().unwrap();
-        if !state.can_change_workspace() {
-            drop(state);
-            return status(&weak, "Wait for the current operation to finish, then switch again.".into(), false);
-        }
-        // The marker lets boot fall back to this network when the target
-        // never becomes ready.
-        let current = state.network.profile_id.clone();
-        match toolchain::set_active_network(&state.workspace, id.trim()) {
-            Ok(_) => {
-                if fresh {
-                    let _ = std::fs::remove_dir_all(state.workspace.join(".chasm").join("networks").join(id.trim()));
                 }
-                super::network::write_switch(&state.workspace, &current, id.trim());
-                state.next_workspace = Some(state.workspace.clone());
-                state.wallet_generation = state.wallet_generation.wrapping_add(1);
-                state.workspace_busy = true;
-                state.status_left = if settings.is_local() {
-                    format!("Reopening with a local chain…{save_note}")
-                } else {
-                    let warn = if warnings.is_empty() { String::new() } else { format!(" ({})", warnings.join("; ")) };
-                    format!("Reopening as profile {} (fork of {}){warn}{save_note}…", settings.profile_id, super::fork_host(&settings.fork_url))
-                };
-                state.active = false;
-                drop(state);
-                let _ = slint::quit_event_loop();
             }
-            Err(error) => {
-                drop(state);
-                status(&weak, error, false);
+        });
+    });
+    Ok(())
+}
+
+async fn preflight(held: &State, plan: &toolchain::NetworkSwitch) -> Result<Vec<String>, String> {
+    let settings = &plan.settings;
+    let warnings = if settings.is_local() { Vec::new() } else {
+        let block = settings.fork_block.map(|block| block.to_string()).unwrap_or_default();
+        toolchain::test_rpc(&settings.fork_url, &block).await?
+            .into_iter().filter(|line| line.starts_with("no ") || line.starts_with("-- ")).collect()
+    };
+    let saved = super::network::save_running_profile(held).await;
+    require_save(saved, held.lock().unwrap().profile_state_held)?;
+    Ok(warnings)
+}
+
+fn require_save(result: Result<bool, String>, held: bool) -> Result<(), String> {
+    match result {
+        Ok(true) => Ok(()),
+        Ok(false) if held => Ok(()), // Never overwrite the held files with the current node.
+        Ok(false) => Err("The running network's state was not saved.".into()),
+        Err(error) => Err(format!("Could not save the running network: {error}.")),
+    }
+}
+
+fn commit_switch(workspace: &Path, plan: &toolchain::NetworkSwitch, fresh: bool) -> Result<(), String> {
+    let id = &plan.settings.profile_id;
+    super::network::profile_dir(workspace, id)?;
+    let config = plan.checked_config(workspace)?;
+    let archive = if fresh {
+        super::network::archive_for_fresh(workspace, id).map_err(|error| format!("Could not move the target's saved state aside: {error}."))?
+    } else { None };
+    if let Err(error) = config.save(workspace) {
+        if let Some(archive) = archive {
+            if let Err(restore) = super::network::restore_archived_profile(workspace, id, &archive) {
+                return Err(format!("Could not save the configuration ({error}) or restore {archive} ({restore}). The archive is under .chasm/networks/."));
             }
         }
-    });
+        return Err(format!("Could not save the network configuration: {error}."));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_confirmation_is_scoped_expiring_and_single_use() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let arm = || Some(FreshConfirmation {
+            workspace: a.path().into(), target: "local".into(), expires: now + CONFIRM_TIMEOUT,
+            plan: toolchain::NetworkSwitch::prepare(a.path(), "local", None).unwrap(),
+        });
+        for (root, target, at) in [(b.path(), "local", now), (a.path(), "other", now), (a.path(), "local", now + CONFIRM_TIMEOUT)] {
+            let mut pending = arm();
+            assert!(FreshConfirmation::consume(&mut pending, root, target, at).is_none());
+            assert!(pending.is_none());
+        }
+        let mut pending = arm();
+        assert!(FreshConfirmation::consume(&mut pending, a.path(), "local", now).is_some());
+        assert!(FreshConfirmation::consume(&mut pending, a.path(), "local", now).is_none());
+    }
+
+    #[test]
+    fn repeated_requests_cancel_and_reopen_never_confirm_a_clean_switch() {
+        i_slint_backend_testing::init_no_event_loop();
+        let root = tempfile::tempdir().unwrap();
+        let session = || Arc::new(Mutex::new(DesktopState::new(root.path().into(), 1.0)));
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let ui = MainWindow::new().unwrap();
+        let first = session();
+        wire(&ui, &first, runtime.handle().clone());
+        let logic = ui.global::<ToolchainLogic>();
+        let data = ui.global::<ToolchainData>();
+        logic.invoke_profile_switch("local".into(), true);
+        logic.invoke_profile_switch("local".into(), true);
+        assert_eq!(data.get_fresh_target(), "local");
+        assert!(!first.lock().unwrap().workspace_busy);
+        logic.invoke_cancel_fresh();
+        logic.invoke_confirm_fresh("local".into());
+        assert!(!first.lock().unwrap().workspace_busy);
+
+        logic.invoke_profile_switch("local".into(), true);
+        let reopened = session();
+        wire(&ui, &reopened, runtime.handle().clone());
+        assert!(data.get_fresh_target().is_empty());
+        logic.invoke_confirm_fresh("local".into());
+        assert!(!reopened.lock().unwrap().workspace_busy);
+        // The runtime is never driven. An explicit confirmation alone must
+        // reserve the workspace before a second caller can start any RPC.
+        logic.invoke_profile_switch("local".into(), true);
+        logic.invoke_confirm_fresh("local".into());
+        assert!(reopened.lock().unwrap().workspace_busy);
+        assert!(start_switch(&ui, &reopened, runtime.handle(), false, |_| panic!("two preflights")).is_err());
+    }
+
+    #[test]
+    fn only_a_written_or_held_checkpoint_allows_switching() {
+        assert!(require_save(Ok(true), false).is_ok());
+        assert!(require_save(Ok(false), true).is_ok());
+        assert!(require_save(Ok(false), false).is_err());
+        assert!(require_save(Err("save failed".into()), true).is_err());
+        assert!(require_save(Err("save failed".into()), false).is_err());
+    }
+
+    #[test]
+    fn clean_switch_archives_partial_state_but_aborts_on_an_invalid_target_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let plan = toolchain::prepare_network(root.path(), "https://rpc.invalid", "").unwrap();
+        let dir = super::super::network::profile_dir(root.path(), "fork-1").unwrap();
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::fs::write(&dir, b"not a directory").unwrap();
+        assert!(commit_switch(root.path(), &plan, true).is_err());
+        assert!(!root.path().join(".chasm/chasm.toml").exists());
+        assert_eq!(std::fs::read(&dir).unwrap(), b"not a directory");
+
+        let partial = tempfile::tempdir().unwrap();
+        let plan = toolchain::prepare_network(partial.path(), "https://rpc.invalid", "").unwrap();
+        let dir = super::super::network::profile_dir(partial.path(), "fork-1").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("deployments.json"), b"[]").unwrap();
+        commit_switch(partial.path(), &plan, true).unwrap();
+        assert!(!dir.exists());
+        let archive = dir.parent().unwrap().read_dir().unwrap().next().unwrap().unwrap();
+        assert!(archive.file_name().to_string_lossy().starts_with("fork-1.discarded-"));
+        assert_eq!(std::fs::read(archive.path().join("deployments.json")).unwrap(), b"[]");
+    }
 }

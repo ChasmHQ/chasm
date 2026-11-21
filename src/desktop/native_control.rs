@@ -554,23 +554,20 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command, 
         }
         Command::NetworkSave { profile } => {
             let (workspace, running) = { let state = held.lock().unwrap(); (state.workspace.clone(), state.network.profile_id.clone()) };
+            ui.global::<super::ToolchainLogic>().invoke_cancel_fresh();
+            if profile.id == running {
+                return match super::native_toolchain::start_switch(ui, held, &runtime, false, |root| super::toolchain::NetworkSwitch::prepare(root, &running, Some(profile.clone()))) {
+                    Ok(()) => json!({"status":"accepted","effect":"reopen_pending","message":"Testing the active profile. It is saved only if the switch can proceed."}),
+                    Err(error) => json!({"status":"failed","error":{"code":"not_ready","message":error}}),
+                };
+            }
             return match super::toolchain::save_profile(&workspace, profile.clone()) {
-                Ok(saved) => {
-                    let saved = json!({"id":saved.id,"name":saved.name,"chainIdMode":saved.chain_id_mode.as_str(),"forkBlock":saved.fork_block});
-                    if saved["id"].as_str() == Some(running.as_str()) {
-                        runtime.spawn(super::native_toolchain::preflight_and_reopen(ui.as_weak(), held.clone(), running, false));
-                        // Not "workspace_switch": that would quit the event loop
-                        // before the preflight has decided to reopen anything.
-                        json!({"status":"completed","effect":"reopen_pending","saved":saved,
-                            "message":"Saved the active profile. Testing its RPC; the project reopens on it, or keeps running with the current network."})
-                    } else {
-                        json!({"status":"completed","saved":saved,"message":"Saved. network.switch {id} runs it."})
-                    }
-                }
+                Ok(saved) => json!({"status":"completed","saved":{"id":saved.id,"name":saved.name,"chainIdMode":saved.chain_id_mode.as_str(),"forkBlock":saved.fork_block},"message":"Saved. network.switch {id} runs it."}),
                 Err(error) => json!({"status":"failed","error":{"code":"invalid_params","message":error}}),
             };
         }
         Command::NetworkRemove { id } => {
+            ui.global::<super::ToolchainLogic>().invoke_cancel_fresh();
             let workspace = held.lock().unwrap().workspace.clone();
             return match super::toolchain::remove_profile(&workspace, id.trim()) {
                 Ok(()) => json!({"status":"completed","message":format!("Removed profile {}. The running network is untouched.", id.trim())}),
@@ -580,7 +577,10 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command, 
         Command::NetworkSwitch { id, mode } => {
             let fresh = mode.as_deref() == Some("fresh");
             let id = id.trim().to_string();
-            runtime.spawn(super::native_toolchain::preflight_and_reopen(ui.as_weak(), held.clone(), id.clone(), fresh));
+            // A fresh API switch reaches perform only through local approval.
+            if let Err(error) = super::native_toolchain::start_switch(ui, held, &runtime, fresh, |root| super::toolchain::NetworkSwitch::prepare(root, &id, None)) {
+                return json!({"status":"failed","error":{"code":"not_ready","message":error}});
+            }
             // Not "workspace_switch": the preflight decides whether to reopen,
             // and the event loop must not quit before it has.
             return json!({

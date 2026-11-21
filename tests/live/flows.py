@@ -405,7 +405,9 @@ def fork():
         if job and job["status"] != "running":
             break
         time.sleep(0.5)
-    check("a read through the proxy decodes", "USD Coin" in query("contracts.view")["simple"], query("contracts.view")["simple"][-200:])
+    check("the proxy read job finished successfully", job and job["status"] == "ok", str(job and (job["status"], job.get("summary", "")[:200])))
+    result = query("contracts.view")
+    check("a read through the proxy decodes", result.get("documentId") == out["documentId"] and "USD Coin" in result["simple"], result["simple"][-200:])
     command("toolchain.action", action="network", fork_url="")
     reopened(None)
     check("back to a local chain", rpc("eth_getCode", [usdc, "latest"]) == "0x")

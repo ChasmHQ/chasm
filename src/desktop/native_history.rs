@@ -8,14 +8,15 @@ use std::sync::{Arc, Mutex};
 
 type State = Arc<Mutex<DesktopState>>;
 
-/// Entries shown under the current filter, newest first. Filter 0 is this
-/// network (untagged entries count as unknown, not foreign); 3 is everything.
-fn visible(state: &DesktopState, filter: i32) -> Vec<Entry> {
+/// Entries shown under the current filter, newest first. Filters 0–2 show
+/// this network only (untagged entries count as unknown, not foreign): 0 all
+/// calls, 1 sends, 2 failures. 3 is every network.
+pub(super) fn visible(state: &DesktopState, filter: i32) -> Vec<Entry> {
     let current = state.network_identity.as_ref().map(|identity| identity.key());
     history::load(&state.workspace)
         .into_iter()
+        .filter(|entry| filter == 3 || entry.network.as_deref().map(|network| Some(network) == current.as_deref()).unwrap_or(true))
         .filter(|entry| match filter {
-            0 => entry.network.as_deref().map(|network| Some(network) == current.as_deref()).unwrap_or(true),
             1 => entry.kind == "send",
             2 => entry.status != "ok",
             _ => true,
@@ -69,7 +70,7 @@ fn entry_network_note(state: &DesktopState, entry: &Entry) -> (bool, String) {
 }
 
 fn short(address: &str) -> String {
-    if address.len() > 12 { format!("{}…{}", &address[..6], &address[address.len() - 4..]) } else { address.to_string() }
+    if address.is_ascii() && address.len() > 12 { format!("{}…{}", &address[..6], &address[address.len() - 4..]) } else { address.to_string() }
 }
 
 pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
@@ -209,4 +210,35 @@ pub fn repeat(state: &mut DesktopState, entry: &Entry) -> Result<String, String>
     state.restore_contract_view();
     state.open_activity(0);
     Ok(format!("Refilled {}.{} in its contract tab.", entry.contract, entry.function))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sends_and_failures_follow_the_active_network() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut state = DesktopState::new(workspace.path().to_path_buf(), 1.0);
+        let local = super::super::network::NetworkIdentity { profile_id: String::new(), source_chain_id: None, fork_block: None, anchor_hash: None, execution_chain_id: 31337 };
+        let fork = super::super::network::NetworkIdentity { profile_id: "mainnet".into(), source_chain_id: Some(1), fork_block: Some(20), ..local.clone() };
+        for (id, network, kind, status) in [
+            (1, Some(local.key()), "send", "ok"),
+            (2, Some(local.key()), "simulate", "reverted"),
+            (3, Some(fork.key()), "send", "failed"),
+            (4, Some(fork.key()), "simulate", "ok"),
+            (5, None, "send", "reverted"),
+        ] {
+            history::append(workspace.path(), &Entry { time: id, network, kind: kind.into(), status: status.into(), ..Default::default() }).unwrap();
+        }
+        let ids = |state: &DesktopState, filter| visible(state, filter).into_iter().map(|entry| entry.time).collect::<Vec<_>>();
+        state.network_identity = Some(local);
+        assert_eq!(ids(&state, 0), [5, 2, 1]);
+        assert_eq!(ids(&state, 1), [5, 1]);
+        assert_eq!(ids(&state, 2), [5, 2]);
+        state.network_identity = Some(fork);
+        assert_eq!(ids(&state, 1), [5, 3]);
+        assert_eq!(ids(&state, 2), [5, 3]);
+        assert_eq!(ids(&state, 3), [5, 4, 3, 2, 1]);
+    }
 }

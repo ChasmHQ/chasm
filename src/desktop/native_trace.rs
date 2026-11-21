@@ -5,6 +5,8 @@ use super::{MainWindow, TraceData, TraceLine, TraceLogic, TraceOp, TraceTarget, 
 use serde_json::{json, Value};
 use slint::{ComponentHandle, Weak};
 use std::collections::HashMap;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 type State = Arc<Mutex<DesktopState>>;
@@ -102,7 +104,7 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
             // Keep the transcript bounded; drop whole lines from the start.
             if state.trace_console.len() > 64 * 1024 {
                 let cut = state.trace_console.len() - 48 * 1024;
-                let cut = state.trace_console[cut..].find('\n').map(|at| cut + at + 1).unwrap_or(cut);
+                let cut = state.trace_console.as_bytes()[cut..].iter().position(|&b| b == b'\n').map(|at| cut + at + 1).unwrap_or(state.trace_console.len());
                 state.trace_console.drain(..cut);
             }
             if state.trace_history.last() != Some(&line) {
@@ -237,17 +239,9 @@ fn compare_saved(state: &DesktopState, name: &str) -> String {
         }
         return format!("compare <file>, one of:\n{}", saved.iter().take(20).map(|(file, label, _)| format!("  {file}  {label}")).collect::<Vec<_>>().join("\n"));
     }
-    // The name may be given without its network prefix: match by the file
-    // that ends with it, so a bare transaction hash keeps working.
-    let path = match saved_path(&state.workspace, name) {
-        Ok(path) if path.is_file() => path,
-        _ => match saved_traces(&state.workspace).into_iter().find(|(file, _, _)| file.ends_with(name)) {
-            Some((file, _, _)) => match saved_path(&state.workspace, &file) {
-                Ok(path) => path,
-                Err(error) => return error,
-            },
-            None => return format!("No saved trace {name}."),
-        },
+    let path = match compare_path(&state.workspace, name) {
+        Ok(path) => path,
+        Err(error) => return error,
     };
     let loaded = std::fs::read(&path)
         .map_err(|_| format!("No saved trace {name}."))
@@ -332,7 +326,7 @@ enum Target {
 fn pick_target(state: &DesktopState, input: &str) -> Result<Target, String> {
     if !input.is_empty() {
         let hash = input.to_ascii_lowercase();
-        if hash.len() != 66 || !hash.starts_with("0x") || !hash[2..].bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if !is_transaction_hash(&hash) {
             return Err("Enter a 32-byte 0x transaction hash.".into());
         }
         return Ok(Target::Transaction(hash));
@@ -443,7 +437,7 @@ pub fn load_scenario(weak: Weak<MainWindow>, held: State, hashes: Vec<String>) {
             match record(&rpc, Target::Transaction(hash.clone()), programs.clone(), &fork_url, None).await {
                 Ok((session, saved, ..)) => parts.push((session, saved.prestate.unwrap_or_default())),
                 Err(failure) => {
-                    error = Some(format!("{}…: {failure}", &hash[..hash.len().min(10)]));
+                    error = Some(format!("{}…: {failure}", hash.chars().take(10).collect::<String>()));
                     break;
                 }
             }
@@ -483,7 +477,7 @@ pub fn load_scenario(weak: Weak<MainWindow>, held: State, hashes: Vec<String>) {
 pub fn load_call(weak: Weak<MainWindow>, held: State, call: Value, block: String) {
     let Some(runtime) = runtime_handle() else { return };
     let target = call["to"].as_str().unwrap_or_default().to_string();
-    let title = if target.is_empty() { "Creation call".to_string() } else { format!("Call to {}…{}", &target[..6], &target[target.len() - 4..]) };
+    let title = if target.is_empty() { "Creation call".to_string() } else { format!("Call to {}", short(&target)) };
     start(weak, held, runtime, Target::Call { title, call, block, target });
 }
 
@@ -516,7 +510,8 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
             Ok(target) => {
                 state.trace_busy = true;
                 state.trace_status = "Recording the execution…".into();
-                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch, state.network_epoch, state.network.fork_url.clone(), state.fork_chain_id))
+                let network = state.network_identity.as_ref().map(|identity| identity.tag()).unwrap_or(super::network::NetworkTag { profile: String::new(), chain: None, fork_block: None, session: None });
+                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch, state.network_epoch, state.network.fork_url.clone(), state.fork_chain_id, state.workspace.clone(), network))
             }
             Err(error) => {
                 state.trace_status = error;
@@ -525,13 +520,10 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
         }
     };
     super::paint(&weak, &held);
-    let Some((target, rpc, programs, epoch, network_epoch, fork_url, chain)) = prepared else { return };
-    let workspace = held.lock().unwrap().workspace.clone();
+    let Some((target, rpc, programs, epoch, network_epoch, fork_url, chain, workspace, network)) = prepared else { return };
     runtime.spawn(async move {
         let result = record(&rpc, target, programs, &fork_url, chain.map(|chain| (workspace.as_path(), chain))).await.map(|(session, mut saved, hash, note)| {
-            // The trace remembers the network it was recorded on, so a later
-            // one never overwrites it and its own chain answers for source.
-            saved.network = Some(held.lock().unwrap().network_identity.as_ref().map(|identity| identity.tag()).unwrap_or(super::network::NetworkTag { profile: String::new(), chain: None, fork_block: None }));
+            saved.network = Some(network);
             let path = save_trace(&workspace, &saved, hash.as_deref());
             (session, path, note)
         });
@@ -620,9 +612,7 @@ pub fn traces_dir(workspace: &std::path::Path) -> std::path::PathBuf {
     workspace.join(".chasm").join("traces")
 }
 
-/// File name for a recording: a network prefix (so two networks never
-/// overwrite each other, and local hashes never collide across profiles),
-/// then the transaction hash, or a timestamped call.
+/// Preferred name for the first recording of a transaction or timestamped call.
 fn trace_file_name(saved: &SavedTrace, hash: Option<&str>) -> String {
     let prefix = saved.network.as_ref().map(|tag| format!("{}-", tag.slug())).unwrap_or_default();
     match hash {
@@ -636,13 +626,66 @@ fn trace_file_name(saved: &SavedTrace, hash: Option<&str>) -> String {
     }
 }
 
-fn save_trace(workspace: &std::path::Path, saved: &SavedTrace, hash: Option<&str>) -> Result<std::path::PathBuf, String> {
+fn save_trace(workspace: &Path, saved: &SavedTrace, hash: Option<&str>) -> Result<PathBuf, String> {
     let dir = traces_dir(workspace);
     std::fs::create_dir_all(&dir).map_err(|error| format!("Could not create {}: {error}", dir.display()))?;
-    let path = dir.join(trace_file_name(saved, hash));
+    let name = trace_file_name(saved, hash);
+    let mut path = saved_path(workspace, &name)?;
+    let mut temp = tempfile::NamedTempFile::new_in(&dir).map_err(|error| format!("Could not create a trace in {}: {error}", dir.display()))?;
     let bytes = serde_json::to_vec(saved).map_err(|error| error.to_string())?;
-    std::fs::write(&path, bytes).map_err(|error| format!("Could not write {}: {error}", path.display()))?;
-    Ok(path)
+    temp.write_all(&bytes).map_err(|error| format!("Could not write {}: {error}", path.display()))?;
+    let mut copy = 1u64;
+    loop {
+        match temp.persist_noclobber(&path) {
+            Ok(_) => return Ok(path),
+            Err(error) if error.error.kind() == ErrorKind::AlreadyExists => {
+                temp = error.file;
+                copy += 1;
+                path = dir.join(format!("{}~{copy}.json", name.trim_end_matches(".json")));
+            }
+            Err(error) => return Err(format!("Could not save {}: {error}", path.display())),
+        }
+    }
+}
+
+fn is_transaction_hash(hash: &str) -> bool {
+    hash.len() == 66 && hash.starts_with("0x") && hash[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn transaction_hash(stem: &str) -> Option<&str> {
+    let stem = stem.rsplit_once('~').filter(|(_, copy)| !copy.is_empty() && copy.bytes().all(|b| b.is_ascii_digit())).map_or(stem, |(base, _)| base);
+    stem.rsplit('-').next().filter(|hash| is_transaction_hash(hash))
+}
+
+fn compare_path(workspace: &Path, name: &str) -> Result<PathBuf, String> {
+    if let Ok(path) = saved_path(workspace, name) {
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    let hash = name.strip_suffix(".json").unwrap_or(name);
+    let missing = || format!("No saved trace {name}.");
+    if !is_transaction_hash(hash) {
+        return Err(missing());
+    }
+    let dir = traces_dir(workspace);
+    let entries = std::fs::read_dir(&dir).map_err(|error| if error.kind() == ErrorKind::NotFound { missing() } else { format!("Could not list {}: {error}", dir.display()) })?;
+    let mut found = None;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("Could not list {}: {error}", dir.display()))?;
+        let file = entry.file_name();
+        let Some(file) = file.to_str() else { continue };
+        if file.strip_suffix(".json").and_then(transaction_hash).is_some_and(|candidate| candidate.eq_ignore_ascii_case(hash)) {
+            let Ok(path) = saved_path(workspace, file) else { continue };
+            if path.is_file() {
+                if let Some(first) = &found {
+                    return Err(format!("Ambiguous transaction hash {hash}. Use a full filename, such as {first} or {file}."));
+                }
+                found = Some(file.to_string());
+            }
+        }
+    }
+    found.map(|file| dir.join(file)).ok_or_else(missing)
 }
 
 /// Saved traces, newest first: (file name, title line, detail line).
@@ -662,10 +705,7 @@ pub fn saved_traces(workspace: &std::path::Path) -> Vec<(String, String, String)
         .take(100)
         .map(|(modified, name, size)| {
             let stem = name.trim_end_matches(".json");
-            // A transaction file ends with its 66-char hash, whatever network
-            // prefix precedes it. A call file is [<net>-]<stamp>-<label>.
-            let label = if stem.len() >= 66 && stem[stem.len() - 66..].starts_with("0x") && stem[stem.len() - 66..][2..].bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                let hash = &stem[stem.len() - 66..];
+            let label = if let Some(hash) = transaction_hash(stem) {
                 format!("Transaction {}…{}", &hash[..10], &hash[hash.len() - 6..])
             } else {
                 let rest = match stem.split_once('-') {
@@ -732,6 +772,7 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
         }
     };
     let hash = match &target {
+        Target::Transaction(hash) if !is_transaction_hash(hash) => return Err("Enter a 32-byte 0x transaction hash.".into()),
         Target::Transaction(hash) => Some(hash.clone()),
         Target::Call { .. } => None,
     };
@@ -816,7 +857,7 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
     let mut addresses = vec![target_address.to_ascii_lowercase()];
     for log in trace["structLogs"].as_array().into_iter().flatten() {
         if matches!(log["op"].as_str(), Some("CALL" | "STATICCALL" | "DELEGATECALL" | "CALLCODE")) {
-            if let Some(word) = log["stack"].as_array().and_then(|stack| stack.get(stack.len().wrapping_sub(2))).and_then(Value::as_str) {
+            if let Some(word) = log["stack"].as_array().and_then(|stack| stack.get(stack.len().wrapping_sub(2))).and_then(Value::as_str).filter(|word| word.is_ascii()) {
                 let digits = format!("{:0>40}", word.trim_start_matches("0x"));
                 let address = format!("0x{}", &digits[digits.len() - 40..]).to_ascii_lowercase();
                 if !addresses.contains(&address) && addresses.len() < 64 {
@@ -1273,12 +1314,12 @@ fn compact_word(word: &str) -> String {
 }
 
 fn short(address: &str) -> String {
-    if address.len() > 12 { format!("{}…{}", &address[..6], &address[address.len() - 4..]) } else { address.to_string() }
+    if address.is_ascii() && address.len() > 12 { format!("{}…{}", &address[..6], &address[address.len() - 4..]) } else { address.to_string() }
 }
 
 fn short_word(word: &str) -> String {
     let digits = word.trim_start_matches("0x").trim_start_matches('0');
-    if digits.len() <= 8 { format!("0x{}", if digits.is_empty() { "0" } else { digits }) } else { format!("0x{}…", &digits[..6]) }
+    if digits.len() <= 8 { format!("0x{}", if digits.is_empty() { "0" } else { digits }) } else { format!("0x{}…", digits.chars().take(6).collect::<String>()) }
 }
 
 /// ASCII view of a 32-byte memory word, dots for non-printable bytes.
@@ -1339,7 +1380,7 @@ mod tests {
     /// labels stay readable for prefixed names.
     #[test]
     fn traces_carry_their_network_in_name_and_file() {
-        let mainnet = super::super::network::NetworkTag { profile: "mainnet".into(), chain: Some(1), fork_block: Some(21_000_000) };
+        let mainnet = super::super::network::NetworkTag { profile: "mainnet".into(), chain: Some(1), fork_block: Some(21_000_000), session: None };
         let mut saved = SavedTrace { format: TRACE_FORMAT.into(), title: "Transaction 0xabc".into(), target: "0x00000000000000000000000000000000000000aa".into(), block: "latest".into(), trace: json!({"failed":false,"gas":21000,"returnValue":"","structLogs":[]}), code: HashMap::new(), input: String::new(), prestate: None, network: Some(mainnet.clone()) };
         let hash = format!("0x{}", "ab".repeat(32));
         assert_eq!(trace_file_name(&saved, Some(&hash)), format!("mainnet-21000000-{hash}.json"));
@@ -1357,6 +1398,74 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert!(listed[0].0.starts_with("mainnet-21000000-"), "the file name keeps the network");
         assert!(listed[0].1.starts_with("Transaction 0xab"), "{}", listed[0].1);
+    }
+
+    #[test]
+    fn repeated_local_recordings_keep_each_file_and_require_an_explicit_choice() {
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace = workspace.path();
+        let tag = super::super::network::NetworkTag { profile: String::new(), chain: None, fork_block: None, session: Some("1234abcd".into()) };
+        let mut saved = SavedTrace { format: TRACE_FORMAT.into(), title: "first".into(), target: String::new(), block: "latest".into(), trace: json!({}), code: HashMap::new(), input: String::new(), prestate: None, network: Some(tag) };
+        let hash = format!("0x{}", "ab".repeat(32));
+        let first = save_trace(workspace, &saved, Some(&hash)).unwrap();
+        let original = std::fs::read(&first).unwrap();
+        let name = format!("local-1234abcd-{hash}.json");
+        assert_eq!(first, traces_dir(workspace).join(&name));
+        assert_eq!(compare_path(workspace, &hash).unwrap(), first);
+        assert_eq!(compare_path(workspace, &format!("{hash}.json")).unwrap(), first);
+
+        saved.title = "second".into();
+        let second = save_trace(workspace, &saved, Some(&hash)).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), original);
+        assert_eq!(std::fs::read(&second).unwrap(), serde_json::to_vec(&saved).unwrap());
+        assert!(compare_path(workspace, &hash).unwrap_err().contains("Ambiguous"));
+        assert!(compare_path(workspace, &format!("{hash}.json")).unwrap_err().contains("Ambiguous"));
+        for (file, label, _) in saved_traces(workspace) {
+            assert_eq!(compare_path(workspace, &file).unwrap(), saved_path(workspace, &file).unwrap());
+            assert!(label.starts_with("Transaction 0xab"));
+        }
+
+        let legacy_name = format!("{hash}.json");
+        let legacy = traces_dir(workspace).join(&legacy_name);
+        std::fs::write(&legacy, b"{}").unwrap();
+        assert_eq!(compare_path(workspace, &legacy_name).unwrap(), legacy);
+        assert!(compare_path(workspace, &hash).unwrap_err().contains("Ambiguous"));
+        assert!(compare_path(workspace, &hash[10..]).is_err());
+    }
+
+    #[test]
+    fn concurrent_saves_do_not_replace_each_other() {
+        let workspace = tempfile::tempdir().unwrap();
+        let hash = format!("0x{}", "12".repeat(32));
+        let barrier = std::sync::Barrier::new(4);
+        let paths = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4).map(|id| {
+                let (barrier, workspace, hash) = (&barrier, workspace.path(), hash.as_str());
+                scope.spawn(move || {
+                    let saved = SavedTrace { format: TRACE_FORMAT.into(), title: id.to_string(), target: String::new(), block: "latest".into(), trace: json!({}), code: HashMap::new(), input: String::new(), prestate: None, network: None };
+                    barrier.wait();
+                    save_trace(workspace, &saved, Some(hash)).unwrap()
+                })
+            }).collect();
+            workers.into_iter().map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
+        });
+        for (id, path) in paths.iter().enumerate() {
+            let saved: SavedTrace = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(saved.title, id.to_string());
+        }
+    }
+
+    #[test]
+    fn listing_accepts_unicode_filenames() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dir = traces_dir(workspace.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = format!("é{}.json", "a".repeat(65));
+        std::fs::write(dir.join(&name), b"{}").unwrap();
+        let listed = saved_traces(workspace.path());
+        assert_eq!(listed[0].0, name);
+        assert_eq!(compare_path(workspace.path(), &name).unwrap(), dir.join(name));
     }
 
     /// A reopened project builds a new runtime; its `wire` must replace the

@@ -219,6 +219,12 @@ fn run(mut cli: Cli, explicit_path: bool) -> anyhow::Result<()> {
         investigation.bind_source(None);
         let generation=ui.global::<InvestigationData>().get_binding_generation().wrapping_add(1);
         ui.global::<InvestigationData>().set_binding_generation(generation);
+        // Dump before shutdown; a switch may already have saved or archived this profile.
+        if services.is_some() {
+            if let Err(error) = runtime.block_on(network::save_running_profile(&state)) {
+                eprintln!("Chasm: this network's state was not saved on close: {error}");
+            }
+        }
         let next = {
             let mut state = state.lock().unwrap();
             state.active = false;
@@ -298,8 +304,10 @@ async fn recover_startup<T>(future: impl std::future::Future<Output = anyhow::Re
 /// Per-profile state (N3): resume what a previous session saved for this
 /// network — the node's dumped state, deployments, bound tabs and the signer
 /// choice — or pin a fresh starting point on the timeline. A saved state from
-/// another chain is rejected with a notice; the saved files are never deleted
-/// automatically.
+/// another chain is archived aside with a notice; an unknown identity defers
+/// and holds the saved files so nothing overwrites them. Saved files are
+/// never deleted automatically. A notice already set (a failed switch) is
+/// kept; these notes go to the log then.
 async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
     let Some(identity) = state.network_identity.clone() else { return };
     let fresh_label = if state.network.is_local() {
@@ -307,29 +315,33 @@ async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
     } else {
         format!("Fork at block {}", identity.fork_block.map(|block| block.to_string()).unwrap_or_else(|| "latest".into()))
     };
-    match network::load_profile_state(root, &state.network.profile_id, &identity) {
-        network::LoadOutcome::None => {
-            let snapshot = network::snapshot(&state.rpc).await.ok();
-            let keys = state.current_deployment_keys();
-            state.push_timeline(snapshot.unwrap_or_default(), state.block_number, fresh_label, keys);
+    let is_fork = !state.network.is_local();
+    let note = |state: &mut DesktopState, text: String| {
+        if state.notice.is_empty() {
+            state.notice = text.clone();
         }
-        network::LoadOutcome::Rejected { reason } => {
-            state.notice = reason.clone();
-            state.push_log(reason);
-            let snapshot = network::snapshot(&state.rpc).await.ok();
-            let keys = state.current_deployment_keys();
-            state.push_timeline(snapshot.unwrap_or_default(), state.block_number, fresh_label, keys);
+        state.push_log(text);
+    };
+    match network::load_profile_state(root, &state.network.profile_id, &identity, is_fork) {
+        network::LoadOutcome::None => {}
+        network::LoadOutcome::Deferred { reason } => {
+            state.profile_state_held = true;
+            note(state, reason);
         }
+        network::LoadOutcome::Rejected { reason } => note(state, reason),
         network::LoadOutcome::Restored { saved, moved_blocks } => {
-            let mut notes = Vec::new();
-            if let Some(hex) = &saved.state {
-                if let Err(error) = network::load_node_state(&state.rpc, hex).await {
-                    notes.push(format!("The saved chain state could not be loaded ({error}); the chain started from a clean fork."));
-                }
+            if let Err(error) = network::load_node_state(&state.rpc, &saved.state).await {
+                state.profile_state_held = true;
+                note(state, format!("The saved chain state could not be loaded ({error}). Its deployments, tabs and signer were not restored. The checkpoint will not be overwritten."));
+                let snapshot = network::snapshot(&state.rpc).await.unwrap_or_default();
+                state.push_timeline(snapshot, state.block_number, "Saved state not restored".into(), state.current_deployment_keys());
+                return;
             }
+            let notice_before = state.notice.clone();
             // Deployments first, then their tabs (they need the compiled
             // contracts, which the compile above already produced), then the
-            // signer choice.
+            // signer choice. Impersonation needs no node call here: each
+            // send starts and stops it itself.
             let mut restored = 0;
             for (name, address) in &saved.deployments {
                 if state.restore_deployment(name.clone(), address.clone()) {
@@ -346,14 +358,12 @@ async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
             }
             match &saved.signer {
                 Some(network::SignerChoice::DevAccount { index }) => state.use_anvil_key(*index as i32),
-                Some(network::SignerChoice::Impersonate { address }) => {
-                    if network::impersonate(&state.rpc, address).await.is_ok() {
-                        state.impersonate(address);
-                    } else {
-                        notes.push(format!("The saved signer ({address}) could not be impersonated on the new node; choose a signer again."));
-                    }
-                }
+                Some(network::SignerChoice::Impersonate { address }) => state.impersonate(address),
                 None => {}
+            }
+            // Choosing a signer rewrites the notice; restore the earlier one.
+            if !notice_before.is_empty() {
+                state.notice = notice_before;
             }
             let snapshot = network::snapshot(&state.rpc).await.ok();
             let keys = state.current_deployment_keys();
@@ -364,12 +374,12 @@ async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
                 }
             }
             state.push_timeline(snapshot.unwrap_or_default(), state.block_number, label, keys);
-            if !notes.is_empty() {
-                state.notice = notes.join(" ");
-            }
             state.push_log(format!("Resumed profile {} ({}).", state.network.profile_id, identity.key()));
+            return;
         }
     }
+    let snapshot = network::snapshot(&state.rpc).await.unwrap_or_default();
+    state.push_timeline(snapshot, state.block_number, fresh_label, state.current_deployment_keys());
 }
 
 /// Start the node for `network` and wait until it answers with the chain id
@@ -478,12 +488,23 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
             (source, exec, source_error, Some(format!("Network switch to {target} failed: {error:#}. The previous network is running again.")))
         }
     };
+    // A node is ready: the switch marker described one attempt and is done,
+    // whichever profile ended up running. A later ordinary restart whose RPC
+    // fails must not silently fall back to an old profile.
+    network::clear_switch(&root);
     let info = network::node_info("http://127.0.0.1:8545").await;
-    let (forked_block, anchor_hash) = network::fork_anchor(info.as_ref());
+    let forked_block = network::fork_block_of(info.as_ref()).or(network.fork_block);
+    // A fork anchors to its fork block; a local chain to its genesis, which
+    // is new on every start (traces use it to keep restarts apart).
+    let anchor_hash = if network.is_local() || forked_block.is_some() {
+        network::anchor_hash("http://127.0.0.1:8545", forked_block).await
+    } else {
+        None
+    };
     let identity = network::NetworkIdentity {
         profile_id: network.profile_id.clone(),
         source_chain_id: fork_chain_id,
-        fork_block: forked_block.or(network.fork_block),
+        fork_block: forked_block,
         anchor_hash,
         execution_chain_id,
     };
@@ -528,7 +549,7 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
         }
     }
     if let Some(warning) = config_warning {
-        state.notice = warning.clone();
+        if state.notice.is_empty() { state.notice = warning.clone(); }
         state.push_log(warning);
     }
     if let Some(error) = switch_error {
@@ -552,9 +573,9 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
     // Imports verified on this chain but absent at this fork point: the node
     // has no code at the address yet, so calling them would fail.
     let missing = contract_import::missing_code(&root, &state.rpc, state.fork_chain_id).await;
-    if !missing.is_empty() && state.notice.is_empty() {
+    if !missing.is_empty() {
         let text = format!("{} imported contract(s) have no code at this fork point; they were verified at other blocks. Imports stay listed; attach again once the chain reaches them.", missing.len());
-        state.notice = text.clone();
+        if state.notice.is_empty() { state.notice = text.clone(); }
         state.push_log(text);
     }
     match establish_debugger(&state.client).await {
@@ -564,7 +585,7 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
         }
         Err(error) => {
             state.debugger_label = "Debugger unavailable".into();
-            state.notice = error.clone();
+            if state.notice.is_empty() { state.notice = error.clone(); }
             state.push_log(error);
         }
     }
@@ -826,7 +847,14 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                                     if let Some(identity) = state.network_identity.as_mut() {
                                         identity.source_chain_id = Some(id);
                                     }
-                                    state.notice.clear();
+                                    // The chain's imports load now that it is known.
+                                    let contracts = state.contracts.clone();
+                                    state.replace_compiled_contracts(contracts);
+                                    state.notice = if state.profile_state_held {
+                                        format!("Source chain is {}. This network's saved state was held back at boot; reopen the project to restore it.", toolchain::chain_name(id))
+                                    } else {
+                                        String::new()
+                                    };
                                 }
                                 Some(Err(error)) => {
                                     state.notice = format!("Source chain unknown: {error}. Import, verified source and the chain name wait until it is fetched again.");

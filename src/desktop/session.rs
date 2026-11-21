@@ -275,6 +275,12 @@ pub struct DesktopState {
     /// The identity pinned at boot: profile, source chain, fork block and
     /// what the node reports as its chain id.
     pub network_identity: Option<super::network::NetworkIdentity>,
+    /// Boot could neither restore nor archive this checkpoint. Do not overwrite it on close or switch.
+    pub profile_state_held: bool,
+    /// Set once a switch has saved this session's state: the close that
+    /// follows must not save again (a clean fork of this same profile would
+    /// otherwise be written back).
+    pub profile_state_saved: bool,
     pub menu_open: i32,
     pub deployment_menu: i32,
     pub dock_tab: i32,
@@ -433,6 +439,8 @@ impl DesktopState {
             network: Default::default(),
             fork_chain_id: None,
             network_identity: None,
+            profile_state_held: false,
+            profile_state_saved: false,
             menu_open: -1,
             deployment_menu: -1,
             dock_tab: 0,

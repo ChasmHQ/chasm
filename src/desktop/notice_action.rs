@@ -15,7 +15,7 @@ pub fn suggest(notice: &str) -> Option<(&'static str, &'static str)> {
         (&["deployment is missing or ambiguous", "earlier network context"], "Refresh chain", "refresh"),
         (&["wait for", "in progress"], "Open jobs", "jobs"),
         (&["debugger unavailable", "debugger gateway"], "Open debugger", "debugger"),
-        (&["could not reach the node", "anvil did not become ready", "owned local anvil node is unavailable"], "Reopen project", "reopen"),
+        (&["could not reach the node", "anvil did not become ready", "owned local anvil node is unavailable", "reopen the project to restore it"], "Reopen project", "reopen"),
     ];
     rules
         .iter()

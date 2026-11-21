@@ -103,13 +103,15 @@ fn type_label(param: &Value) -> String {
     }
 }
 
-/// Imports reloaded from the Sourcify cache only: no network on open. With
-/// `chain` given, only imports of that chain load — a fork of another chain
-/// must not show contracts that live somewhere else.
+/// Imports reloaded from the Sourcify cache only: no network on open. Only
+/// imports of `chain` load; with no chain (a local chain, or a fork whose
+/// source chain is still unknown) none do — a contract that lives on another
+/// chain must never be listed as callable here.
 pub fn reload(workspace: &Path, chain: Option<u64>) -> Vec<Imported> {
+    let Some(chain) = chain else { return Vec::new() };
     saved(workspace)
         .into_iter()
-        .filter(|import| chain.is_none_or(|chain| import.chain == chain))
+        .filter(|import| import.chain == chain)
         .filter_map(|import| {
             let path = workspace.join(".chasm").join("sources").join(import.chain.to_string()).join(format!("{}.json", import.source));
             let answer: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
@@ -196,7 +198,7 @@ mod tests {
         let import = Import { chain: 1, address: "0x00000000000000000000000000000000000000aa".into(), source: "0x00000000000000000000000000000000000000aa".into(), note: String::new() };
         let sepolia = Import { chain: 11155111, address: "0x00000000000000000000000000000000000000aa".into(), source: "0x00000000000000000000000000000000000000aa".into(), note: String::new() };
         save(dir.path(), &[import.clone(), sepolia.clone()]).unwrap();
-        assert!(reload(dir.path(), None).is_empty(), "nothing cached yet");
+        assert!(reload(dir.path(), Some(1)).is_empty(), "nothing cached yet");
         let cache = dir.path().join(".chasm/sources/1");
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("0x00000000000000000000000000000000000000aa.json"), answer().to_string()).unwrap();
@@ -205,8 +207,8 @@ mod tests {
         assert_eq!(reloaded[0].import, import);
         // A fork of another chain loads none of this chain's imports.
         assert!(reload(dir.path(), Some(11155111)).is_empty());
-        // Without a known chain (an unknown fork), everything cached loads.
-        assert_eq!(reload(dir.path(), None).len(), 1);
+        // A local chain, or a fork whose chain is unknown, loads none.
+        assert!(reload(dir.path(), None).is_empty());
         // The import records its chain, so names can carry it when two
         // chains' imports collide.
         assert!(reloaded[0].origin.contains("chain 1"));

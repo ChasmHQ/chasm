@@ -318,34 +318,52 @@ pub fn remove_profile(workspace: &Path, id: &str) -> Result<(), String> {
     config.save(workspace).map_err(|error| error.to_string())
 }
 
-/// Make `id` the active network. It takes effect when the project reopens.
-pub fn set_active_network(workspace: &Path, id: &str) -> Result<crate::config::NetworkSettings, String> {
-    let id = id.trim();
-    let mut config = ChasmConfig::load(workspace).map_err(|error| error.to_string())?;
-    if !id.is_empty() && id != crate::config::NetworkProfile::LOCAL_ID && config.profile(id).is_none() {
-        return Err(format!("No network profile named {id:?}. Save it first."));
-    }
-    config.network.active = id.to_string();
-    let settings = config.resolve_network()?;
-    config.save(workspace).map_err(|error| error.to_string())?;
-    Ok(settings)
+/// A proposed switch. Neither a new active id nor an edited active profile
+/// goes to disk until the tested settings can actually be used.
+pub struct NetworkSwitch {
+    previous_active: String,
+    previous_target: Option<crate::config::NetworkProfile>,
+    edit: Option<crate::config::NetworkProfile>,
+    pub settings: crate::config::NetworkSettings,
 }
 
-/// The settings a profile would run with, resolved without saving anything:
-/// the preflight of a switch tests exactly this.
-pub fn target_network(workspace: &Path, id: &str) -> Result<crate::config::NetworkSettings, String> {
-    let id = id.trim();
-    let config = ChasmConfig::load(workspace).map_err(|error| error.to_string())?;
-    if id.is_empty() || id == crate::config::NetworkProfile::LOCAL_ID {
-        return Ok(crate::config::NetworkSettings::local());
+impl NetworkSwitch {
+    pub fn prepare(workspace: &Path, id: &str, edit: Option<crate::config::NetworkProfile>) -> Result<Self, String> {
+        let config = ChasmConfig::load(workspace).map_err(|_| "Could not read the project configuration.".to_string())?;
+        Self::from_config(config, id, edit)
     }
-    let profile = config.profile(id).ok_or_else(|| format!("No network profile named {id:?}."))?;
-    Ok(crate::config::NetworkSettings {
-        profile_id: profile.id.clone(),
-        fork_url: profile.resolve_url()?,
-        fork_block: profile.fork_block,
-        chain_id_mode: profile.chain_id_mode,
-    })
+
+    fn from_config(mut config: ChasmConfig, id: &str, edit: Option<crate::config::NetworkProfile>) -> Result<Self, String> {
+        let id = id.trim();
+        let previous_target = config.profile(id).cloned();
+        let previous_active = config.network.active.clone();
+        if let Some(profile) = &edit {
+            profile.validate()?;
+            if profile.id != id { return Err("The edited profile does not match the switch target.".into()); }
+            config.upsert_profile(profile.clone());
+        } else if let Some(profile) = &previous_target {
+            profile.validate()?;
+        }
+        config.network.active = id.to_string();
+        let settings = config.resolve_network()?;
+        Ok(Self { previous_active, previous_target, edit, settings })
+    }
+
+    /// Keep unrelated edits made during the RPC test. Refuse a changed target
+    /// (including a newly resolved environment URL) rather than activating it.
+    pub fn checked_config(&self, workspace: &Path) -> Result<ChasmConfig, String> {
+        let mut config = ChasmConfig::load(workspace).map_err(|_| "Could not read the project configuration.".to_string())?;
+        let id = &self.settings.profile_id;
+        if config.network.active != self.previous_active || config.profile(id) != self.previous_target.as_ref() {
+            return Err("Network configuration changed. Review the profile and switch again.".into());
+        }
+        if let Some(profile) = &self.edit { config.upsert_profile(profile.clone()); }
+        config.network.active = id.clone();
+        if config.resolve_network()? != self.settings {
+            return Err("The target RPC changed. Test the profile again.".into());
+        }
+        Ok(config)
+    }
 }
 
 /// The legacy single-network save behind `toolchain.action network` and the
@@ -353,7 +371,7 @@ pub fn target_network(workspace: &Path, id: &str) -> Result<crate::config::Netwo
 /// block (creating `fork-1` when the local chain is active), or switches back
 /// to a local chain on an empty URL. The chain id mode stays Local, as before
 /// profiles existed; `network.save` carries the mode explicitly.
-pub fn save_network(workspace: &Path, url: &str, block: &str) -> Result<crate::config::NetworkSettings, String> {
+pub fn prepare_network(workspace: &Path, url: &str, block: &str) -> Result<NetworkSwitch, String> {
     let url = url.trim();
     let block = block.trim();
     let fork_block = if block.is_empty() {
@@ -361,22 +379,15 @@ pub fn save_network(workspace: &Path, url: &str, block: &str) -> Result<crate::c
     } else {
         Some(block.parse::<u64>().map_err(|_| "Enter the fork block as a whole number, or leave it empty for the latest block.".to_string())?)
     };
-    let mut config = ChasmConfig::load(workspace).map_err(|error| error.to_string())?;
-    if url.is_empty() {
-        config.network.active = String::new();
-    } else {
-        crate::config::NetworkProfile::check_url(url)?;
-        let id = match config.network.active.trim() {
-            "" | crate::config::NetworkProfile::LOCAL_ID => "fork-1".to_string(),
-            active => active.to_string(),
-        };
-        let name = config.profile(&id).map(|profile| profile.name.clone()).unwrap_or_default();
-        config.upsert_profile(crate::config::NetworkProfile { id: id.clone(), name, fork_url: url.to_string(), fork_url_env: String::new(), fork_block, chain_id_mode: crate::config::ChainIdMode::Local });
-        config.network.active = id;
-    }
-    let settings = config.resolve_network()?;
-    config.save(workspace).map_err(|error| error.to_string())?;
-    Ok(settings)
+    if url.is_empty() { return NetworkSwitch::prepare(workspace, "", None); }
+    let config = ChasmConfig::load(workspace).map_err(|_| "Could not read the project configuration.".to_string())?;
+    let id = match config.network.active.trim() {
+        "" | crate::config::NetworkProfile::LOCAL_ID => "fork-1",
+        active => active,
+    }.to_string();
+    let name = config.profile(&id).map(|profile| profile.name.clone()).unwrap_or_default();
+    let profile = crate::config::NetworkProfile { id: id.clone(), name, fork_url: url.into(), fork_url_env: String::new(), fork_block, chain_id_mode: crate::config::ChainIdMode::Local };
+    NetworkSwitch::from_config(config, &id, Some(profile))
 }
 
 /// The `pragma solidity` line of each workspace source, for the compiler view.
@@ -437,39 +448,62 @@ mod tests {
         assert_eq!(missing, vec!["openzeppelin-contracts"]);
         remove_from_project(workspace.path(), "solady").unwrap();
         assert_eq!(used_version(workspace.path(), "solady"), None);
-        assert!(save_network(workspace.path(), "ftp://x", "").is_err());
-        assert!(save_network(workspace.path(), "https://rpc.example", "latest").is_err());
-        let settings = save_network(workspace.path(), "https://rpc.example/key", "21000000").unwrap();
-        assert_eq!(settings.fork_block, Some(21_000_000));
-        assert_eq!(settings.profile_id, "fork-1");
+        assert!(prepare_network(workspace.path(), "ftp://x", "").is_err());
+        assert!(prepare_network(workspace.path(), "https://rpc.example", "latest").is_err());
+        let plan = prepare_network(workspace.path(), "https://rpc.example/key", "21000000").unwrap();
+        assert_eq!(plan.settings.fork_block, Some(21_000_000));
+        assert_eq!(plan.settings.profile_id, "fork-1");
+        assert!(ChasmConfig::load(workspace.path()).unwrap().profile("fork-1").is_none());
+        plan.checked_config(workspace.path()).unwrap().save(workspace.path()).unwrap();
         let config = ChasmConfig::load(workspace.path()).unwrap();
         assert_eq!(config.network.active, "fork-1");
         assert_eq!(config.profile("fork-1").unwrap().fork_url, "https://rpc.example/key");
         // The legacy alias switches back to the built-in local chain; the
         // saved profile stays listed for reuse.
-        let settings = save_network(workspace.path(), "", "").unwrap();
-        assert!(settings.is_local() && settings.profile_id.is_empty());
+        let plan = prepare_network(workspace.path(), "", "").unwrap();
+        assert!(plan.settings.is_local() && plan.settings.profile_id.is_empty());
+        plan.checked_config(workspace.path()).unwrap().save(workspace.path()).unwrap();
         let saved = std::fs::read_to_string(workspace.path().join(".chasm/chasm.toml")).unwrap();
         assert!(!saved.contains("active"), "{saved}");
         assert!(saved.contains("[[networks]]"), "{saved}");
         // An explicit switch picks any saved profile.
-        set_active_network(workspace.path(), "fork-1").unwrap();
+        let switch = |id| NetworkSwitch::prepare(workspace.path(), id, None).and_then(|plan| plan.checked_config(workspace.path()));
+        switch("fork-1").unwrap().save(workspace.path()).unwrap();
         assert_eq!(ChasmConfig::load(workspace.path()).unwrap().network.active, "fork-1");
-        assert!(set_active_network(workspace.path(), "ghost").is_err());
+        assert!(switch("ghost").is_err());
         // Profiles save, replace and remove by id; `local` never does.
         let profile = crate::config::NetworkProfile { id: "mainnet".into(), name: "Ethereum mainnet".into(), fork_url: "https://m.example".into(), fork_url_env: String::new(), fork_block: Some(1), chain_id_mode: crate::config::ChainIdMode::Source };
         assert_eq!(save_profile(workspace.path(), profile.clone()).unwrap(), profile);
         assert!(save_profile(workspace.path(), crate::config::NetworkProfile { id: "Local".into(), name: String::new(), fork_url: String::new(), fork_url_env: String::new(), fork_block: None, chain_id_mode: crate::config::ChainIdMode::Local }).is_err());
         assert!(remove_profile(workspace.path(), "fork-1").is_err(), "the active profile is refused");
-        set_active_network(workspace.path(), "").unwrap();
+        switch("").unwrap().save(workspace.path()).unwrap();
         remove_profile(workspace.path(), "fork-1").unwrap();
         assert!(ChasmConfig::load(workspace.path()).unwrap().profile("fork-1").is_none());
     }
 
     #[test]
+    fn staged_active_edit_preserves_config_and_rejects_a_changed_target() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let first = prepare_network(root, "https://original.invalid", "1").unwrap();
+        first.checked_config(root).unwrap().save(root).unwrap();
+        let path = root.join(".chasm/chasm.toml");
+        let before = std::fs::read(&path).unwrap();
+        let staged = prepare_network(root, "https://proposed.invalid", "2").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        ChasmConfig::update(root, |config| config.remappings.push("a/=b/".into())).unwrap();
+        assert_eq!(staged.checked_config(root).unwrap().remappings, ["a/=b/"]);
+        ChasmConfig::update(root, |config| config.networks[0].fork_block = Some(3)).unwrap();
+        assert!(staged.checked_config(root).is_err());
+        let config = ChasmConfig::load(root).unwrap();
+        assert_eq!(config.resolve_network().unwrap().fork_url, "https://original.invalid");
+        assert_eq!(config.resolve_network().unwrap().fork_block, Some(3));
+    }
+
+    #[test]
     fn public_rpcs_are_https_and_chains_are_named() {
         for (_, url, _) in PUBLIC_RPCS {
-            assert!(save_network(tempfile::tempdir().unwrap().path(), url, "").is_ok(), "{url}");
+            assert!(prepare_network(tempfile::tempdir().unwrap().path(), url, "").is_ok(), "{url}");
             assert!(url.starts_with("https://"));
         }
         assert_eq!(chain_name(1), "Ethereum (1)");

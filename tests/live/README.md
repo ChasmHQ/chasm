@@ -47,4 +47,6 @@ key is stored here.
 
 The table describes assertions in `flows.py`, not results from a particular run. The `bundle` flow does not query the transaction pool or mine a later block to check for leftover sends. `src/desktop/macro_runner_tests.rs` covers an unconfirmed rollback with a mock backend, not a live node failure.
 
+`python tests/live/profile_lifecycle.py` checks profile persistence on Windows. It starts a disposable upstream Anvil with chain ID 11155111 on loopback, pins the fork to a known block, and waits for a new workspace ID after each switch. It verifies the anchor hash, marker removal, isolated balances, and an edit made just before closing the window. It does **not** require or test the public Sepolia RPC. Forced termination is not a graceful close.
+
 `CHASM_STRESS_SHOTS=<folder>` saves a screenshot of each view per zoom.

@@ -159,7 +159,7 @@ impl NetworkProfile {
 
     /// Check values before they are saved or booted, so a typo names the field.
     pub fn validate(&self) -> Result<(), String> {
-        let id = self.id.trim();
+        let id = &self.id;
         if id.is_empty() {
             return Err("A profile needs an id.".into());
         }
@@ -313,6 +313,11 @@ impl ChasmConfig {
                 anyhow::anyhow!("{} is not valid TOML: {error}", config_path.display())
             })?;
             config.migrate_network();
+            let mut ids = std::collections::HashSet::new();
+            for profile in &config.networks {
+                profile.validate().map_err(anyhow::Error::msg)?;
+                anyhow::ensure!(ids.insert(&profile.id), "Duplicate network profile id {:?}.", profile.id);
+            }
             Ok(config)
         } else {
             Ok(ChasmConfig::default())
@@ -599,6 +604,17 @@ mod tests {
     fn an_active_id_without_a_profile_is_refused() {
         let config = ChasmConfig { network: NetworkConfig { active: "mainnet".into(), ..Default::default() }, networks: vec![profile("sepolia", "https://s.example", None)], ..Default::default() };
         assert_eq!(config.resolve_network().unwrap_err(), "Active network profile \"mainnet\" has no [[networks]] entry. Fix [network] active or add the profile.");
+    }
+
+    #[test]
+    fn disk_profiles_must_have_distinct_safe_directory_names() {
+        let root = tempfile::tempdir().unwrap();
+        for id in ["../other", "trailing ", "local"] {
+            write(root.path(), &format!("[[networks]]\nid = {id:?}\n"));
+            assert!(ChasmConfig::load(root.path()).is_err());
+        }
+        write(root.path(), "[[networks]]\nid = 'one'\n[[networks]]\nid = 'one'\n");
+        assert!(ChasmConfig::load(root.path()).unwrap_err().to_string().contains("Duplicate"));
     }
 
     #[test]

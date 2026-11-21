@@ -27,6 +27,7 @@ export global ToolchainData {
     // How Switch applies the target: resume its saved state, or discard it
     // first (always confirmed locally).
     in-out property <bool> switch-fresh: false;
+    in property <string> fresh-target;
     in-out property <string> selected-profile;
     in-out property <string> profile-name;
     // 0 = chain id Local (31337), 1 = the forked chain's own id.
@@ -68,6 +69,8 @@ export global ToolchainLogic {
     callback profile-save(string, string, string, string, string);
     // id, fresh (discard the profile's saved state; needs local approval).
     callback profile-switch(string, bool);
+    callback confirm-fresh(string);
+    callback cancel-fresh();
     callback preset(int);
     // optimizer: 0 default, 1 on, 2 off.
     callback save-settings(int, string, bool, string, string);
@@ -113,11 +116,20 @@ export component ToolchainWorkspace inherits ScrollView {
         HorizontalLayout {
             spacing: 0.25rem;
             Text { text: "Switch"; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
-            DockTab { label: "Resume (keeps the target's saved state)"; selected: !ToolchainData.switch-fresh; horizontal-stretch: 0; clicked => { ToolchainData.switch-fresh = false; } }
-            DockTab { label: "Clean fork (discards it, asks first)"; selected: ToolchainData.switch-fresh; horizontal-stretch: 0; clicked => { ToolchainData.switch-fresh = true; } }
+            DockTab { label: "Resume saved state"; selected: !ToolchainData.switch-fresh; horizontal-stretch: 0; clicked => { ToolchainLogic.cancel-fresh(); ToolchainData.switch-fresh = false; } }
+            DockTab { label: "Clean fork"; selected: ToolchainData.switch-fresh; horizontal-stretch: 0; clicked => { ToolchainData.switch-fresh = true; } }
             Rectangle { horizontal-stretch: 1; }
         }
         SelectableText { text: "Each network keeps its own state in .chasm/networks/<id>: the node's dump, deployments, bound tabs and the signer choice (never keys; a keystore must be unlocked again). Switching away saves the network that runs now; Switch restores the target's, and a rejected target leaves the current network running."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        if ToolchainData.fresh-target != "": VerticalLayout {
+            spacing: 0.25rem;
+            SelectableText { text: "Start \{ToolchainData.fresh-target} clean? Its saved chain, deployments, bound tabs and signer choice will be moved aside under .chasm/networks/."; color: Theme.warn; font-size: 0.8125rem; wrap: word-wrap; }
+            HorizontalLayout {
+                alignment: start; spacing: 0.375rem;
+                Small { text: "Cancel"; clicked => { ToolchainLogic.cancel-fresh(); } }
+                Small { text: "Confirm clean fork"; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.confirm-fresh(ToolchainData.fresh-target); } }
+            }
+        }
         for row in ToolchainData.profiles: Rectangle {
             height: network-row.preferred-height + 0.75rem;
             background: row.active ? Theme.panel : transparent;
@@ -133,16 +145,16 @@ export component ToolchainWorkspace inherits ScrollView {
                     }
                     Text { text: row.detail; color: Theme.muted; font-size: 0.75rem; overflow: elide; }
                 }
-                Small { text: "Edit"; enabled: !ToolchainData.busy && !row.builtin; clicked => { ToolchainLogic.profile-select(row.id); } }
-                Small { text: "Duplicate"; enabled: !ToolchainData.busy && !row.builtin; clicked => { ToolchainLogic.profile-duplicate(row.id); } }
-                Small { text: "Delete"; enabled: !ToolchainData.busy && !row.builtin; clicked => { ToolchainLogic.profile-remove(row.id); } }
-                Small { text: "Switch"; enabled: !ToolchainData.busy && !row.active; clicked => { ToolchainLogic.profile-switch(row.id, ToolchainData.switch-fresh); } }
+                Small { text: "Edit"; enabled: !ToolchainData.busy && !row.builtin; clicked => { ToolchainLogic.cancel-fresh(); ToolchainLogic.profile-select(row.id); } }
+                Small { text: "Duplicate"; enabled: !ToolchainData.busy && !row.builtin; clicked => { ToolchainLogic.cancel-fresh(); ToolchainLogic.profile-duplicate(row.id); } }
+                Small { text: "Delete"; enabled: !ToolchainData.busy && !row.builtin; clicked => { ToolchainLogic.cancel-fresh(); ToolchainLogic.profile-remove(row.id); } }
+                Small { text: ToolchainData.switch-fresh ? "Clean fork…" : "Switch"; enabled: !ToolchainData.busy && (!row.active || ToolchainData.switch-fresh); clicked => { ToolchainLogic.profile-switch(row.id, ToolchainData.switch-fresh); } }
             }
         }
         HorizontalLayout {
             spacing: 0.375rem;
             LineEdit { text <=> ToolchainData.profile-name; placeholder-text: "name for a new profile, e.g. Ethereum mainnet"; font-size: 0.8125rem; horizontal-stretch: 1; }
-            Small { text: "New profile"; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.profile-add(ToolchainData.profile-name); } }
+            Small { text: "New profile"; enabled: !ToolchainData.busy; clicked => { ToolchainLogic.cancel-fresh(); ToolchainLogic.profile-add(ToolchainData.profile-name); } }
         }
         HorizontalLayout {
             spacing: 0.25rem;
