@@ -221,21 +221,91 @@ pub const PUBLIC_RPCS: [(&str, &str, u64); 6] = [
     ("Sepolia", "https://ethereum-sepolia-rpc.publicnode.com", 11155111),
 ];
 
+/// What Chasm knows about a chain beyond its id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChainInfo {
+    /// "Ethereum", "Sepolia", a known L2 name, or "chain {id}".
+    pub name: &'static str,
+    /// Native token symbol when known (ETH, BNB, POL, AVAX); none means
+    /// "native token".
+    pub symbol: Option<&'static str>,
+    /// "ethereum" for the chains Chasm treats as first-class (Ethereum and
+    /// Sepolia); "other" for everything else, which forks with warnings.
+    pub kind: &'static str,
+}
+
+/// Chain names, native tokens and kind. Only Ethereum mainnet (1) and
+/// Sepolia (11155111) are first-class: precompiles, system transactions and
+/// fees follow Ethereum there. Other EVM chains fork without special
+/// handling and are labelled as such.
+pub fn chain_info(id: u64) -> ChainInfo {
+    let (name, symbol) = match id {
+        1 => ("Ethereum", Some("ETH")),
+        11155111 => ("Sepolia", Some("ETH")),
+        17000 => ("Holesky", Some("ETH")),
+        8453 => ("Base", Some("ETH")),
+        84532 => ("Base Sepolia", Some("ETH")),
+        10 => ("Optimism", Some("ETH")),
+        11155420 => ("Optimism Sepolia", Some("ETH")),
+        42161 => ("Arbitrum", Some("ETH")),
+        421614 => ("Arbitrum Sepolia", Some("ETH")),
+        56 => ("BNB Chain", Some("BNB")),
+        137 => ("Polygon", Some("POL")),
+        43114 => ("Avalanche", Some("AVAX")),
+        other => (PUBLIC_RPCS.iter().find(|(_, _, chain)| *chain == other).map(|(name, _, _)| *name).unwrap_or("chain"), None),
+    };
+    let kind = if id == 1 || id == 11155111 { "ethereum" } else { "other" };
+    ChainInfo { name, symbol, kind }
+}
+
 /// A readable name for a chain id, e.g. "Ethereum (1)".
 pub fn chain_name(id: u64) -> String {
-    let known = [(56, "BNB Chain"), (43114, "Avalanche"), (17000, "Holesky"), (84532, "Base Sepolia")];
-    PUBLIC_RPCS
-        .iter()
-        .map(|(name, _, chain)| (*chain, *name))
-        .chain(known)
-        .find(|(chain, _)| *chain == id)
-        .map(|(_, name)| format!("{name} ({id})"))
-        .unwrap_or_else(|| format!("chain {id}"))
+    let info = chain_info(id);
+    match info.name {
+        "chain" => format!("chain {id}"),
+        name => format!("{name} ({id})"),
+    }
+}
+
+/// The native token of a chain: its symbol when known, else a neutral label.
+pub fn native_token(id: Option<u64>) -> &'static str {
+    id.and_then(|id| chain_info(id).symbol).unwrap_or("native token")
+}
+
+/// Whether a chain is first-class for forking and tracing.
+pub fn chains_first_class(id: u64) -> bool {
+    chain_info(id).kind == "ethereum"
+}
+
+/// Rough hardfork rank of a block header, so a build can be compared with the
+/// network it will run on. Ranks: Paris 0, Shanghai 1, Cancun 2, Prague 3.
+pub fn header_hardfork(header: &serde_json::Value) -> (&'static str, u8) {
+    if header.get("requestsHash").is_some_and(|value| !value.is_null()) {
+        ("Prague", 3)
+    } else if header.get("blobGasUsed").is_some_and(|value| !value.is_null()) {
+        ("Cancun", 2)
+    } else if header.get("withdrawalsRoot").is_some_and(|value| !value.is_null()) {
+        ("Shanghai", 1)
+    } else {
+        ("Paris", 0)
+    }
+}
+
+/// Rank of a solc evm_version name, for the same comparison.
+pub fn evm_version_rank(version: &str) -> Option<u8> {
+    match version.trim().to_ascii_lowercase().as_str() {
+        "" => None,
+        "paris" | "merge" => Some(0),
+        "shanghai" => Some(1),
+        "cancun" => Some(2),
+        "prague" | "osaka" => Some(3),
+        _ => None,
+    }
 }
 
 /// One line per check of a fork RPC, before it is saved. Only the host is
 /// named: provider keys often sit in the URL path.
-pub async fn test_rpc(url: &str, block: &str) -> Result<Vec<String>, String> {
+pub async fn test_rpc(url: &str, block: &str, workspace_evm: Option<&str>) -> Result<Vec<String>, String> {
     let url = url.trim();
     let parsed = reqwest::Url::parse(url).map_err(|_| "Enter an http(s) RPC URL.".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
@@ -267,11 +337,41 @@ pub async fn test_rpc(url: &str, block: &str) -> Result<Vec<String>, String> {
     let Some(chain) = chain.as_ref().ok().and_then(quantity) else {
         return Err(format!("{host} did not answer eth_chainId ({}). Check the URL.", chain.err().unwrap_or_else(|| "invalid answer".into())));
     };
+    let info = chain_info(chain);
     lines.push(format!("ok  chain: {}", chain_name(chain)));
+    if info.kind == "ethereum" {
+        lines.push("ok  chain kind: Ethereum — native token, precompiles and fees follow Ethereum".into());
+    } else {
+        lines.push(format!(
+            "--  chain kind: other chain — precompiles, system transactions and fees may differ from Ethereum; Chasm forks it without special handling (native token: {})",
+            info.symbol.unwrap_or("reported by the chain")
+        ));
+    }
     let head = call("eth_blockNumber", serde_json::json!([])).await.ok().as_ref().and_then(quantity);
     match head {
         Some(head) => lines.push(format!("ok  head: block {head}")),
         None => lines.push("no  head: eth_blockNumber failed".into()),
+    }
+    // Capabilities the fork and the debugger depend on.
+    match call("eth_getBlockByNumber", serde_json::json!(["latest", false])).await {
+        Ok(header) if !header.is_null() => {
+            let (fork, rank) = header_hardfork(&header);
+            lines.push(format!("ok  latest hardfork: {fork}"));
+            if let Some(rank_workspace) = workspace_evm.and_then(evm_version_rank) {
+                if rank_workspace > rank {
+                    lines.push(format!(
+                        "no  the workspace builds for {} but the network's latest block is {fork}: deployed code may use opcodes this chain does not have",
+                        workspace_evm.unwrap_or_default()
+                    ));
+                }
+            }
+        }
+        _ => lines.push("--  hardfork: the latest block header is unavailable".into()),
+    }
+    match debug_trace_supported(url).await {
+        Some(true) => lines.push("ok  debug_traceTransaction: supported".into()),
+        Some(false) => lines.push("--  debug_traceTransaction: not supported; replaying a forked transaction needs it".into()),
+        None => lines.push("--  debug_traceTransaction: not checked".into()),
     }
     if let Some(number) = fork_block {
         let found = call("eth_getBlockByNumber", serde_json::json!([format!("{number:#x}"), false])).await;
@@ -294,6 +394,16 @@ pub async fn test_rpc(url: &str, block: &str) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
+/// Whether the RPC answers `debug_traceTransaction` at all: a method-not-found
+/// error (-32601) means no, any other answer (including "unknown hash") yes.
+async fn debug_trace_supported(url: &str) -> Option<bool> {
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?;
+    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"debug_traceTransaction","params":["0x0000000000000000000000000000000000000000000000000000000000000000", {}]});
+    let value: serde_json::Value = super::retry::send(|| client.post(url).json(&body)).await.ok()?.json().await.ok()?;
+    let code = value["error"]["code"].as_i64();
+    Some(code != Some(-32601))
+}
+
 /// The saved profiles, the active id, and the network the project boots with.
 /// A config that cannot be read resolves to the local chain: boot refuses it,
 /// this only renders the view.
@@ -302,6 +412,23 @@ pub fn load_network(workspace: &Path) -> (Vec<crate::config::NetworkProfile>, St
         Ok(config) => (config.networks.clone(), config.network.active.clone(), config.resolve_network().unwrap_or_default()),
         Err(_) => (Vec::new(), String::new(), crate::config::NetworkSettings::default()),
     }
+}
+
+/// Parse a profile from API JSON. An omitted `chain_id_mode` keeps the mode
+/// of the saved profile with that id (Local for a new profile), so a client
+/// that does not know the field cannot silently downgrade a Source profile.
+pub fn profile_from_json(workspace: &Path, value: &serde_json::Value) -> Result<crate::config::NetworkProfile, String> {
+    let mut profile: crate::config::NetworkProfile = serde_json::from_value(value.clone())
+        .map_err(|error| format!("Invalid profile: {error}"))?;
+    let explicit = value.get("chain_id_mode").is_some_and(|mode| !mode.is_null());
+    if !explicit {
+        if let Ok(config) = ChasmConfig::load(workspace) {
+            if let Some(saved) = config.profile(&profile.id) {
+                profile.chain_id_mode = saved.chain_id_mode;
+            }
+        }
+    }
+    Ok(profile)
 }
 
 /// Validate and save one profile, inserting or replacing by id.
@@ -501,6 +628,24 @@ mod tests {
     }
 
     #[test]
+    fn an_omitted_chain_id_mode_keeps_the_saved_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let source = crate::config::NetworkProfile {
+            id: "mainnet".into(), name: String::new(), fork_url: "https://rpc.example".into(),
+            fork_url_env: String::new(), fork_block: None, chain_id_mode: crate::config::ChainIdMode::Source,
+        };
+        save_profile(root.path(), source).unwrap();
+        let parsed = profile_from_json(root.path(), &serde_json::json!({"id": "mainnet", "fork_url": "https://rpc.example"})).unwrap();
+        assert_eq!(parsed.chain_id_mode, crate::config::ChainIdMode::Source, "a client that omits the field cannot downgrade a Source profile");
+        let explicit = profile_from_json(root.path(), &serde_json::json!({"id": "mainnet", "fork_url": "https://rpc.example", "chain_id_mode": "local"})).unwrap();
+        assert_eq!(explicit.chain_id_mode, crate::config::ChainIdMode::Local, "an explicit mode is honoured");
+        let fresh = profile_from_json(root.path(), &serde_json::json!({"id": "new", "fork_url": "https://rpc.example"})).unwrap();
+        assert_eq!(fresh.chain_id_mode, crate::config::ChainIdMode::Local, "a new profile defaults to Local");
+        assert!(profile_from_json(root.path(), &serde_json::json!({"id": "Bad Id"})).is_ok(), "validation happens after parsing");
+        assert!(profile_from_json(root.path(), &serde_json::json!({"id": "x", "unknown": 1})).is_err(), "unknown keys are refused");
+    }
+
+    #[test]
     fn public_rpcs_are_https_and_chains_are_named() {
         for (_, url, _) in PUBLIC_RPCS {
             assert!(prepare_network(tempfile::tempdir().unwrap().path(), url, "").is_ok(), "{url}");
@@ -510,5 +655,36 @@ mod tests {
         assert_eq!(chain_name(8453), "Base (8453)");
         assert_eq!(chain_name(56), "BNB Chain (56)");
         assert_eq!(chain_name(999_999), "chain 999999");
+    }
+
+    #[test]
+    fn only_ethereum_and_sepolia_are_first_class_and_tokens_are_named() {
+        assert_eq!(chain_info(1).kind, "ethereum");
+        assert_eq!(chain_info(11155111).name, "Sepolia");
+        assert_eq!(chain_info(11155111).kind, "ethereum");
+        assert_eq!(chain_info(8453).kind, "other", "L2s fork with warnings, not special handling");
+        assert!(chains_first_class(1) && chains_first_class(11155111));
+        assert!(!chains_first_class(8453) && !chains_first_class(999_999));
+        assert_eq!(native_token(Some(1)), "ETH");
+        assert_eq!(native_token(Some(11155111)), "ETH");
+        assert_eq!(native_token(Some(137)), "POL");
+        assert_eq!(native_token(Some(43114)), "AVAX");
+        assert_eq!(native_token(Some(999_999)), "native token");
+        assert_eq!(native_token(None), "native token");
+    }
+
+    #[test]
+    fn a_block_header_names_a_hardfork_and_ranks_evm_versions() {
+        let json = |fields: serde_json::Value| fields;
+        assert_eq!(header_hardfork(&json(serde_json::json!({"number":"0x1"}))).0, "Paris");
+        assert_eq!(header_hardfork(&json(serde_json::json!({"withdrawalsRoot":"0x00"}))).0, "Shanghai");
+        assert_eq!(header_hardfork(&json(serde_json::json!({"blobGasUsed":"0x0","withdrawalsRoot":"0x00"}))).0, "Cancun");
+        assert_eq!(header_hardfork(&json(serde_json::json!({"requestsHash":"0x00","blobGasUsed":"0x0"}))).0, "Prague");
+        assert_eq!(header_hardfork(&json(serde_json::json!({"blobGasUsed":null,"withdrawalsRoot":"0x00"}))).0, "Shanghai", "a null field is not a fork marker");
+        assert_eq!(evm_version_rank("cancun"), Some(2));
+        assert!(evm_version_rank("cancun").unwrap() > header_hardfork(&json(serde_json::json!({"withdrawalsRoot":"0x00"}))).1, "a Cancun build on a Shanghai chain is a warning");
+        assert!(!(evm_version_rank("shanghai").unwrap() > header_hardfork(&json(serde_json::json!({"blobGasUsed":"0x0"}))).1));
+        assert_eq!(evm_version_rank(""), None);
+        assert_eq!(evm_version_rank("not-a-fork"), None);
     }
 }

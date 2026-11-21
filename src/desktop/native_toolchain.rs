@@ -105,6 +105,11 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
         }
     };
     data.set_fork_running(describe(&state.network).into());
+    // A forked chain Chasm has no special handling for: say what may differ.
+    data.set_chain_warning(state.fork_chain_id.filter(|chain| !toolchain::chains_first_class(*chain)).map(|chain| format!(
+        "Forking {}: this chain is not Ethereum or Sepolia. Precompiles, system transactions and fees may differ, and traces are approximate. The debugger's offline engine only understands Ethereum mainnet.",
+        toolchain::chain_name(chain)
+    )).unwrap_or_default().into());
     data.set_presets(super::model(toolchain::PUBLIC_RPCS.iter().map(|(name, _, _)| slint::SharedString::from(*name)).collect()));
     data.set_fork_saved(describe(&resolved).into());
     let local_active = active.is_empty() || active == crate::config::NetworkProfile::LOCAL_ID;
@@ -495,6 +500,7 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
         }
     });
     let weak = ui.as_weak();
+    let held = state.clone();
     ui.global::<ToolchainLogic>().on_test_rpc({
         let weak = weak.clone();
         let rt = runtime.clone();
@@ -502,8 +508,9 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
             status(&weak, "Testing the RPC…".into(), true);
             let weak = weak.clone();
             let (url, block) = (url.to_string(), block.to_string());
+            let evm = super::toolchain::compiler_settings(&held.lock().unwrap().workspace).evm_version;
             rt.spawn(async move {
-                let result = toolchain::test_rpc(&url, &block).await;
+                let result = toolchain::test_rpc(&url, &block, (!evm.is_empty()).then_some(evm.as_str())).await;
                 let _ = slint::invoke_from_event_loop(move || {
                     let text = match result {
                         Ok(lines) => format!("RPC test:\n{}", lines.join("\n")),
@@ -598,7 +605,7 @@ async fn preflight(held: &State, plan: &toolchain::NetworkSwitch) -> Result<Vec<
     let settings = &plan.settings;
     let warnings = if settings.is_local() { Vec::new() } else {
         let block = settings.fork_block.map(|block| block.to_string()).unwrap_or_default();
-        toolchain::test_rpc(&settings.fork_url, &block).await?
+        toolchain::test_rpc(&settings.fork_url, &block, None).await?
             .into_iter().filter(|line| line.starts_with("no ") || line.starts_with("-- ")).collect()
     };
     let saved = super::network::save_running_profile(held).await;

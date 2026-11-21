@@ -16,6 +16,8 @@ pub struct Request {
     pub abi: Abi,
     pub rpc: String,
     pub call: Value,
+    /// Chain id the owned node must report before anything is signed.
+    pub chain_id: u64,
 }
 
 pub fn prepare(
@@ -29,6 +31,7 @@ pub fn prepare(
     workspace_epoch: u64,
     network_epoch: u64,
     rpc: String,
+    chain_id: u64,
 ) -> Result<Request, String> {
     let address = address
         .parse::<ethers::types::Address>()
@@ -78,6 +81,7 @@ pub fn prepare(
         abi: abi.clone(),
         rpc,
         call,
+        chain_id,
     })
 }
 
@@ -142,6 +146,9 @@ struct TransactionPlan {
     data: Vec<u8>,
     value: U256,
     exact_gas: Option<u64>,
+    /// Chain id the owned node must report; Local mode is 31337, a Source
+    /// profile reports the forked chain's own id.
+    chain_id: u64,
     expected_source: Option<super::macro_runner::SourceIdentity>,
     /// Return right after the node accepts the transaction (a bundle mines it
     /// later); `finish_bundled` then waits for the receipt.
@@ -160,7 +167,8 @@ fn bundling() -> bool {
 
 /// A signer value that is an address, not a key: the owned Anvil node sends
 /// for it (`anvil_impersonateAccount` + `eth_sendTransaction`). Nothing is
-/// signed and no key exists; only the local node on chain 31337 accepts it.
+/// signed and no key exists; only the owned local node accepts it, on whatever
+/// chain id its profile runs.
 pub const IMPERSONATE_PREFIX: &str = "impersonate:";
 
 /// The address an impersonation signer acts as.
@@ -211,6 +219,7 @@ pub async fn send_with_gas(
             data,
             value,
             exact_gas,
+            chain_id: request.chain_id,
             expected_source: None,
             no_wait: false,
         },
@@ -226,9 +235,10 @@ pub async fn deploy(
     key: String,
     creation: Vec<u8>,
     value: String,
+    chain_id: u64,
     owned: std::sync::Arc<super::owned_node::OwnedNode>,
 ) -> Result<CallResult, String> {
-    deploy_with_gas(rpc, key, creation, value, None, owned).await
+    deploy_with_gas(rpc, key, creation, value, None, chain_id, owned).await
 }
 
 pub async fn deploy_with_gas(
@@ -237,6 +247,7 @@ pub async fn deploy_with_gas(
     creation: Vec<u8>,
     value: String,
     exact_gas: Option<u64>,
+    chain_id: u64,
     owned: std::sync::Arc<super::owned_node::OwnedNode>,
 ) -> Result<CallResult, String> {
     let value = parse_wei(&value)?;
@@ -267,6 +278,7 @@ pub async fn deploy_with_gas(
             data: creation,
             value,
             exact_gas,
+            chain_id,
             expected_source: None,
             no_wait: false,
         },
@@ -283,6 +295,7 @@ pub async fn guarded_deploy(
     creation: &str,
     value: &str,
     exact_gas: u64,
+    chain_id: u64,
 ) -> Result<CallResult, ()> {
     let digits = creation.strip_prefix("0x").ok_or(())?;
     let creation = ethers::utils::hex::decode(digits).map_err(|_| ())?;
@@ -293,7 +306,7 @@ pub async fn guarded_deploy(
     };
     submit_transaction_guarded(TransactionPlan {
         context, abi: Abi::default(), rpc: "http://127.0.0.1:8545".into(), to: None,
-        data: creation, value, exact_gas: Some(exact_gas), expected_source: None, no_wait: bundling(),
+        data: creation, value, exact_gas: Some(exact_gas), chain_id, expected_source: None, no_wait: bundling(),
     }, key, owned, guard).await.map_err(|_| ())
 }
 
@@ -311,9 +324,10 @@ pub async fn guarded_abi_send(
     let data = request.call["data"].as_str().and_then(|text| text.strip_prefix("0x")).ok_or(())?;
     let data = ethers::utils::hex::decode(data).map_err(|_| ())?;
     let value = parse_quantity(&request.call["value"]).map_err(|_| ())?;
+    let chain_id = request.chain_id;
     submit_transaction_guarded(TransactionPlan {
         context: request.context, abi: request.abi, rpc: request.rpc, to: Some(to), data, value,
-        exact_gas: Some(exact_gas), expected_source: None, no_wait: bundling(),
+        exact_gas: Some(exact_gas), chain_id, expected_source: None, no_wait: bundling(),
     }, key, owned, guard).await.map_err(|_| ())
 }
 
@@ -322,6 +336,7 @@ pub async fn guarded_raw_send(
     owned: std::sync::Arc<super::owned_node::OwnedNode>,
     key: String,
     request: &super::macro_runner::RawSendRequest,
+    chain_id: u64,
 ) -> Result<CallResult, ()> {
     let to = request.transaction.to.parse::<ethers::types::Address>().map_err(|_| ())?;
     let data = request.transaction.data.strip_prefix("0x").ok_or(())?;
@@ -333,7 +348,7 @@ pub async fn guarded_raw_send(
     };
     submit_transaction_guarded(TransactionPlan {
         context, abi: Abi::default(), rpc: "http://127.0.0.1:8545".into(), to: Some(to), data,
-        value, exact_gas: Some(request.exact_gas), expected_source: request.expected_source.clone(), no_wait: bundling(),
+        value, exact_gas: Some(request.exact_gas), chain_id, expected_source: request.expected_source.clone(), no_wait: bundling(),
     }, key, owned, guard).await.map_err(|_| ())
 }
 
@@ -357,7 +372,7 @@ fn unsigned_transaction(
         .from(from)
         .data(ethers::types::Bytes::from(plan.data.clone()))
         .value(plan.value)
-        .chain_id(31337u64);
+        .chain_id(plan.chain_id);
     match plan.to {
         Some(to) => transaction.to(to),
         None => transaction,
@@ -406,14 +421,19 @@ async fn submit_transaction_guarded(
     if plan.rpc != "http://127.0.0.1:8545" {
         return Err("Native signing is restricted to the owned local Anvil node.".into());
     }
+    if plan.chain_id == 0 {
+        return Err("Refusing to sign without a chain id: an EIP-155 transaction needs one. Nothing was signed.".into());
+    }
+    let expected_hex = format!("{:#x}", plan.chain_id);
     let chain = rpc(&plan.rpc, "eth_chainId", json!([])).await?;
-    if parse_quantity(&chain["result"]).ok() != Some(U256::from(31337u64)) {
-        return Err(
-            "Native signing is restricted to the owned local Anvil node on chain 31337.".into(),
-        );
+    if parse_quantity(&chain["result"]).ok() != Some(U256::from(plan.chain_id)) {
+        return Err(format!(
+            "Native signing is restricted to the owned local Anvil node on chain {}. This node reports another chain id. Nothing was signed.",
+            plan.chain_id
+        ));
     }
     let pre_submit_source = identity(&plan.rpc).await?;
-    if pre_submit_source["chainId"] != "0x7a69" {
+    if pre_submit_source["chainId"] != expected_hex {
         return Err(
             "The node identity changed before signing. No transaction was submitted.".into(),
         );
@@ -424,7 +444,7 @@ async fn submit_transaction_guarded(
         None => Some(
             key.parse::<ethers::signers::LocalWallet>()
                 .map_err(|_| "The selected signer is invalid.".to_string())?
-                .with_chain_id(31337u64),
+                .with_chain_id(plan.chain_id),
         ),
     };
     let from = match (&signer, acting) {
@@ -459,7 +479,7 @@ async fn submit_transaction_guarded(
     public_transaction["nonce"] = json!(format!("{nonce:#x}"));
     public_transaction["gasPrice"] = json!(format!("{gas_price:#x}"));
     public_transaction["gas"] = json!(format!("{gas:#x}"));
-    public_transaction["chainId"] = json!("0x7a69");
+    public_transaction["chainId"] = json!(expected_hex);
     transaction = transaction.nonce(nonce).gas_price(gas_price).gas(gas);
     let typed: ethers::types::transaction::eip2718::TypedTransaction = transaction.into();
     if !guard() {
@@ -545,6 +565,7 @@ pub async fn finish_bundled(pending: CallResult, creation: bool) -> CallResult {
         data: Vec::new(),
         value: U256::zero(),
         exact_gas: None,
+        chain_id: 0,
         expected_source: None,
         no_wait: false,
     };
@@ -585,6 +606,9 @@ async fn submit_impersonated(
     if started.get("error").is_some_and(|error| !error.is_null()) {
         return Err("The node refused to impersonate this address. No transaction was submitted.".into());
     }
+    // The node is re-checked right before the send: a restart or a profile
+    // change in this window would otherwise send to a different node.
+    verify(&plan.rpc, pre_submit_source).await.map_err(|_| "The node identity changed before submission. No transaction was submitted.")?;
     plan.context.request = json!({"method":"eth_sendTransaction","impersonated":address,"transaction":transaction,"submissionState":"unknown"});
     let submitted = rpc(&plan.rpc, "eth_sendTransaction", json!([transaction])).await;
     let _ = rpc(&plan.rpc, "anvil_stopImpersonatingAccount", json!([address])).await;
@@ -593,7 +617,7 @@ async fn submit_impersonated(
         Err(_) => return Ok(receipt_unavailable(plan, None, "Submission outcome is unknown; the transaction may have been accepted. Check the chain before retrying.")),
     };
     if let Some(error) = submitted.get("error").filter(|error| !error.is_null()) {
-        return Err(format!("The node did not accept the transaction from {address}: {}. Nothing was sent. An impersonated address needs ETH for gas (Explorer > Timeline > Deal).", error["message"].as_str().unwrap_or("unknown error")));
+        return Err(format!("The node did not accept the transaction from {address}: {}. Nothing was sent. An impersonated address needs the native token for gas (Explorer > Timeline > Deal).", error["message"].as_str().unwrap_or("unknown error")));
     }
     let Some(hash) = submitted.get("result").and_then(Value::as_str).filter(|value| valid_hash(value)).map(str::to_string) else {
         return Ok(receipt_unavailable(plan, Some(submitted), "Submission returned no transaction hash. Check the chain before retrying."));
@@ -966,15 +990,23 @@ async fn identity_at(url: &str, block: &str) -> Result<Value, String> {
         parse_quantity_text(block)?;
     }
     let chain = rpc(url, "eth_chainId", json!([])).await?;
-    let mut genesis = rpc(url, "eth_getBlockByNumber", json!(["0x0", false])).await?;
-    if genesis.get("result").is_none_or(Value::is_null) {
-        // Some RPCs prune block 0. A fork's first block anchors it instead.
-        if let Some(anchor) = anchor_block(url).await {
-            genesis = rpc(url, "eth_getBlockByNumber", json!([format!("{anchor:#x}"), false])).await?;
-            if let Some(result) = genesis.get_mut("result").and_then(Value::as_object_mut) {
+    // The anchor choice must not depend on whether block 0 happened to answer:
+    // two identity reads of one node have to agree, or a slow public RPC would
+    // look like a changed network. An Anvil fork always anchors to its fork
+    // block; any other node pins block 0, and falls back to the fork block
+    // only when block 0 is not served.
+    let mut genesis = match anchor_block(url).await {
+        Some(anchor) => {
+            let mut anchored = rpc(url, "eth_getBlockByNumber", json!([format!("{anchor:#x}"), false])).await?;
+            if let Some(result) = anchored.get_mut("result").and_then(Value::as_object_mut) {
                 result.insert("chasmAnchor".into(), json!(true));
             }
+            anchored
         }
+        None => rpc(url, "eth_getBlockByNumber", json!(["0x0", false])).await?,
+    };
+    if genesis.get("result").is_none_or(Value::is_null) {
+        genesis = rpc(url, "eth_getBlockByNumber", json!(["0x0", false])).await?;
     }
     let header = rpc(url, "eth_getBlockByNumber", json!([block, false])).await?;
     identity_from_responses(block, &chain, &genesis, &header)
@@ -1109,7 +1141,7 @@ fn bare_revert_cause(error: &Value, creation: Option<usize>) -> String {
         return "out of gas: the call used all the gas the node allows. Look for an unbounded loop or a very large copy".into();
     }
     if kind == Some("insufficient_funds") {
-        return "the sender cannot pay the value plus gas (give it ETH with Explorer > Timeline > Deal)".into();
+        return "the sender cannot pay the value plus gas (give it the native token with Explorer > Timeline > Deal)".into();
     }
     if kind == Some("nonce") {
         return "the sender's nonce does not match the node".into();
@@ -1425,6 +1457,7 @@ mod tests {
             value: U256::zero(),
             exact_gas: None,
             expected_source: None,
+            chain_id: 31337,
             no_wait: false,
         };
         let result = receipt_unavailable(request, None, "Submission outcome is unknown.");
@@ -1460,6 +1493,7 @@ mod tests {
             value: U256::MAX,
             exact_gas: Some(250_000),
             expected_source: None,
+            chain_id: 31337,
             no_wait: false,
         };
         let sender = ethers::types::Address::from_low_u64_be(1);
@@ -1600,6 +1634,26 @@ mod tests {
         ] {
             assert!(validate_and_redact_rpc(bad, "eth_call").is_err());
         }
+    }
+
+    #[test]
+    fn the_signed_transaction_and_public_transaction_use_the_plan_chain_id() {
+        let plan = TransactionPlan {
+            context: ResultContext { contract: String::new(), address: String::new(), signature: String::new(), request: Value::Null, workspace_epoch: 0, network_epoch: 0, source: Value::Null },
+            abi: Abi::default(),
+            rpc: "http://127.0.0.1:8545".into(),
+            to: None,
+            data: Vec::new(),
+            value: U256::zero(),
+            exact_gas: None,
+            chain_id: 1,
+            expected_source: None,
+            no_wait: false,
+        };
+        let from = ethers::types::Address::zero();
+        assert_eq!(unsigned_transaction(&plan, from).chain_id, Some(ethers::types::U64::from(1u64)), "a Source profile signs for its real chain id");
+        assert_eq!(public_transaction(&plan, from).get("chainId"), None, "the public request starts without a chain id");
+        assert_eq!(format!("{:#x}", plan.chain_id), "0x1");
     }
 
     #[test]

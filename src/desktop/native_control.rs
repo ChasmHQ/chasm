@@ -554,6 +554,10 @@ fn perform(ui: &MainWindow, held: &Arc<Mutex<DesktopState>>, command: &Command, 
         }
         Command::NetworkSave { profile } => {
             let (workspace, running) = { let state = held.lock().unwrap(); (state.workspace.clone(), state.network.profile_id.clone()) };
+            let profile = match super::toolchain::profile_from_json(&workspace, profile) {
+                Ok(profile) => profile,
+                Err(error) => return json!({"status":"failed","error":{"code":"invalid_params","message":error}}),
+            };
             ui.global::<super::ToolchainLogic>().invoke_cancel_fresh();
             if profile.id == running {
                 return match super::native_toolchain::start_switch(ui, held, &runtime, false, |root| super::toolchain::NetworkSwitch::prepare(root, &running, Some(profile.clone()))) {

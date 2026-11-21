@@ -1016,7 +1016,8 @@ def call_tree():
     subprocess.run(["forge", "build", "--offline", "--root", variant], capture_output=True, check=True)
     creation = json.load(open(os.path.join(variant, "out", "MiniToken.sol", "MiniToken.json"), encoding="utf-8"))["bytecode"]["object"]
     sent = subprocess.run(["cast", "send", "--rpc-url", "http://127.0.0.1:8545", "--private-key", anvil_key_0(), "--json", "--create", creation], capture_output=True, text=True, check=True)
-    outside = json.loads(sent.stdout)["contractAddress"]
+    # cast --json may be preceded by a Foundry banner line; take the JSON line.
+    outside = json.loads(next(line for line in reversed(sent.stdout.splitlines()) if line.strip().startswith("{")))["contractAddress"]
     call = rpc_call_data("transfer(address,uint256)", [OWNER, 1])
     command("debugger.trace", call={"to": outside, "data": call})
     for _ in range(60):
@@ -1190,4 +1191,6 @@ def scenario():
     check("compare reports the path and the effect difference", ("Same path" in compared or "First divergence" in compared) and "Storage effects differ" in compared and f"balanceOf[{OWNER}]" in compared, compared)
     print("  | " + " || ".join(compared.strip().splitlines())[:300])
 
-FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, bundle, inline_deploy, call_jobs, impersonate, template, panes, gas, storage_names, scenario, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork]
+from networks import networks
+
+FLOWS = [bank, revert, steps, history, timeline, toolchain, palette, macro, bundle, inline_deploy, call_jobs, impersonate, template, panes, gas, storage_names, scenario, locals, captures, foundry_test, revert_explained, call_tree, external_build, foundry_import, build_source, fork, networks]

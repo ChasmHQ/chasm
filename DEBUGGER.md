@@ -30,12 +30,16 @@ The cursor opens on that step. A deploy that fails its gas estimate is traced as
 
 Every transaction or call you debug is saved in the project:
 
-- `.chasm/traces/<transaction hash>.json` for a mined transaction.
-- `.chasm/traces/<unix time>-<title>.json` for a call (Simulate, or a Send that reverted before broadcast).
+- `.chasm/traces/<network>-<transaction hash>.json` for a mined transaction.
+- `.chasm/traces/<network>-<unix time>-<title>.json` for a call (Simulate, or a Send that reverted before broadcast).
+
+`<network>` is the profile slug (`local`, `mainnet-21000000`); a local chain adds a short session tag, so two recordings never overwrite each other even when Anvil repeats a hash after a restart. An existing file is never clobbered: a collision gets a numbered suffix. A trace records the network it was made on, reopens with that chain's Sourcify cache, and says so in the status line when the network that runs now is a different one. `compare` accepts a saved file name, or a bare transaction hash when exactly one recording matches it.
 
 The status line names the file after each recording. The file holds the node's opcode trace and the code at each address it entered, so it reopens later without the node, after a restart, or after the chain was reset. Source lines are read again from the workspace, so edit nothing between recording and review if you want the lines to match.
 
-The Debugger start screen lists them under **Saved traces**, newest first, with **Show in folder** and **Delete**. `.chasm/` is ignored by git.
+The Debugger start screen lists them under **Saved traces**, newest first, with **Show in folder** and **Delete**. `.chasm/` is ignored by git. A `contracts.attach` ABI is used to name a frame on the network the trace came from; on another network it is used only when the code the frame ran matches the contract's own runtime.
+
+The **offline engine** (*Captures and Foundry tests*) understands Ethereum mainnet only. On another chain use the native trace, or export a capture and inspect it here with that limitation in mind.
 
 The offline engine (*Captures and Foundry tests*) saves a paused replay with **Save capture** to `.chasm/captures/<unix time>-<label>.json` (a `chasm-fork-capture` bundle: plan, baseline and the remote-state witness, without RPC credentials). With *Offline capture* selected, the saved captures are listed; **Open** uploads one to the local gateway and **Start offline capture** replays it without the network. *Synthetic* uses `debugger/examples/mainnet/synthetic-replay.json`. *Withdrawal lab* uses the capture and build info in `debugger/examples/web-debugger/`. Both ship with the offline worker. Synthetic and Foundry test runs have no replay baseline, so there is nothing to save; a Foundry test run is debugged live and is gone when the session closes. API: `debugger.capture.save`, `debugger.capture.open {name}`; `debugger.state` lists `captures`.
 

@@ -25,6 +25,17 @@ const ANVIL_DEV_ACCOUNTS: [(&str, &str); 3] = [
     ),
 ];
 
+/// Index of the public Anvil dev key this signer is, if any.
+pub fn anvil_dev_key_index(key: &str) -> Option<u8> {
+    (0..=2u8).find(|index| anvil_dev_account(*index as i32).is_some_and(|(_, dev_key)| dev_key == key))
+}
+
+/// Signers that stay safe on a profile with its real chain id: the public
+/// Anvil dev keys and impersonation (which signs nothing).
+pub fn signer_allowed_on_source_chain(key: &str) -> bool {
+    super::contract_service::impersonated(key).is_some() || anvil_dev_key_index(key).is_some()
+}
+
 pub fn anvil_dev_account(index: i32) -> Option<(&'static str, &'static str)> {
     usize::try_from(index)
         .ok()
@@ -1245,14 +1256,16 @@ impl DesktopState {
                 errors.join("\n")
             };
         }
-        if self
+        let Some(key) = self
             .wallet_key
             .as_deref()
             .map(str::trim)
             .filter(|key| !key.is_empty())
-            .is_none()
-        {
+        else {
             return "Choose a wallet key before deploying. Constructor drafts can be edited without a key.".into();
+        };
+        if let Some(reason) = self.signer_block_reason(key) {
+            return format!("{reason} Constructor drafts can still be edited.");
         }
         String::new()
     }
@@ -1293,7 +1306,8 @@ impl DesktopState {
         self.wallet_source = None;
         self.wallet_key = Some(format!("{}{address}", super::contract_service::IMPERSONATE_PREFIX));
         self.wallet_address = address.clone();
-        self.notice = format!("Acting as {address}. Sends from it are impersonated by the local node: it needs ETH for gas (Explorer > Timeline > Deal), and tx.origin is this address even if it is a contract, which a real chain never allows.");
+        let token = super::toolchain::native_token(self.fork_chain_id);
+        self.notice = format!("Acting as {address}. Sends from it are impersonated by the local node: it needs {token} for gas (Explorer > Timeline > Deal), and tx.origin is this address even if it is a contract, which a real chain never allows.");
         self.status_left = format!("Acting as {address} (impersonated)");
         self.push_log(format!("Acting as {address} (impersonated, local node only)"));
     }
@@ -1352,9 +1366,37 @@ impl DesktopState {
         if let Some(address) = super::contract_service::impersonated(key) {
             return Some(super::network::SignerChoice::Impersonate { address: format!("{address:#x}") });
         }
-        (0..=2u8)
-            .find(|index| anvil_dev_account(*index as i32).is_some_and(|(_, dev_key)| dev_key == key))
-            .map(|index| super::network::SignerChoice::DevAccount { index })
+        anvil_dev_key_index(key).map(|index| super::network::SignerChoice::DevAccount { index })
+    }
+
+    /// The chain id the workspace node reports; 31337 in Local mode and the
+    /// forked chain's own id in Source mode.
+    pub fn execution_chain_id(&self) -> u64 {
+        self.network_identity.as_ref().map(|identity| identity.execution_chain_id).unwrap_or(31337)
+    }
+
+    /// Whether this profile runs the forked chain's id, which makes a
+    /// personal keystore signature valid on the real network.
+    pub fn source_chain_id_mode(&self) -> bool {
+        self.network.chain_id_mode == crate::config::ChainIdMode::Source
+    }
+
+    /// Whether a personal keystore signature could be replayed upstream. A
+    /// Source profile always could; a Local profile could too when the forked
+    /// chain itself uses 31337, so the local chain id is not a safe stand-in
+    /// there. Dev keys and impersonation are always allowed.
+    pub fn keystores_blocked(&self) -> bool {
+        self.source_chain_id_mode() || self.fork_chain_id == Some(31337)
+    }
+
+    /// Why this signer may not send on the network that runs now, if it may
+    /// not. Only the public Anvil dev keys and impersonation are allowed on a
+    /// profile that runs its source chain id.
+    pub fn signer_block_reason(&self, key: &str) -> Option<&'static str> {
+        if !self.keystores_blocked() || signer_allowed_on_source_chain(key) {
+            return None;
+        }
+        Some("Personal keystores are blocked on this network: its chain id makes a signed transaction valid on the real network. Use an Anvil development account or Act as an address.")
     }
 
     pub fn push_timeline(&mut self, id: String, block: u64, label: String, deployments: HashSet<(String, String)>) {
@@ -2937,6 +2979,7 @@ fn format_transaction(tx: &Value, receipt: &Value) -> String {
 pub async fn latest_chain(
     rpc: &str,
     limit: u64,
+    fork_chain_id: Option<u64>,
 ) -> Result<(u64, Vec<ChainRow>, Vec<ChainRow>), String> {
     let client = reqwest::Client::new();
     let head = rpc_call(&client, rpc, "eth_blockNumber", json!([])).await?;
@@ -2974,7 +3017,7 @@ pub async fn latest_chain(
                 let selector = tx.get("input").and_then(Value::as_str).filter(|data| data.len() >= 10).map(|data| data[..10].to_string()).unwrap_or_default();
                 transactions.push(ChainRow {
                     title: short_hex(tx_hash),
-                    detail: format!("#{number}  {} ETH  to {to}{}", wei_to_ether(tx.get("value").unwrap_or(&Value::Null)), if selector.is_empty() { String::new() } else { format!("  {selector}") }),
+                    detail: format!("#{number}  {} {}  to {to}{}", wei_to_ether(tx.get("value").unwrap_or(&Value::Null)), super::toolchain::native_token(fork_chain_id), if selector.is_empty() { String::new() } else { format!("  {selector}") }),
                     query: tx_hash.to_string(),
                     to: tx.get("to").and_then(Value::as_str).map(str::to_string),
                     selector: (!selector.is_empty()).then(|| selector.clone()),
@@ -3852,6 +3895,50 @@ mod tests {
             assert!(!state.set_zoom_level(index));
             assert_eq!(state_snapshot(&state), before);
         }
+    }
+
+    #[test]
+    fn source_chain_id_mode_blocks_personal_keystores_only() {
+        let root = tempfile::tempdir().unwrap();
+        let mut state = DesktopState::new(root.path().to_path_buf(), 1.0);
+        let dev_key = anvil_dev_account(1).unwrap().1;
+        let personal = &format!("0x{}", "11".repeat(32));
+        assert!(state.signer_block_reason(personal).is_none(), "Local mode accepts any signer");
+        assert_eq!(state.execution_chain_id(), 31337);
+        state.network.chain_id_mode = crate::config::ChainIdMode::Source;
+        state.network_identity = Some(super::super::network::NetworkIdentity {
+            profile_id: "mainnet".into(), source_chain_id: Some(1), fork_block: Some(7),
+            anchor_hash: Some(format!("0x{}", "ab".repeat(32))), execution_chain_id: 1,
+        });
+        assert_eq!(state.execution_chain_id(), 1, "Source mode reports the forked chain id");
+        assert!(state.signer_block_reason(dev_key).is_none(), "Anvil dev keys may send");
+        // A Local-mode fork of a chain that itself uses 31337 is just as risky:
+        // the local chain id is no protection there.
+        state.network.chain_id_mode = crate::config::ChainIdMode::Local;
+        state.fork_chain_id = Some(31337);
+        assert!(state.keystores_blocked());
+        assert!(state.signer_block_reason(personal).is_some(), "keystores are blocked when the source chain uses 31337 too");
+        assert!(state.signer_block_reason(dev_key).is_none());
+        state.fork_chain_id = Some(1);
+        assert!(!state.keystores_blocked(), "a Local fork of another chain keeps keystores available");
+        state.network.chain_id_mode = crate::config::ChainIdMode::Source;
+        assert!(state.signer_block_reason("impersonate:0x00000000000000000000000000000000000000aa").is_none(), "impersonation signs nothing and may send");
+        let reason = state.signer_block_reason(personal).unwrap();
+        assert!(reason.contains("Personal keystores are blocked") && reason.contains("valid on the real network"), "{reason}");
+
+        // The same rule reaches deployment readiness.
+        let mut deploy = deployment_state();
+        deploy.network.chain_id_mode = crate::config::ChainIdMode::Source;
+        deploy.select_contract(0);
+        deploy.edit_constructor_argument(0, "0x1111111111111111111111111111111111111111".into());
+        deploy.edit_constructor_argument(1, "42".into());
+        deploy.edit_constructor_argument(2, "treasury".into());
+        deploy.wallet_key = Some(personal.to_string());
+        deploy.wallet_address = "0x00000000000000000000000000000000000000aa".into();
+        let problem = deploy.deployment_problem();
+        assert!(problem.contains("Personal keystores are blocked") && problem.contains("drafts can still be edited"), "{problem}");
+        deploy.use_anvil_key(0);
+        assert!(deploy.deployment_problem().is_empty(), "a dev key may deploy");
     }
 
     #[test]

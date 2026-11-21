@@ -27,6 +27,8 @@ export global ToolchainData {
     // How Switch applies the target: resume its saved state, or discard it
     // first (always confirmed locally).
     in-out property <bool> switch-fresh: false;
+    // Non-empty when the forked chain is not Ethereum or Sepolia.
+    in property <string> chain-warning;
     in property <string> fresh-target;
     in-out property <string> selected-profile;
     in-out property <string> profile-name;
@@ -112,6 +114,7 @@ export component ToolchainWorkspace inherits ScrollView {
             }
         }
         SelectableText { text: "Network"; font-weight: 600; font-size: 0.9375rem; }
+        if ToolchainData.chain-warning != "": SelectableText { text: ToolchainData.chain-warning; color: Theme.warn; font-size: 0.8125rem; wrap: word-wrap; }
         SelectableText { text: "The project node is \{ToolchainData.fork-running}. Fork a live chain to call and debug real contracts locally: the node copies state on demand from the RPC and, in chain id Local, keeps id 31337 so nothing is ever valid on the real network."; color: Theme.muted; font-size: 0.8125rem; wrap: word-wrap; }
         HorizontalLayout {
             spacing: 0.25rem;

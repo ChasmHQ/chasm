@@ -610,8 +610,16 @@ pub fn call_block_reason(state: &DesktopState, doc: &Document, send: bool) -> Op
         if read_only {
             return Some("Read-only functions use Read / Simulate, not Send.");
         }
-        if state.wallet_key.is_none() {
-            return Some("Unlock a local keystore or choose an Anvil development account before Send.");
+        match state.wallet_key.as_deref() {
+            None => return Some("Unlock a local keystore or choose an Anvil development account before Send."),
+            // A Source profile runs the real chain id: a keystore signature
+            // would be valid on the real network, so only dev keys and
+            // impersonation may send.
+            Some(key) => {
+                if let Some(reason) = state.signer_block_reason(key) {
+                    return Some(reason);
+                }
+            }
         }
         if !state.owned_node.as_ref().is_some_and(|node| node.valid()) {
             return Some("The owned local Anvil node is unavailable; signing is disabled.");
@@ -668,6 +676,7 @@ fn execute(
             state.workspace_epoch,
             state.network_epoch,
             state.rpc.clone(),
+            state.execution_chain_id(),
         )?;
         let (key, owned, lease) = if send {
             let owned = state

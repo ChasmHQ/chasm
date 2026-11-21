@@ -61,6 +61,9 @@ export global AppData {
     in property <int> zoom-percent: 100;
     in property <string> mode-label;
     in property <string> chain-label;
+    // Non-empty when the running profile uses the forked chain's own id:
+    // a keystore signature would be valid on the real network.
+    in property <string> chain-warning;
     in property <string> block-label;
     in property <string> compile-label;
     in property <string> debugger-label;
@@ -357,6 +360,7 @@ component WalletWorkspace inherits ScrollView {
         alignment: start;
         SelectableText { text: "Wallet"; color: Theme.text; font-size: 1rem; font-weight: 600; }
         SelectableText { text: AppData.wallet-address == "" ? "No account unlocked." : AppData.wallet-impersonated ? "Acting as \{AppData.wallet-address} (impersonated by the local node, no key)" : "Unlocked address: \{AppData.wallet-address}"; color: AppData.wallet-address == "" ? Theme.muted : AppData.wallet-impersonated ? Theme.warn : Theme.ok; font-size: 0.8125rem; wrap: word-wrap; }
+        if AppData.chain-warning != "": SelectableText { text: AppData.chain-warning; color: Theme.warn; font-size: 0.8125rem; wrap: word-wrap; }
         SelectableText { text: "Anvil development accounts"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
         SelectableText { text: "Public test accounts for the local Anvil node only."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
         HorizontalLayout {
@@ -366,7 +370,7 @@ component WalletWorkspace inherits ScrollView {
             IconButton { icon: @image-url("icons/play.svg"); label: "Anvil dev key #2"; enabled: !AppData.wallet-busy && !AppData.deploy-busy; clicked => { Logic.use-anvil-key(2); } }
         }
         SelectableText { text: "Act as an address"; color: Theme.text; font-size: 0.875rem; font-weight: 600; }
-        SelectableText { text: "Send as any address (a governor, a whale, a contract) without its key: the local node impersonates it. Works only on the workspace node (chain 31337). Give it ETH for gas with Explorer > Timeline > Deal. tx.origin becomes this address even for a contract, which a real chain never allows."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
+        SelectableText { text: "Send as any address (a governor, a whale, a contract) without its key: the local node impersonates it. Works only on the workspace node, on the chain id the active profile runs. Give it the native token for gas with Explorer > Timeline > Deal. tx.origin becomes this address even for a contract, which a real chain never allows."; color: Theme.faint; font-size: 0.75rem; wrap: word-wrap; }
         HorizontalLayout {
             spacing: 0.5rem;
             LineEdit { text <=> AppData.impersonate-input; placeholder-text: "0x… address to act as"; font-size: 0.8125rem; min-width: 0px; horizontal-stretch: 1; accepted => { Logic.impersonate(self.text); } }
@@ -1038,7 +1042,8 @@ export component MainWindow inherits Window {
                             IconButton { icon: @image-url("icons/workspace.svg"); label: "Layout"; clicked => { Logic.toggle-menu(6); } }
                             Rectangle { horizontal-stretch: 1; }
                             SelectableText { text: AppData.mode-label; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
-                            SelectableText { text: AppData.chain-label; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                            SelectableText { text: AppData.chain-label; color: AppData.chain-warning == "" ? Theme.muted : Theme.warn; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
+                            if AppData.chain-warning != "": SelectableText { text: "source chain id"; color: Theme.warn; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
                             SelectableText { text: AppData.block-label; color: Theme.muted; font-size: 0.75rem; vertical-alignment: center; horizontal-stretch: 0; }
                         }
                     }

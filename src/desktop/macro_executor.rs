@@ -59,7 +59,9 @@ impl SignerResolver for Signers {
 }
 
 #[derive(Clone)]
-struct Submissions;
+struct Submissions {
+    chain_id: u64,
+}
 
 impl GuardedSubmission for Submissions {
     fn deploy<'a>(
@@ -71,7 +73,7 @@ impl GuardedSubmission for Submissions {
         value: &'a str,
         exact_gas: u64,
     ) -> BoxFuture<'a, Result<super::call_result::CallResult, ()>> {
-        Box::pin(super::contract_service::guarded_deploy(guard, owned, key, creation, value, exact_gas))
+        Box::pin(super::contract_service::guarded_deploy(guard, owned, key, creation, value, exact_gas, self.chain_id))
     }
 
     fn abi_send<'a>(
@@ -92,7 +94,7 @@ impl GuardedSubmission for Submissions {
         key: String,
         request: &'a runner::RawSendRequest,
     ) -> BoxFuture<'a, Result<super::call_result::CallResult, ()>> {
-        Box::pin(super::contract_service::guarded_raw_send(guard, owned, key, request))
+        Box::pin(super::contract_service::guarded_raw_send(guard, owned, key, request, self.chain_id))
     }
 }
 
@@ -198,7 +200,7 @@ impl MacroExecutor for TrustedMacroExecutor {
                 super::macro_adapter::adapt_without_artifacts(&request.definition, &addresses, request.token.clone(), request.dry_run)
                     .map_err(|_| ExecutionFailure::InvalidPlan)?
             };
-            let (authority, signers, gate, token, active) = {
+            let (authority, signers, gate, token, active, chain_id, keystores_blocked) = {
                 let state_guard = state.lock().unwrap();
                 if state_guard.workspace_epoch != request.token.workspace_epoch
                     || state_guard.network_epoch != request.token.network_epoch
@@ -212,6 +214,8 @@ impl MacroExecutor for TrustedMacroExecutor {
                     state_guard.mutation_gate.clone(),
                     request.token.clone(),
                     state_guard.active,
+                    state_guard.execution_chain_id(),
+                    state_guard.keystores_blocked(),
                 )
             };
             if !active {
@@ -220,12 +224,14 @@ impl MacroExecutor for TrustedMacroExecutor {
             let backend = DesktopMacroBackend::new(
                 authority,
                 signers,
-                Submissions,
+                Submissions { chain_id },
                 Controls,
                 request.owned_node,
                 gate,
                 token,
                 addresses,
+                chain_id,
+                keystores_blocked,
             ).map_err(|_| ExecutionFailure::Unavailable)?;
             let step_ids = adapted.plan_ids();
             // In a bundle, sends return once the node accepts them; the runner

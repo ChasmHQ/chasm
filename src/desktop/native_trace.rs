@@ -536,10 +536,17 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
             match result {
                 Ok((mut session, path, note)) => {
                     session.network = state.network_identity.as_ref().map(|identity| identity.tag());
+                    // A chain Chasm has no special handling for can differ in
+                    // precompiles, system transactions and fees.
+                    let chain_note = state.fork_chain_id.filter(|chain| !super::toolchain::chains_first_class(*chain)).map(|chain| format!(
+                        "Chain {} is not Ethereum or Sepolia: precompiles, system transactions and fees may differ, so this replay is approximate.",
+                        super::toolchain::chain_name(chain)
+                    ));
                     state.trace_status = match path {
                         Ok(path) => format!("Saved to {}", shown_path(&path)),
                         Err(error) => format!("Not saved: {error}"),
                     };
+                    let note = [note, chain_note.unwrap_or_default()].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
                     if !note.is_empty() {
                         state.trace_status = format!("{note} {}", state.trace_status);
                     }

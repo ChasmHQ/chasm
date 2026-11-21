@@ -209,8 +209,12 @@ fn request(method: &str, params: Value) -> Value {
 }
 
 fn identity_requests() -> Vec<Value> {
+    // The anchor probe comes first: an Anvil fork pins its fork block, any
+    // other node pins block 0. The fixture answers neither as Anvil, so the
+    // probe fails and block 0 is read.
     vec![
         request("eth_chainId", json!([])),
+        request("anvil_nodeInfo", json!([])),
         request("eth_getBlockByNumber", json!(["0x0", false])),
         request("eth_getBlockByNumber", json!(["0x10", false])),
     ]

@@ -55,6 +55,15 @@ def run(root):
     work = root / "project"
     work.mkdir()
     (work / "Counter.sol").write_text("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20; contract Counter { uint public value; }\n", encoding="utf-8")
+    (work / "ChainIdProbe.sol").write_text(
+        chr(10).join([
+            "// SPDX-License-Identifier: MIT",
+            "pragma solidity ^0.8.20;",
+            "contract ChainIdProbe { function chainId() external view returns (uint256) { return block.chainid; } }",
+            "",
+        ]),
+        encoding="utf-8",
+    )
     token = root / "control"
     chasm.TOKEN_FILE = str(token)
     with socket.socket() as sock:
@@ -94,6 +103,28 @@ def run(root):
         assert fork["identity"]["anchor_hash"] == block["hash"] and fork["sourceChainId"] == 11155111
         assert not (work / ".chasm/network-switch.json").exists()
         assert int(chasm.rpc("eth_getBalance", [ACCOUNT, "latest"]), 16) == 0
+        # N4: Local mode reports 31337; a Source profile runs the forked
+        # chain's id, and a dev key can still deploy there.
+        chasm.command("wallet.dev_account", index=0)
+        probe = next(a for a in chasm.query("workspace.artifacts")["artifacts"] if a["name"] == "ChainIdProbe")
+        chasm.command("contracts.select", id=probe["id"])
+        chasm.command("contracts.deploy")
+        wait("local ChainIdProbe deployed", lambda: chasm.query("contracts.view")["address"].startswith("0x"))
+        local_probe = chasm.query("contracts.view")["address"]
+        assert int(chasm.rpc("eth_call", [{"to": local_probe, "data": "0x9a8a0592"}, "latest"]), 16) == 31337
+        chasm.command("network.save", profile={"id": "source", "fork_url": url, "fork_block": int(block["number"], 16), "chain_id_mode": "source"})
+        source = switch("source")
+        assert source["identity"]["execution_chain_id"] == 11155111, source["identity"]
+        assert source.get("keystoresBlocked") is True, source
+        chasm.command("wallet.dev_account", index=0)
+        # Artifact ids are workspace-scoped: read them again after a switch.
+        probe = next(a for a in chasm.query("workspace.artifacts")["artifacts"] if a["name"] == "ChainIdProbe")
+        chasm.command("contracts.select", id=probe["id"])
+        chasm.command("contracts.deploy")
+        wait("source ChainIdProbe deployed", lambda: chasm.query("contracts.view")["address"].startswith("0x"))
+        source_probe = chasm.query("contracts.view")["address"]
+        assert int(chasm.rpc("eth_call", [{"to": source_probe, "data": "0x9a8a0592"}, "latest"]), 16) == 11155111
+        print("PASS: a Source profile runs the real chain id and a dev key can deploy on it")
         switch("local")
         assert int(chasm.rpc("eth_getBalance", [ACCOUNT, "latest"]), 16) == 42
         chasm.rpc("anvil_setBalance", [ACCOUNT, "0x2b"])

@@ -33,7 +33,7 @@ fn receipt(status: &str) -> Value {
 fn confirmed_receipts_expose_only_allowlisted_values() {
     let mut result = call("confirmed", receipt("0x1"));
     result.raw["result"]["logs"] = json!([{"data":"must-not-appear"}]);
-    let runner::MutationOutcome::Confirmed(value) = map_submission(Ok(result), true) else {
+    let runner::MutationOutcome::Confirmed(value) = map_submission(Ok(result), true, 31337) else {
         panic!("expected confirmation")
     };
     assert_eq!(value.tx_hash, HASH);
@@ -41,7 +41,7 @@ fn confirmed_receipts_expose_only_allowlisted_values() {
     assert_eq!(value.block_number.as_deref(), Some("0x5"));
     assert_eq!(value.gas_used.as_deref(), Some("0x5208"));
     let runner::MutationOutcome::Confirmed(reverted) =
-        map_submission(Ok(call("confirmed", receipt("0x0"))), false)
+        map_submission(Ok(call("confirmed", receipt("0x0"))), false, 31337)
     else {
         panic!("expected verified reverted receipt")
     };
@@ -53,7 +53,7 @@ fn confirmed_receipts_expose_only_allowlisted_values() {
 fn unknown_or_malformed_confirmation_is_never_success() {
     let result = call("unknown", Value::Null);
     assert!(matches!(
-        map_submission(Ok(result), false),
+        map_submission(Ok(result), false, 31337),
         runner::MutationOutcome::Unknown {
             tx_hash: Some(_),
             ..
@@ -62,7 +62,7 @@ fn unknown_or_malformed_confirmation_is_never_success() {
     let mut invalid = receipt("0x1");
     invalid["transactionHash"] = json!(OTHER_HASH);
     assert!(matches!(
-        map_submission(Ok(call("confirmed", invalid)), false),
+        map_submission(Ok(call("confirmed", invalid)), false, 31337),
         runner::MutationOutcome::Unknown {
             reason: runner::UnknownReason::InvalidConfirmation,
             ..
@@ -71,17 +71,17 @@ fn unknown_or_malformed_confirmation_is_never_success() {
     let mut invalid = receipt("0x1");
     invalid["blockHash"] = json!(HASH);
     assert!(matches!(
-        map_submission(Ok(call("confirmed", invalid)), false),
+        map_submission(Ok(call("confirmed", invalid)), false, 31337),
         runner::MutationOutcome::Unknown { .. }
     ));
     let mut invalid = receipt("0x1");
     invalid["gasUsed"] = json!("broken");
     assert!(matches!(
-        map_submission(Ok(call("confirmed", invalid)), false),
+        map_submission(Ok(call("confirmed", invalid)), false, 31337),
         runner::MutationOutcome::Unknown { .. }
     ));
     assert!(matches!(
-        map_submission(Err(()), false),
+        map_submission(Err(()), false, 31337),
         runner::MutationOutcome::Failed(runner::FailureCode::Unavailable)
     ));
 }
@@ -154,18 +154,20 @@ impl ContextAuthority for Authority {
 struct Signers {
     keys: [String; 3],
     addresses: [String; 3],
+    /// The unlocked signer, as (address, key), when the fixture models one.
+    active: Option<(String, String)>,
 }
 impl SignerResolver for Signers {
     fn address(&self, alias: runner::SignerAlias) -> Option<String> {
         match alias {
             runner::SignerAlias::Handle(index) => self.addresses.get(index as usize).cloned(),
-            runner::SignerAlias::Active => None,
+            runner::SignerAlias::Active => self.active.as_ref().map(|(address, _)| address.clone()),
         }
     }
     fn key(&self, alias: runner::SignerAlias) -> Option<String> {
         match alias {
             runner::SignerAlias::Handle(index) => self.keys.get(index as usize).cloned(),
-            runner::SignerAlias::Active => None,
+            runner::SignerAlias::Active => self.active.as_ref().map(|(_, key)| key.clone()),
         }
     }
 }
@@ -246,6 +248,11 @@ impl OwnedControls for Controls {
     }
 }
 
+/// `owned_listener` binds the fixed owned port 8545, so tests that need it
+/// take turns.
+#[cfg(windows)]
+static OWNED_PORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(windows)]
 fn owned_listener() -> (std::net::TcpListener, Arc<OwnedNode>) {
     use windows_sys::Win32::{
@@ -277,6 +284,7 @@ fn owned_listener() -> (std::net::TcpListener, Arc<OwnedNode>) {
 #[tokio::test]
 async fn context_and_owned_recheck_exact_gas_and_shared_lease() {
     use ethers::signers::Signer;
+    let _owned_port = OWNED_PORT.lock().unwrap();
     let (_listener, node) = owned_listener();
     let keys = [1u8, 2, 3].map(|value| format!("0x{:064x}", value));
     let account_addresses = keys.clone().map(|key| {
@@ -301,6 +309,7 @@ async fn context_and_owned_recheck_exact_gas_and_shared_lease() {
         Signers {
             keys,
             addresses: account_addresses.clone(),
+            active: None,
         },
         Submissions(submitted.clone()),
         Controls,
@@ -308,6 +317,8 @@ async fn context_and_owned_recheck_exact_gas_and_shared_lease() {
         gate.clone(),
         token.clone(),
         addresses,
+        31337,
+        false,
     )
     .unwrap();
     let cancel = CancellationToken::new();
@@ -364,4 +375,74 @@ async fn context_and_owned_recheck_exact_gas_and_shared_lease() {
     assert!(!backend.is_current(&token));
     drop(lease);
     assert!(gate.try_acquire().is_some());
+}
+
+#[test]
+fn the_source_envelope_must_carry_the_expected_chain() {
+    // The read result itself: chain_id, genesis hash and the block header.
+    let envelope = json!({"chain_id": "1", "genesis_block_hash": HASH, "block": {"number": "0x5", "hash": OTHER_HASH}});
+    let source = source_from_envelope(&envelope, 1).unwrap();
+    assert_eq!(source.chain_id, "0x1");
+    assert!(source_from_envelope(&envelope, 31337).is_err(), "a Source profile never accepts the local id as its source");
+    let local = json!({"chain_id": "31337", "genesis_block_hash": HASH, "block": {"number": "0x5", "hash": OTHER_HASH}});
+    assert_eq!(source_from_envelope(&local, 31337).unwrap().chain_id, "0x7a69");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn a_source_profile_blocks_a_personal_keystore_before_any_send() {
+    use ethers::signers::Signer;
+    let _owned_port = OWNED_PORT.lock().unwrap();
+    let (_listener, node) = owned_listener();
+    // Only the public Anvil dev keys are allowed on a Source profile, so the
+    // fixture uses them rather than arbitrary keys.
+    let dev: [(String, String); 3] = [0, 1, 2].map(|index| {
+        let (address, key) = super::super::session::anvil_dev_account(index).unwrap();
+        (address.to_string(), key.to_string())
+    });
+    let dev_addresses: [String; 3] = dev.clone().map(|(address, _)| address);
+    let dev_keys: [String; 3] = dev.map(|(_, key)| key);
+    // A personal keystore key: any 32-byte key that is not one of the dev keys.
+    let personal_key = format!("0x{}", "11".repeat(32));
+    let personal_address = format!("{:#x}", personal_key.parse::<ethers::signers::LocalWallet>().unwrap().address());
+    let addresses = SignerAddresses::new(dev_addresses.clone(), Some(personal_address.clone())).unwrap();
+    let current = Arc::new(AtomicBool::new(true));
+    let submitted = Arc::new(Mutex::new(Vec::new()));
+    let gate = MutationGate::default();
+    let token = runner::ExecutionToken { workspace_epoch: 1, network_epoch: 2, rpc_token: 3 };
+    let backend = DesktopMacroBackend::new(
+        Authority(current),
+        Signers { keys: dev_keys, addresses: dev_addresses, active: Some((personal_address, personal_key)) },
+        Submissions(submitted.clone()),
+        Controls,
+        node,
+        gate,
+        token.clone(),
+        addresses,
+        1,    // Source profile: the forked chain's own id.
+        true, // ...so personal keystores are blocked.
+    )
+    .unwrap();
+    let cancel = CancellationToken::new();
+    let _lease = backend.acquire_mutation_lease(&token, &cancel).await.unwrap();
+    assert!(
+        matches!(
+            backend.deploy(&token, "0x6001", "0", 100_000, runner::SignerAlias::Active, &cancel).await,
+            runner::MutationOutcome::Failed(runner::FailureCode::Unauthorized)
+        ),
+        "a personal keystore must not sign on a Source profile"
+    );
+    assert!(submitted.lock().unwrap().is_empty(), "nothing reached the submission layer");
+    // A dev key passes the gate and reaches the submission layer. (The fake
+    // receipt carries the local chain id, so the outcome here is not
+    // Confirmed; what matters is that it was not rejected as Unauthorized.)
+    let submitted_before = submitted.lock().unwrap().len();
+    assert!(
+        !matches!(
+            backend.deploy(&token, "0x6001", "0", 100_000, runner::SignerAlias::Handle(0), &cancel).await,
+            runner::MutationOutcome::Failed(runner::FailureCode::Unauthorized)
+        ),
+        "Anvil dev keys still send"
+    );
+    assert!(submitted.lock().unwrap().len() > submitted_before, "the dev key reached the submission layer");
 }

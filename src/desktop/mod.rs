@@ -330,7 +330,19 @@ async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
         }
         network::LoadOutcome::Rejected { reason } => note(state, reason),
         network::LoadOutcome::Restored { saved, moved_blocks } => {
-            if let Err(error) = network::load_node_state(&state.rpc, &saved.state).await {
+            // A dump also holds blocks and transactions. Restored over a fork
+            // that moved on, Anvil then serves a receipt whose block hash no
+            // longer matches its own header (verified on Anvil 1.2.1), so the
+            // chain state loads only at the same fork point; a moved fork
+            // still gets deployments, tabs and the signer back.
+            let mut chain_note = String::new();
+            if moved_blocks {
+                chain_note = format!(
+                    "The fork moved from block {} to {}, so its saved chain state was not loaded: a dump restored over a moved fork confuses block hashes. Deployments, tabs and the signer were restored; pin the fork block in the profile to resume chain state too.",
+                    saved.identity.fork_block.map(|block| block.to_string()).unwrap_or_else(|| "latest".into()),
+                    identity.fork_block.map(|block| block.to_string()).unwrap_or_else(|| "?".into())
+                );
+            } else if let Err(error) = network::load_node_state(&state.rpc, &saved.state).await {
                 state.profile_state_held = true;
                 note(state, format!("The saved chain state could not be loaded ({error}). Its deployments, tabs and signer were not restored. The checkpoint will not be overwritten."));
                 let snapshot = network::snapshot(&state.rpc).await.unwrap_or_default();
@@ -369,11 +381,17 @@ async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
             let keys = state.current_deployment_keys();
             let mut label = format!("Restored from the previous session: {restored} deployment(s), {rebound} tab(s)");
             if moved_blocks {
+                label.push_str(" (chain state not loaded: the fork moved)");
+            }
+            if moved_blocks {
                 if let Some(recorded) = saved.identity.fork_block {
                     label.push_str(&format!(" (state recorded at fork block {recorded}; this fork is at {})", identity.fork_block.map(|block| block.to_string()).unwrap_or_else(|| "?".into())));
                 }
             }
             state.push_timeline(snapshot.unwrap_or_default(), state.block_number, label, keys);
+            if !chain_note.is_empty() {
+                note(state, chain_note);
+            }
             state.push_log(format!("Resumed profile {} ({}).", state.network.profile_id, identity.key()));
             return;
         }
@@ -1153,7 +1171,7 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
                 "value": format!("{:#x}", prepared.value.parse::<u128>().unwrap_or(0)),
                 "gas": "0x1c9c380",
             });
-            let result = contract_service::deploy(prepared.rpc, prepared.key, prepared.creation, prepared.value, owned).await;
+            let result = contract_service::deploy(prepared.rpc, prepared.key, prepared.creation, prepared.value, prepared.chain_id, owned).await;
             let _ = slint::invoke_from_event_loop(move || {
                 let mut state = held_task.lock().unwrap();
                 if let Some((id, block)) = point {
@@ -1311,17 +1329,17 @@ fn wire(ui: &MainWindow, state: &Arc<Mutex<DesktopState>>, runtime: tokio::runti
     let held = state.clone();
     let runtime_block = runtime.clone();
     ui.global::<Logic>().on_fetch_block(move || {
-        let (rpc, token) = {
+        let (rpc, token, chain_id) = {
             let mut state = held.lock().unwrap();
             if state.transition_pending() || !state.workspace_ready { return; }
             let token = state.begin_request(Operation::Chain, "refresh chain", false);
-            (state.rpc.clone(), token)
+            (state.rpc.clone(), token, state.fork_chain_id)
         };
         paint(&weak, &held);
         let state = held.clone();
         let weak = weak.clone();
         runtime_block.spawn(async move {
-            let result = latest_chain(&rpc, 100).await;
+            let result = latest_chain(&rpc, 100, chain_id).await;
             let _ = slint::invoke_from_event_loop(move || {
                 let mut borrowed = state.lock().unwrap();
                 let summary = result.as_ref().map(|(number, _, _)| format!("Block {number}")).map_err(Clone::clone);
@@ -1472,6 +1490,8 @@ struct PreparedDeployment {
     key: String,
     creation: Vec<u8>,
     value: String,
+    /// The chain id the node must report before this deployment is signed.
+    chain_id: u64,
 }
 
 fn prepare_deployment(state: &DesktopState) -> Result<PreparedDeployment, String> {
@@ -1486,7 +1506,7 @@ fn prepare_deployment(state: &DesktopState) -> Result<PreparedDeployment, String
     let creation = deployment::prepare_creation(&contract.bytecode, contract.constructor.as_ref(), &draft)?;
     let key = state.wallet_key.clone().filter(|key| !key.trim().is_empty())
         .ok_or("Select a signing account before deploying.")?;
-    Ok(PreparedDeployment { name, from: state.wallet_address.clone(), origin: state.deployment_origin_document().unwrap_or_default(), rpc: state.rpc.clone(), key, creation, value: draft.value_wei })
+    Ok(PreparedDeployment { name, from: state.wallet_address.clone(), origin: state.deployment_origin_document().unwrap_or_default(), rpc: state.rpc.clone(), key, creation, value: draft.value_wei, chain_id: state.execution_chain_id() })
 }
 
 fn deployment_presentation(state: &DesktopState, doc: &session::Document) -> DeploymentView {
@@ -1867,12 +1887,21 @@ fn render(ui: &MainWindow, state: &DesktopState) {
         let profile = if state.network.profile_id.is_empty() { String::new() } else { format!("{} · ", state.network.profile_id) };
         format!("{profile}Fork of {chain}{block}").into()
     });
-    // Local mode signs on 31337, so nothing is valid on the real chain. Source
-    // mode reports the forked chain's id; its extra sending limits land in N4.
+    // Local mode signs on 31337, so nothing is valid on the real chain.
+    // Source mode reports the forked chain's own id and blocks keystores.
+    let source_mode = state.source_chain_id_mode();
+    let keystores_blocked = state.keystores_blocked();
     data.set_chain_label(if state.network.is_local() {
         "31337".into()
     } else {
-        format!("signs as {}", state.network_identity.as_ref().map(|identity| identity.execution_chain_id).unwrap_or(31337)).into()
+        format!("signs as {}", state.execution_chain_id()).into()
+    });
+    data.set_chain_warning(if keystores_blocked && source_mode {
+        "Source chain id: the node runs the forked chain's real id. Keystores are blocked; only Anvil dev keys and Act as an address may send, because a keystore signature would be valid on the real network.".into()
+    } else if keystores_blocked {
+        format!("This fork's source chain uses chain id 31337, the same id the local node reports. Keystores are blocked because a signature would be valid upstream; only Anvil dev keys and Act as an address may send.").into()
+    } else {
+        String::new().into()
     });
     data.set_block_label(format!("block {}", state.block_number).into());
     data.set_compile_label(state.compile_label.clone().into());

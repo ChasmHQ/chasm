@@ -141,6 +141,12 @@ pub struct DesktopMacroBackend<A, S, T, C> {
     gate: MutationGate,
     token: runner::ExecutionToken,
     addresses: SignerAddresses,
+    /// The chain id the owned node must report; Local mode is 31337, a Source
+    /// profile reports the forked chain's own id.
+    chain_id: u64,
+    /// Source profiles block personal keystores: a signature with the real
+    /// chain id would be valid on the real network.
+    keystores_blocked: bool,
     /// Bundle submissions waiting for their block: hash -> (result, creation).
     pending: std::sync::Mutex<std::collections::HashMap<String, (CallResult, bool)>>,
 }
@@ -157,6 +163,8 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
         gate: MutationGate,
         token: runner::ExecutionToken,
         addresses: SignerAddresses,
+        chain_id: u64,
+        keystores_blocked: bool,
     ) -> Result<Self, runner::FailureCode> {
         if token.rpc_token == 0 || !authority.is_current(&token) || !owned.authorizes_loopback(8545)
         {
@@ -181,6 +189,8 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
             gate,
             token,
             addresses,
+            chain_id,
+            keystores_blocked,
             pending: Default::default(),
         })
     }
@@ -195,7 +205,7 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
                 }
             }
         }
-        map_submission(result, deployment)
+        map_submission(result, deployment, self.chain_id)
     }
 
     fn current(&self, token: &runner::ExecutionToken) -> bool {
@@ -221,6 +231,9 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
             .signers
             .key(alias)
             .ok_or(runner::FailureCode::Unavailable)?;
+        if self.keystores_blocked && !super::session::signer_allowed_on_source_chain(&key) {
+            return Err(runner::FailureCode::Unauthorized);
+        }
         let address = match super::contract_service::impersonated(&key) {
             Some(address) => address,
             None => key.parse::<ethers::signers::LocalWallet>().map_err(|_| runner::FailureCode::Unavailable)?.address(),
@@ -265,7 +278,7 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
                 },
             )
             .await?;
-        source_from_envelope(&value)
+        source_from_envelope(&value, self.chain_id)
     }
 
     async fn read_transaction(
@@ -294,7 +307,7 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
             .await
         {
             Ok(value) => {
-                if source_from_envelope(&value).ok().as_ref() != Some(source) {
+                if source_from_envelope(&value, self.chain_id).ok().as_ref() != Some(source) {
                     return runner::ReadOutcome::Failed(runner::FailureCode::SourceChanged);
                 }
                 match value.pointer("/data/return_data").and_then(Value::as_str) {
@@ -336,6 +349,7 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
             token.workspace_epoch,
             token.network_epoch,
             LOCAL_RPC.into(),
+            self.chain_id,
         )
         .map_err(|_| runner::FailureCode::InvalidInput)?;
         if let Some(gas) = request.gas {
@@ -598,7 +612,7 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
                     },
                 )
                 .await?;
-            if source_from_envelope(&value)? != request.source {
+            if source_from_envelope(&value, self.chain_id)? != request.source {
                 return Err(runner::FailureCode::SourceChanged);
             }
             value
@@ -698,7 +712,7 @@ impl<A: ContextAuthority, S: SignerResolver, T: GuardedSubmission, C: OwnedContr
             if !self.current(token) {
                 return runner::MutationOutcome::Unknown { tx_hash: Some(tx_hash.to_string()), reason: runner::UnknownReason::Receipt };
             }
-            map_submission(Ok(contract_service::finish_bundled(pending, deployment).await), deployment)
+            map_submission(Ok(contract_service::finish_bundled(pending, deployment).await), deployment, self.chain_id)
         })
     }
 }
@@ -734,13 +748,13 @@ fn valid_quantity(text: &str) -> bool {
         })
 }
 
-fn source_from_envelope(value: &Value) -> Result<runner::SourceIdentity, runner::FailureCode> {
+fn source_from_envelope(value: &Value, expected_chain: u64) -> Result<runner::SourceIdentity, runner::FailureCode> {
     let chain = value
         .get("chain_id")
         .and_then(Value::as_str)
         .and_then(|value| U256::from_dec_str(value).ok())
         .ok_or(runner::FailureCode::InvalidBackendResult)?;
-    if chain != U256::from(31337) {
+    if chain != U256::from(expected_chain) {
         return Err(runner::FailureCode::Unauthorized);
     }
     let genesis = value
@@ -762,7 +776,7 @@ fn source_from_envelope(value: &Value) -> Result<runner::SourceIdentity, runner:
         .filter(|value| valid_hex(value, 32))
         .ok_or(runner::FailureCode::InvalidBackendResult)?;
     Ok(runner::SourceIdentity {
-        chain_id: "0x7a69".into(),
+        chain_id: format!("{expected_chain:#x}"),
         genesis_hash: genesis.to_ascii_lowercase(),
         block_number: number,
         block_hash: hash.to_ascii_lowercase(),
@@ -810,7 +824,7 @@ fn parse_revert(value: Value) -> runner::ControlOutcome<bool> {
     }
 }
 
-fn map_submission(result: Result<CallResult, ()>, deployment: bool) -> runner::MutationOutcome {
+fn map_submission(result: Result<CallResult, ()>, deployment: bool, expected_chain: u64) -> runner::MutationOutcome {
     let result = match result {
         Ok(result) => result,
         Err(()) => return runner::MutationOutcome::Failed(runner::FailureCode::Unavailable),
@@ -865,7 +879,7 @@ fn map_submission(result: Result<CallResult, ()>, deployment: bool) -> runner::M
         });
     if !source_chain.is_some_and(|chain| {
         valid_quantity(chain)
-            && U256::from_str_radix(&chain[2..], 16).ok() == Some(U256::from(31337))
+            && U256::from_str_radix(&chain[2..], 16).ok() == Some(U256::from(expected_chain))
     }) || !source_genesis.is_some_and(|hash| valid_hex(hash, 32))
         || !matching_block
         || !source_hash
