@@ -123,7 +123,7 @@ pub fn plan(cheat: &Cheat) -> Result<(Vec<(&'static str, Value)>, String), Strin
             let target = address()?;
             let wei = super::request_form::to_wei(&cheat.value, 2)?;
             let wei = ethers::types::U256::from_dec_str(&wei).map_err(|_| "Amount is too large.")?;
-            (vec![("anvil_setBalance", json!([target, format!("{wei:#x}")]))], format!("deal {} ETH to {}", cheat.value.trim(), short(&target)))
+            (vec![("anvil_setBalance", json!([target, format!("{wei:#x}")]))], format!("deal {} {} to {}", cheat.value.trim(), super::toolchain::native_token(None), short(&target)))
         }
         "nonce" => {
             let target = address()?;

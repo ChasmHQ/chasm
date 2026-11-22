@@ -1506,7 +1506,8 @@ fn prepare_deployment(state: &DesktopState) -> Result<PreparedDeployment, String
     let creation = deployment::prepare_creation(&contract.bytecode, contract.constructor.as_ref(), &draft)?;
     let key = state.wallet_key.clone().filter(|key| !key.trim().is_empty())
         .ok_or("Select a signing account before deploying.")?;
-    Ok(PreparedDeployment { name, from: state.wallet_address.clone(), origin: state.deployment_origin_document().unwrap_or_default(), rpc: state.rpc.clone(), key, creation, value: draft.value_wei, chain_id: state.execution_chain_id() })
+    let chain_id = state.known_execution_chain_id().ok_or("The node's chain id is not known yet; wait for the workspace to finish loading, then deploy again.")?;
+    Ok(PreparedDeployment { name, from: state.wallet_address.clone(), origin: state.deployment_origin_document().unwrap_or_default(), rpc: state.rpc.clone(), key, creation, value: draft.value_wei, chain_id })
 }
 
 fn deployment_presentation(state: &DesktopState, doc: &session::Document) -> DeploymentView {
@@ -2224,6 +2225,11 @@ mod tests {
         assert!(prepare_deployment(&state).is_err());
         assert!(state.jobs.is_empty());
         state.edit_constructor_argument(0, "42".into());
+        // Deployment signs against the node's chain id, which boot pins.
+        state.network_identity = Some(network::NetworkIdentity {
+            profile_id: String::new(), source_chain_id: None, fork_block: None,
+            anchor_hash: None, execution_chain_id: 31337,
+        });
         let prepared = prepare_deployment(&state).unwrap();
         assert_eq!(&prepared.creation[..2], &[0x60, 0x00]);
         assert_eq!(prepared.creation.len(), 34);

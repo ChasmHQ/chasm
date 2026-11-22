@@ -676,7 +676,7 @@ fn execute(
             state.workspace_epoch,
             state.network_epoch,
             state.rpc.clone(),
-            state.execution_chain_id(),
+            state.known_execution_chain_id().ok_or("The node's chain id is not known yet; wait for the workspace to finish loading, then send again.")?,
         )?;
         let (key, owned, lease) = if send {
             let owned = state

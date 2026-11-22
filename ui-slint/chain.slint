@@ -98,7 +98,7 @@ export component TimelineView inherits Rectangle {
                 text: ChainData.action == "time" ? "Advance block time, then mine one block."
                     : ChainData.action == "timestamp" ? "Set the next block's Unix timestamp and mine it."
                     : ChainData.action == "mine" ? "Mine empty blocks."
-                    : ChainData.action == "deal" ? "Set an address's ETH balance."
+                    : ChainData.action == "deal" ? "Set an address's native-token balance."
                     : ChainData.action == "nonce" ? "Set an account's nonce."
                     : ChainData.action == "storage" ? "Write one storage slot of a contract."
                     : "Replace the runtime code at an address.";
@@ -107,7 +107,7 @@ export component TimelineView inherits Rectangle {
             if ChainData.action == "deal" || ChainData.action == "nonce" || ChainData.action == "storage" || ChainData.action == "code": CheatField { label: "Address"; placeholder: "0x… (a deployment or Anvil account)"; text <=> ChainData.address; }
             if ChainData.action == "storage": CheatField { label: "Slot"; placeholder: "0, 5 or 0x…"; text <=> ChainData.slot; }
             CheatField {
-                label: ChainData.action == "time" ? "Seconds" : ChainData.action == "timestamp" ? "Unix timestamp" : ChainData.action == "mine" ? "Blocks" : ChainData.action == "deal" ? "Balance in ether" : ChainData.action == "nonce" ? "Nonce" : ChainData.action == "storage" ? "Value (decimal or 0x)" : "Bytecode (0x…)";
+                label: ChainData.action == "time" ? "Seconds" : ChainData.action == "timestamp" ? "Unix timestamp" : ChainData.action == "mine" ? "Blocks" : ChainData.action == "deal" ? "Balance in ether (native token)" : ChainData.action == "nonce" ? "Nonce" : ChainData.action == "storage" ? "Value (decimal or 0x)" : "Bytecode (0x…)";
                 placeholder: ChainData.action == "time" ? "86400 for one day" : ChainData.action == "deal" ? "100" : "";
                 text <=> ChainData.value;
             }

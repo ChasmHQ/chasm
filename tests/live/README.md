@@ -43,6 +43,7 @@ key is stored here.
 | `build_source` | Auto follows `foundry.toml`; a duplicate library names both copies |
 | `revert_explained` | a keeper revert names `MiniToken.transfer` and its custom error; an oversized deploy names EIP-170; unsent calls trace through the API |
 | `fork` | mainnet fork, real transaction replay matches the receipt, Sourcify source; USDC imported by address as a proxy with its implementation's ABI, `name()` read through it |
+| `networks` | named profiles: switch with preflight and resume, per-network History and imports, Source mode with `ChainIdProbe`, a refused bad RPC, and a Sepolia check; needs the public RPC |
 | `stress` (only when named) | 20-field form, 200k-step trace, 30 deployments, 500 History rows, 128-step macro, three zooms |
 
 The table describes assertions in `flows.py`, not results from a particular run. The `bundle` flow does not query the transaction pool or mine a later block to check for leftover sends. `src/desktop/macro_runner_tests.rs` covers an unconfirmed rollback with a mock backend, not a live node failure.

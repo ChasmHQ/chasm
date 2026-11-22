@@ -1292,7 +1292,8 @@ impl DesktopState {
     }
 
     /// Sends as `address` through the owned node, without a key. The node
-    /// accepts it only on the local chain (31337); nothing is signed.
+    /// accepts it only on the owned local node, on whatever chain id its
+    /// profile runs; nothing is signed.
     pub fn impersonate(&mut self, address: &str) {
         if !self.can_start_wallet_operation() {
             return;
@@ -1370,9 +1371,16 @@ impl DesktopState {
     }
 
     /// The chain id the workspace node reports; 31337 in Local mode and the
-    /// forked chain's own id in Source mode.
+    /// forked chain's own id in Source mode. Display and API use this; the
+    /// signing paths use `known_execution_chain_id` and refuse to guess.
     pub fn execution_chain_id(&self) -> u64 {
-        self.network_identity.as_ref().map(|identity| identity.execution_chain_id).unwrap_or(31337)
+        self.known_execution_chain_id().unwrap_or(31337)
+    }
+
+    /// The node's chain id when the boot pinned an identity. Signing must not
+    /// guess: the guard compares the node against this value.
+    pub fn known_execution_chain_id(&self) -> Option<u64> {
+        self.network_identity.as_ref().map(|identity| identity.execution_chain_id)
     }
 
     /// Whether this profile runs the forked chain's id, which makes a

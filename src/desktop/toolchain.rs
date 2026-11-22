@@ -400,8 +400,15 @@ async fn debug_trace_supported(url: &str) -> Option<bool> {
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?;
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"debug_traceTransaction","params":["0x0000000000000000000000000000000000000000000000000000000000000000", {}]});
     let value: serde_json::Value = super::retry::send(|| client.post(url).json(&body)).await.ok()?.json().await.ok()?;
-    let code = value["error"]["code"].as_i64();
-    Some(code != Some(-32601))
+    let error = &value["error"];
+    let code = error["code"].as_i64();
+    let message = error["message"].as_str().unwrap_or_default().to_ascii_lowercase();
+    let missing = code == Some(-32601)
+        || message.contains("method not found")
+        || message.contains("does not exist")
+        || message.contains("is not available")
+        || message.contains("not supported");
+    Some(!missing)
 }
 
 /// The saved profiles, the active id, and the network the project boots with.
@@ -496,8 +503,9 @@ impl NetworkSwitch {
 /// The legacy single-network save behind `toolchain.action network` and the
 /// Network form's Save button: it edits the active fork profile's URL and
 /// block (creating `fork-1` when the local chain is active), or switches back
-/// to a local chain on an empty URL. The chain id mode stays Local, as before
-/// profiles existed; `network.save` carries the mode explicitly.
+/// to a local chain on an empty URL. The saved profile's chain id mode is
+/// kept — editing the URL must not silently downgrade a Source profile back
+/// to Local; `network.save` sets the mode explicitly.
 pub fn prepare_network(workspace: &Path, url: &str, block: &str) -> Result<NetworkSwitch, String> {
     let url = url.trim();
     let block = block.trim();
@@ -513,7 +521,8 @@ pub fn prepare_network(workspace: &Path, url: &str, block: &str) -> Result<Netwo
         active => active,
     }.to_string();
     let name = config.profile(&id).map(|profile| profile.name.clone()).unwrap_or_default();
-    let profile = crate::config::NetworkProfile { id: id.clone(), name, fork_url: url.into(), fork_url_env: String::new(), fork_block, chain_id_mode: crate::config::ChainIdMode::Local };
+    let chain_id_mode = config.profile(&id).map(|profile| profile.chain_id_mode).unwrap_or(crate::config::ChainIdMode::Local);
+    let profile = crate::config::NetworkProfile { id: id.clone(), name, fork_url: url.into(), fork_url_env: String::new(), fork_block, chain_id_mode };
     NetworkSwitch::from_config(config, &id, Some(profile))
 }
 
@@ -625,6 +634,24 @@ mod tests {
         let config = ChasmConfig::load(root).unwrap();
         assert_eq!(config.resolve_network().unwrap().fork_url, "https://original.invalid");
         assert_eq!(config.resolve_network().unwrap().fork_block, Some(3));
+    }
+
+    #[test]
+    fn the_legacy_alias_keeps_the_saved_chain_id_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let source = crate::config::NetworkProfile {
+            id: "mainnet".into(), name: String::new(), fork_url: "https://old.example".into(),
+            fork_url_env: String::new(), fork_block: None, chain_id_mode: crate::config::ChainIdMode::Source,
+        };
+        save_profile(root.path(), source).unwrap();
+        ChasmConfig::update(root.path(), |config| config.network.active = "mainnet".into()).unwrap();
+        let switched = prepare_network(root.path(), "https://new.example", "").unwrap();
+        assert_eq!(switched.settings.chain_id_mode, crate::config::ChainIdMode::Source, "editing the URL must not downgrade a Source profile");
+        let committed = switched.checked_config(root.path()).unwrap();
+        assert_eq!(committed.profile("mainnet").unwrap().chain_id_mode, crate::config::ChainIdMode::Source);
+        // A brand-new fork-1 profile stays Local, as before profiles existed.
+        let fresh = prepare_network(tempfile::tempdir().unwrap().path(), "https://rpc.example", "").unwrap();
+        assert_eq!(fresh.settings.chain_id_mode, crate::config::ChainIdMode::Local);
     }
 
     #[test]

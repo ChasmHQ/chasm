@@ -178,7 +178,7 @@ export component ToolchainWorkspace inherits ScrollView {
             Rectangle { horizontal-stretch: 1; }
         }
         if ToolchainData.chain-mode == 1: SelectableText {
-            text: "Chain id Source runs the node with the forked chain's own id, so EIP-712 domains and block.chainid behave as on the real chain. Signatures made here could be replayed there, so in this build sending is refused on Source profiles; the sending rules land with the signer work.";
+            text: "Chain id Source runs the node with the forked chain's own id, so EIP-712 domains and block.chainid behave as on the real chain. Signatures made here could be replayed there, so personal keystores are blocked: only Anvil dev keys and Act as an address may send.";
             color: Theme.warn; font-size: 0.75rem; wrap: word-wrap;
         }
         HorizontalLayout {

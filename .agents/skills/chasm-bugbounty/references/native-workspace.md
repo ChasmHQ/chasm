@@ -1,6 +1,6 @@
 # Native workspace reference
 
-Source baseline: native `UI` commit `515666e` (2026-11-21). Use the running `app.catalog`, `/api/v1/schema` and MCP `tools/list` for discovery. The November 13 schema snapshot, where installed, predates these features.
+Source baseline: native `UI` commit `505553b` (2026-11-22). Use the running `app.catalog`, `/api/v1/schema` and MCP `tools/list` for discovery. The November 13 schema snapshot, where installed, predates these features.
 
 ## Identify the app and engine
 
