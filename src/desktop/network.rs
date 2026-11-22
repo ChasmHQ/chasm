@@ -339,8 +339,7 @@ fn save_profile_state(workspace: &Path, id: &str, identity: &NetworkIdentity, st
 /// (or reopening the project) can resume. Called before a switch and on
 /// close. Skipped — never overwriting — while the profile's saved state is
 /// held back (its identity was unknown at boot) or the identity is still
-/// incomplete. The dump is small: only touched accounts.
-/// Returns whether anything was written.
+/// incomplete. Returns whether anything was written.
 pub async fn save_running_profile(held: &std::sync::Arc<std::sync::Mutex<super::session::DesktopState>>) -> Result<bool, String> {
     let (workspace, profile, identity, rpc, deployments, tabs, signer) = {
         let state = held.lock().unwrap();
@@ -361,11 +360,8 @@ pub async fn save_running_profile(held: &std::sync::Arc<std::sync::Mutex<super::
     save_profile_state(&workspace, &profile, &identity, state_hex, deployments, tabs, signer).map(|_| true)
 }
 
-/// Read and validate a profile's saved state against the node that just
-/// booted. A saved state from another chain is rejected and archived; the
-/// same chain at a later fork block restores (the spike showed
-/// anvil_loadState restores the touched accounts over a moved fork), with
-/// `moved_blocks` set for the note. An incomplete identity defers.
+/// Read a checkpoint and compare its source chain and anchor with the running node.
+/// A changed fork height needs additional validation before any state is loaded.
 pub fn load_profile_state(workspace: &Path, id: &str, current: &NetworkIdentity, is_fork: bool) -> LoadOutcome {
     load_profile_with_archive(workspace, id, current, is_fork, || archive_profile_state(workspace, id, "rejected"))
 }
@@ -463,6 +459,8 @@ pub fn list(workspace: &Path) -> Value {
         },
         "forkBlock": profile.fork_block,
         "chainIdMode": profile.chain_id_mode.as_str(),
+        "hardfork": profile.hardfork,
+        "optimism": profile.optimism,
         "active": profile.id == active,
         "savedState": has_saved_state(workspace, &profile.id),
     })).collect::<Vec<_>>())
@@ -472,20 +470,61 @@ fn host_of(url: &str) -> String {
     reqwest::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_else(|| "remote".into())
 }
 
-/// Hex dump of the running node's state (`anvil_dumpState`): only accounts
-/// the node has touched, so a fork dump stays small.
+/// Anvil's hex state dump, which can include block and transaction history.
 pub async fn dump_node_state(rpc: &str) -> Result<String, String> {
     let value: String = rpc_call(rpc, "anvil_dumpState", json!([])).await?;
     if valid_dump(&value) { Ok(value) } else { Err("The node returned an empty or invalid state dump.".into()) }
 }
 
-/// Restore a dump taken by `dump_node_state` onto the running node. The head
-/// does not move; only account state changes.
+/// Restore a full dump. A fork must still be at the checkpoint's original anchor.
 pub async fn load_node_state(rpc: &str, state_hex: &str) -> Result<(), String> {
     match rpc_call::<bool>(rpc, "anvil_loadState", json!([state_hex])).await? {
         true => Ok(()),
         false => Err("The node did not accept the saved state.".into()),
     }
+}
+
+const MAX_ACCOUNTS_DUMP_BYTES: usize = 16 * 1024 * 1024;
+
+fn accounts_dump_hex(state_hex: &str, limit: usize) -> Result<String, String> {
+    use ethers::utils::hex;
+    use std::io::Read;
+
+    const INVALID_HEX: &str = "The saved node dump is not valid hex.";
+    const TOO_LARGE: &str = "The saved node dump is too large for accounts-only restore.";
+    const INVALID_GZIP: &str = "The saved node dump is not valid gzip.";
+    let digits = state_hex.strip_prefix("0x").ok_or(INVALID_HEX)?;
+    if digits.len() > limit * 2 { return Err(TOO_LARGE.into()); }
+    let bytes = hex::decode(digits).map_err(|_| INVALID_HEX)?;
+    let json = if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut decoder = flate2::bufread::GzDecoder::new(bytes.as_slice());
+        let mut json = Vec::new();
+        decoder.by_ref().take((limit + 1) as u64).read_to_end(&mut json).map_err(|_| INVALID_GZIP)?;
+        if json.len() > limit { return Err(TOO_LARGE.into()); }
+        if !decoder.into_inner().is_empty() { return Err(INVALID_GZIP.into()); }
+        json
+    } else {
+        bytes
+    };
+
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct AccountsOnly<'a> {
+        #[serde(borrow)]
+        accounts: &'a serde_json::value::RawValue,
+    }
+    let json = std::str::from_utf8(&json).map_err(|_| "The saved node dump is not UTF-8 JSON.")?;
+    if !json.trim_start().starts_with('{') { return Err("The saved node dump must be a JSON object.".into()); }
+    let state: AccountsOnly<'_> = serde_json::from_str(json).map_err(|_| "The saved node dump does not contain valid accounts JSON.")?;
+    if !state.accounts.get().starts_with('{') { return Err("The saved accounts must be a JSON object.".into()); }
+    let raw = serde_json::to_vec(&state).map_err(|_| "Could not encode the saved accounts.")?;
+    Ok(format!("0x{}", hex::encode(raw)))
+}
+
+/// Overlay saved accounts without importing the old fork's block or transaction history.
+/// The dump may include cached upstream accounts, so this can mask newer values.
+pub async fn load_node_accounts(rpc: &str, state_hex: &str) -> Result<(), String> {
+    let accounts = accounts_dump_hex(state_hex, MAX_ACCOUNTS_DUMP_BYTES)?;
+    load_node_state(rpc, &accounts).await.map_err(|_| "The node did not load the saved accounts.".into())
 }
 
 /// A snapshot id of the running node, so a restored point is revertable.
@@ -532,7 +571,10 @@ pub async fn anchor_hash(rpc: &str, fork_block: Option<u64>) -> Option<String> {
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().ok()?;
     let body = json!({"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":[block, false]});
     let value: Value = super::retry::send(|| client.post(rpc).json(&body)).await.ok()?.json().await.ok()?;
-    value["result"]["hash"].as_str().filter(|hash| valid_hash(hash)).map(str::to_ascii_lowercase)
+    let header = &value["result"];
+    let number = header["number"].as_str().and_then(|text| u64::from_str_radix(text.strip_prefix("0x")?, 16).ok());
+    if number != Some(fork_block.unwrap_or(0)) { return None; }
+    header["hash"].as_str().filter(|hash| valid_hash(hash)).map(str::to_ascii_lowercase)
 }
 
 /// The source chain id of a fork RPC, with bounded retries for rate limits.
@@ -603,6 +645,8 @@ pub fn fallback_settings(root: &Path, failed_profile: &str) -> Option<NetworkSet
         fork_url: url,
         fork_block: profile.fork_block,
         chain_id_mode: profile.chain_id_mode,
+        hardfork: profile.hardfork.clone(),
+        optimism: profile.optimism,
     }))
 }
 
@@ -824,6 +868,69 @@ mod tests {
             assert!(load_node_state(&rpc, "0x12").await.is_err());
             assert_eq!(snapshot(&rpc).await.unwrap(), "0x1");
         }).await;
+    }
+
+    fn gzip_dump(json: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(json).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn hex_dump(bytes: &[u8]) -> String {
+        format!("0x{}", ethers::utils::hex::encode(bytes))
+    }
+
+    #[tokio::test]
+    async fn node_accounts_restore_sends_only_accounts_for_gzip_and_raw_json() {
+        let accounts = json!({"0x0000000000000000000000000000000000000001": {"nonce": 1, "balance": "0x2", "code": "0x00", "storage": {"0x0": "0x3"}}});
+        let full = serde_json::to_vec(&json!({
+            "best_block_number": 42,
+            "block": {"number": 42},
+            "historical_states": {},
+            "transactions": [],
+            "accounts": accounts,
+        })).unwrap();
+        let only_accounts = hex_dump(&serde_json::to_vec(&json!({"accounts": accounts})).unwrap());
+        let sequence = vec![
+            ("anvil_loadState", json!([only_accounts]), json!(true)),
+            ("anvil_loadState", json!([only_accounts]), json!(true)),
+            ("anvil_loadState", json!([only_accounts]), json!(false)),
+        ];
+        with_rpc(sequence, |rpc| async move {
+            assert!(load_node_accounts(&rpc, &hex_dump(&gzip_dump(&full))).await.is_ok());
+            assert!(load_node_accounts(&rpc, &hex_dump(&full)).await.is_ok());
+            assert!(load_node_accounts(&rpc, &hex_dump(&full)).await.is_err());
+        }).await;
+    }
+
+    #[test]
+    fn accounts_restore_rejects_invalid_or_oversized_dumps() {
+        let full = br#"{"accounts": {}}"#;
+        let mut corrupt = gzip_dump(full);
+        corrupt.pop();
+        let mut trailing = gzip_dump(full);
+        trailing.push(0);
+        for invalid in [
+            "0xinvalid".into(),
+            hex_dump(br#"[{}]"#),
+            hex_dump(br#"{"transactions": []}"#),
+            hex_dump(br#"{"accounts": null}"#),
+            hex_dump(br#"{"accounts": {}, "accounts": {}}"#),
+            hex_dump(&corrupt),
+            hex_dump(&trailing),
+        ] {
+            assert!(accounts_dump_hex(&invalid, MAX_ACCOUNTS_DUMP_BYTES).is_err());
+        }
+
+        let mut large = full.to_vec();
+        large.resize(1024, b' ');
+        let compressed = gzip_dump(&large);
+        let limit = compressed.len();
+        assert!(limit < large.len());
+        assert!(accounts_dump_hex(&hex_dump(&large), limit).unwrap_err().contains("too large"));
+        assert!(accounts_dump_hex(&hex_dump(&compressed), limit).unwrap_err().contains("too large"));
+        assert!(accounts_dump_hex(&hex_dump(&compressed), large.len()).is_ok());
     }
 
     #[tokio::test]

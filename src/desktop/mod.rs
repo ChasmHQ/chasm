@@ -330,19 +330,33 @@ async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
         }
         network::LoadOutcome::Rejected { reason } => note(state, reason),
         network::LoadOutcome::Restored { saved, moved_blocks } => {
-            // A dump also holds blocks and transactions. Restored over a fork
-            // that moved on, Anvil then serves a receipt whose block hash no
-            // longer matches its own header (verified on Anvil 1.2.1), so the
-            // chain state loads only at the same fork point; a moved fork
-            // still gets deployments, tabs and the signer back.
-            let mut chain_note = String::new();
-            if moved_blocks {
-                chain_note = format!(
-                    "The fork moved from block {} to {}, so its saved chain state was not loaded: a dump restored over a moved fork confuses block hashes. Deployments, tabs and the signer were restored; pin the fork block in the profile to resume chain state too.",
-                    saved.identity.fork_block.map(|block| block.to_string()).unwrap_or_else(|| "latest".into()),
-                    identity.fork_block.map(|block| block.to_string()).unwrap_or_else(|| "?".into())
-                );
-            } else if let Err(error) = network::load_node_state(&state.rpc, &saved.state).await {
+            let chain_changed = saved.identity.execution_chain_id != identity.execution_chain_id;
+            let accounts_only = moved_blocks || chain_changed;
+            let result = if moved_blocks {
+                match (saved.identity.fork_block, identity.fork_block, saved.identity.anchor_hash.as_deref(), identity.anchor_hash.as_deref()) {
+                    (Some(old), Some(new), Some(old_hash), Some(new_hash)) if state.network.fork_block.is_none() && new > old => {
+                        let url = &state.network.fork_url;
+                        let (old_anchor, new_anchor) = tokio::join!(network::anchor_hash(url, Some(old)), network::anchor_hash(url, Some(new)));
+                        if old_anchor.is_some_and(|hash| hash.eq_ignore_ascii_case(old_hash))
+                            && new_anchor.is_some_and(|hash| hash.eq_ignore_ascii_case(new_hash))
+                        {
+                            network::load_node_accounts(&state.rpc, &saved.state).await
+                        } else {
+                            Err("the old and new fork anchors could not both be verified on the upstream chain".into())
+                        }
+                    }
+                    _ => Err("only an advancing latest fork with a recorded anchor can restore accounts across blocks".into()),
+                }
+            } else if chain_changed {
+                if is_fork && saved.identity.anchor_hash.is_some() {
+                    network::load_node_accounts(&state.rpc, &saved.state).await
+                } else {
+                    Err("the execution chain ID changed without a verified fork anchor".into())
+                }
+            } else {
+                network::load_node_state(&state.rpc, &saved.state).await
+            };
+            if let Err(error) = result {
                 state.profile_state_held = true;
                 note(state, format!("The saved chain state could not be loaded ({error}). Its deployments, tabs and signer were not restored. The checkpoint will not be overwritten."));
                 let snapshot = network::snapshot(&state.rpc).await.unwrap_or_default();
@@ -380,18 +394,12 @@ async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
             let snapshot = network::snapshot(&state.rpc).await.ok();
             let keys = state.current_deployment_keys();
             let mut label = format!("Restored from the previous session: {restored} deployment(s), {rebound} tab(s)");
-            if moved_blocks {
-                label.push_str(" (chain state not loaded: the fork moved)");
-            }
-            if moved_blocks {
-                if let Some(recorded) = saved.identity.fork_block {
-                    label.push_str(&format!(" (state recorded at fork block {recorded}; this fork is at {})", identity.fork_block.map(|block| block.to_string()).unwrap_or_else(|| "?".into())));
-                }
+            if accounts_only {
+                let reason = if moved_blocks { "The latest fork advanced." } else { "The execution chain ID changed." };
+                label.push_str(" (accounts only)");
+                note(state, format!("{reason} Saved accounts were restored as an overlay, not merged with newer upstream values. Previous blocks and transactions were not restored."));
             }
             state.push_timeline(snapshot.unwrap_or_default(), state.block_number, label, keys);
-            if !chain_note.is_empty() {
-                note(state, chain_note);
-            }
             state.push_log(format!("Resumed profile {} ({}).", state.network.profile_id, identity.key()));
             return;
         }
@@ -405,18 +413,27 @@ async fn apply_saved_state(state: &mut DesktopState, root: &std::path::Path) {
 /// the node reports, and why the source id is unknown when it is. A Source
 /// profile reads the source id before the spawn: the node has to come up
 /// already reporting it, and nothing starts when the RPC cannot say it.
-async fn start_network(anvil: &mut AnvilNode, network: &crate::config::NetworkSettings) -> Result<(Option<u64>, u64, Option<String>), anyhow::Error> {
+async fn start_network(anvil: &mut AnvilNode, network: &crate::config::NetworkSettings) -> Result<(Option<u64>, u64, Option<String>, bool), anyhow::Error> {
     let mut source = None;
     let mut source_error = None;
+    let mut optimism = false;
     if network.is_local() {
         anvil.start()?;
     } else {
-        if network.chain_id_mode == crate::config::ChainIdMode::Source {
-            source = Some(network::fetch_source_chain_id(&network.fork_url).await.map_err(|error| {
-                anyhow::anyhow!("Profile {} runs its source chain id, but the RPC did not answer eth_chainId: {error}.", network.profile_id)
-            })?);
+        if !network.chain_id_mode.is_local() || network.optimism.is_none() {
+            match network::fetch_source_chain_id(&network.fork_url).await {
+                Ok(id) if id > 0 => source = Some(id),
+                result => {
+                    let error = result.err().unwrap_or_else(|| "the chain ID was zero".into());
+                    if !network.chain_id_mode.is_local() {
+                        anyhow::bail!("Profile {} runs its source chain id, but the RPC did not supply a valid eth_chainId: {error}.", network.profile_id);
+                    }
+                    source_error = Some(error);
+                }
+            }
         }
-        anvil.start_fork(network.fork_url.clone(), network.fork_block, network.chain_id_mode)?;
+        optimism = network.optimism.unwrap_or_else(|| source.is_some_and(toolchain::is_op_stack));
+        anvil.start_fork(network, optimism)?;
     }
     let expected = network.execution_chain_id(source);
     let probe = reqwest::Client::builder().timeout(std::time::Duration::from_millis(400)).build()?;
@@ -444,11 +461,15 @@ async fn start_network(anvil: &mut AnvilNode, network: &crate::config::NetworkSe
     // retries. A failure keeps the boot: the notice offers a Retry.
     if source.is_none() && !network.is_local() {
         match network::fetch_source_chain_id(&network.fork_url).await {
-            Ok(id) => source = Some(id),
+            Ok(id) if id > 0 => {
+                source = Some(id);
+                source_error = None;
+            }
+            Ok(_) => source_error = Some("the chain ID was zero".into()),
             Err(error) => source_error = Some(error),
         }
     }
-    Ok((source, expected, source_error))
+    Ok((source, expected, source_error, optimism))
 }
 
 async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
@@ -491,19 +512,19 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
     let mut anvil = AnvilNode::new_silent(8545);
     // Start the node, then probe it. A network switch whose target never
     // becomes ready falls back to the profile that ran before it.
-    let (fork_chain_id, execution_chain_id, source_error, switch_error) = match start_network(&mut anvil, &network).await {
-        Ok((source, exec, source_error)) => (source, exec, source_error, None),
+    let (fork_chain_id, execution_chain_id, source_error, optimism, switch_error) = match start_network(&mut anvil, &network).await {
+        Ok((source, exec, source_error, optimism)) => (source, exec, source_error, optimism, None),
         Err(error) => {
             let Some(previous) = network::fallback_settings(&root, &network.profile_id) else { anyhow::bail!("{error:#}") };
             let target = config.profile(&network.profile_id).map(|profile| profile.title().to_string()).unwrap_or_else(|| network.profile_id.clone());
             let previous_id = previous.profile_id.clone();
             anvil.stop();
-            let (source, exec, source_error) = start_network(&mut anvil, &previous).await
+            let (source, exec, source_error, optimism) = start_network(&mut anvil, &previous).await
                 .map_err(|second| anyhow::anyhow!("{error:#} Booting the previous profile {previous_id} also failed: {second:#}"))?;
             // Keep the saved config in step with the network that now runs.
             let _ = ChasmConfig::update(&root, |config| config.network.active = previous_id.clone());
             network = previous;
-            (source, exec, source_error, Some(format!("Network switch to {target} failed: {error:#}. The previous network is running again.")))
+            (source, exec, source_error, optimism, Some(format!("Network switch to {target} failed: {error:#}. The previous network is running again.")))
         }
     };
     // A node is ready: the switch marker described one attempt and is done,
@@ -544,6 +565,7 @@ async fn boot(cli: Cli, zoom: f32) -> anyhow::Result<(Services, DesktopState)> {
     let mut state = DesktopState::new(root.clone(), zoom);
     state.network = network;
     state.fork_chain_id = fork_chain_id;
+    state.fork_optimism = optimism;
     state.network_identity = Some(identity);
     state.owned_node = services.anvil.duplicate_process_handle().ok()
         .map(|handle| owned_node::OwnedNode::from_child_handle(handle, services.anvil.port()));

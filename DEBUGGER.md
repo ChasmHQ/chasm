@@ -52,7 +52,8 @@ With the project forked (Workspace > Compiler and libraries > Network), paste a 
 - Chasm starts a separate replay node forked at the block before the transaction and replays the transaction there as a call. The project node and its deployments are not touched.
 - The replay node keeps the real chain id, so contracts that check `block.chainid` (EIP-712 signatures, permits) behave as on chain. Chasm never signs on it.
 - If the upstream block lookup succeeds, replay supplies its number, timestamp, base fee, coinbase, gas limit and prevrandao as overrides. Without the block response, replay can proceed without those overrides.
-- The parent block supplies the starting state. For a later transaction, replay omits earlier transactions in the same block. Matching the chain ID and block context does not guarantee the original outcome.
+- The parent block supplies the starting state. Replay omits earlier transactions in the same block, so matching the chain ID and block context does not guarantee the original outcome.
+- Replay uses the profile's Optimism mode and hardfork override. On OP Stack, earlier deposits (`0x7e`) are reported separately from other omitted transactions, and the trace does not reproduce L1 data fees. On Arbitrum, the block-number override uses the RPC block number, not ArbOS's L1 block number. The trace flags calls to ArbSys, ArbGasInfo and NodeInterface because Anvil does not implement them.
 - When Chasm knows the source chain ID, it looks up at most 12 unmatched addresses with runtime code per trace using [Sourcify](https://sourcify.dev). It caches answers, including not-found responses, in `.chasm/sources/<chain>/<address>.json`. Source display needs matching runtime, a usable source map and the declaring file. Steps in imported files can still show only opcodes. Saved traces use the local cache.
 
 ## Step commands

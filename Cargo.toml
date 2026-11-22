@@ -12,7 +12,7 @@ axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.4", features = ["util"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["arbitrary_precision"] }
+serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
 tracing = "0.1"
 foundry-compilers = { version = "0.19", features = ["svm-solc"] } # auto-install solc based on pragmas
 anyhow = "1.0"
@@ -30,6 +30,7 @@ rmcp = { version = "=3.9.0", default-features = false, features = ["server", "tr
 tokio-util = "0.7"
 png = "0.18"
 base64 = "0.22"
+flate2 = "1"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"

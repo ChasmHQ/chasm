@@ -868,7 +868,7 @@ def external_build():
     # Deploy outside Chasm with the public Anvil key, derived at runtime.
     sent = subprocess.run(["cast", "send", "--rpc-url", "http://127.0.0.1:8545", "--private-key", anvil_key_0(), "--json", "--create", creation],
                           capture_output=True, text=True, check=True)
-    address = json.loads(sent.stdout)["contractAddress"]
+    address = json.loads(next(line for line in reversed(sent.stdout.splitlines()) if line.strip().startswith("{")))["contractAddress"]
     check("vault deployed outside Chasm", bool(address), sent.stdout[:200])
 
     # The same source in the workspace, compiled with the same settings.
@@ -1095,7 +1095,7 @@ def foundry_import():
     creation = artifact["bytecode"]["object"] + "000000000000000000000000" + OWNER[2:].lower()
     sent = subprocess.run(["cast", "send", "--rpc-url", "http://127.0.0.1:8545", "--private-key", anvil_key_0(), "--json", "--create", creation],
                           capture_output=True, text=True, check=True)
-    address = json.loads(sent.stdout)["contractAddress"]
+    address = json.loads(next(line for line in reversed(sent.stdout.splitlines()) if line.strip().startswith("{")))["contractAddress"]
     data = rpc_call_data("deposit(uint256)", [9])
 
     def traced():

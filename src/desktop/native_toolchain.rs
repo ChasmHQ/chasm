@@ -105,11 +105,12 @@ pub fn render(ui: &MainWindow, state: &DesktopState) {
         }
     };
     data.set_fork_running(describe(&state.network).into());
-    // A forked chain Chasm has no special handling for: say what may differ.
-    data.set_chain_warning(state.fork_chain_id.filter(|chain| !toolchain::chains_first_class(*chain)).map(|chain| format!(
-        "Forking {}: this chain is not Ethereum or Sepolia. Precompiles, system transactions and fees may differ, and traces are approximate. The debugger's offline engine only understands Ethereum mainnet.",
-        toolchain::chain_name(chain)
-    )).unwrap_or_default().into());
+    let warning = match state.fork_chain_id {
+        Some(chain) if toolchain::is_op_stack(chain) && !state.fork_optimism => "OP Stack mode is off for this fork. Its system transactions, precompiles and fees may differ from the local node.".into(),
+        Some(chain) => toolchain::chain_warning(chain).unwrap_or_default().into(),
+        None => String::new(),
+    };
+    data.set_chain_warning(warning.into());
     data.set_presets(super::model(toolchain::PUBLIC_RPCS.iter().map(|(name, _, _)| slint::SharedString::from(*name)).collect()));
     data.set_fork_saved(describe(&resolved).into());
     let local_active = active.is_empty() || active == crate::config::NetworkProfile::LOCAL_ID;
@@ -433,7 +434,8 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
             return;
         }
         let (profiles, ..) = toolchain::load_network(&workspace);
-        let fork_url_env = profiles.iter().find(|profile| profile.id == id).map(|profile| profile.fork_url_env.clone()).unwrap_or_default();
+        let saved = profiles.iter().find(|profile| profile.id == id);
+        let fork_url_env = saved.map(|profile| profile.fork_url_env.clone()).unwrap_or_default();
         let fork_block = if block.is_empty() {
             None
         } else {
@@ -442,7 +444,11 @@ pub fn wire(ui: &MainWindow, state: &State, runtime: tokio::runtime::Handle) {
                 Err(_) => return status(&weak, "Enter the fork block as a whole number, or leave it empty for the latest block.".into(), false),
             }
         };
-        let profile = crate::config::NetworkProfile { id: id.clone(), name: name.trim().to_string(), fork_url: url, fork_url_env, fork_block, chain_id_mode: mode };
+        let profile = crate::config::NetworkProfile {
+            id: id.clone(), name: name.trim().to_string(), fork_url: url, fork_url_env, fork_block, chain_id_mode: mode,
+            hardfork: saved.map(|profile| profile.hardfork.clone()).unwrap_or_default(),
+            optimism: saved.and_then(|profile| profile.optimism),
+        };
         let Some(ui) = weak.upgrade() else { return };
         ui.global::<ToolchainLogic>().invoke_cancel_fresh();
         if profile.id == running {
@@ -602,12 +608,8 @@ pub(super) fn start_switch(ui: &MainWindow, held: &State, runtime: &tokio::runti
 }
 
 async fn preflight(held: &State, plan: &toolchain::NetworkSwitch) -> Result<Vec<String>, String> {
-    let settings = &plan.settings;
-    let warnings = if settings.is_local() { Vec::new() } else {
-        let block = settings.fork_block.map(|block| block.to_string()).unwrap_or_default();
-        toolchain::test_rpc(&settings.fork_url, &block, None).await?
-            .into_iter().filter(|line| line.starts_with("no ") || line.starts_with("-- ")).collect()
-    };
+    let warnings = plan.test_rpc().await?.into_iter()
+        .filter(|line| line.starts_with("no ") || line.starts_with("-- ")).collect();
     let saved = super::network::save_running_profile(held).await;
     require_save(saved, held.lock().unwrap().profile_state_held)?;
     Ok(warnings)

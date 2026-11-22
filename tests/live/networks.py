@@ -182,8 +182,8 @@ def networks():
         command_raw("network.switch", id="local")
         _wait_profile("local")
         command("network.remove", id="sepolia")
-    else:
-        check("Sepolia forks with the local execution id", network["sourceChainId"] == 11155111 and rpc("eth_chainId") == "0x7a69", json.dumps(network)[:200])
+        return
+    check("Sepolia forks with the local execution id", network["sourceChainId"] == 11155111 and rpc("eth_chainId") == "0x7a69", json.dumps(network)[:200])
     command("toolchain.action", action="test_rpc", fork_url=SEPOLIA)
     status_text = ""
     for _ in range(90):
@@ -191,7 +191,7 @@ def networks():
         status_text = query("toolchain.state").get("status", "")
         if "chain kind" in status_text or "did not pass" in status_text:
             break
-    check("Sepolia is reported as Ethereum", "chain kind: Ethereum" in status_text, status_text[:300])
+    check("Sepolia is reported as Ethereum", "chain kind: ethereum" in status_text.lower(), status_text[:300])
     command_raw("network.switch", id="local")
     _wait_profile("local")
     command("network.remove", id="sepolia")

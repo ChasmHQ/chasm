@@ -125,6 +125,24 @@ def run(root):
         source_probe = chasm.query("contracts.view")["address"]
         assert int(chasm.rpc("eth_call", [{"to": source_probe, "data": "0x9a8a0592"}, "latest"]), 16) == 11155111
         print("PASS: a Source profile runs the real chain id and a dev key can deploy on it")
+
+        chasm.command("network.save", profile={"id": "moving", "fork_url": url})
+        before = switch("moving")["identity"]["fork_block"]
+        chasm.rpc("anvil_setBalance", [ACCOUNT, "0x39"])
+        chasm.rpc("anvil_setStorageAt", [ACCOUNT, "0x" + "00" * 32, "0x" + "00" * 31 + "2a"])
+        switch("local")
+        for _ in range(3):
+            chasm.rpc("evm_mine", url=url)
+        after = switch("moving")["identity"]["fork_block"]
+        assert after > before and int(chasm.rpc("eth_blockNumber"), 16) == after
+        assert int(chasm.rpc("eth_getBalance", [ACCOUNT, "latest"]), 16) == 57
+        assert int(chasm.rpc("eth_getStorageAt", [ACCOUNT, "0x0", "latest"]), 16) == 42
+        sender = chasm.rpc("eth_accounts")[0]
+        tx = chasm.rpc("eth_sendTransaction", [{"from": sender, "to": ACCOUNT, "value": "0x1"}])
+        receipt = wait("receipt after the account overlay", lambda: chasm.rpc("eth_getTransactionReceipt", [tx]))
+        header = chasm.rpc("eth_getBlockByNumber", [receipt["blockNumber"], False])
+        assert int(receipt["blockNumber"], 16) == after + 1 and receipt["blockHash"] == header["hash"]
+        print("PASS: advancing latest fork restores accounts and keeps the new head and receipts consistent")
         switch("local")
         assert int(chasm.rpc("eth_getBalance", [ACCOUNT, "latest"]), 16) == 42
         chasm.rpc("anvil_setBalance", [ACCOUNT, "0x2b"])

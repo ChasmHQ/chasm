@@ -425,16 +425,17 @@ pub fn load_scenario(weak: Weak<MainWindow>, held: State, hashes: Vec<String>) {
         } else {
             state.trace_busy = true;
             state.trace_status = format!("Recording {} transactions…", hashes.len());
-            Some((state.rpc.clone(), programs(&state), state.workspace_epoch, state.network_epoch, state.network.fork_url.clone()))
+            Some((state.rpc.clone(), programs(&state), state.workspace_epoch, state.network_epoch, state.network.clone(), state.fork_chain_id, state.fork_optimism))
         }
     };
     super::paint(&weak, &held);
-    let Some((rpc, programs, epoch, network_epoch, fork_url)) = prepared else { return };
+    let Some((rpc, programs, epoch, network_epoch, settings, chain, optimism)) = prepared else { return };
     runtime.spawn(async move {
+        let fork = ReplayFork { settings: &settings, chain, optimism };
         let mut parts = Vec::new();
         let mut error = None;
         for hash in &hashes {
-            match record(&rpc, Target::Transaction(hash.clone()), programs.clone(), &fork_url, None).await {
+            match record(&rpc, Target::Transaction(hash.clone()), programs.clone(), fork, None).await {
                 Ok((session, saved, ..)) => parts.push((session, saved.prestate.unwrap_or_default())),
                 Err(failure) => {
                     error = Some(format!("{}…: {failure}", hash.chars().take(10).collect::<String>()));
@@ -511,7 +512,7 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
                 state.trace_busy = true;
                 state.trace_status = "Recording the execution…".into();
                 let network = state.network_identity.as_ref().map(|identity| identity.tag()).unwrap_or(super::network::NetworkTag { profile: String::new(), chain: None, fork_block: None, session: None });
-                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch, state.network_epoch, state.network.fork_url.clone(), state.fork_chain_id, state.workspace.clone(), network))
+                Some((target, state.rpc.clone(), programs(&state), state.workspace_epoch, state.network_epoch, state.network.clone(), state.fork_chain_id, state.fork_optimism, state.workspace.clone(), network))
             }
             Err(error) => {
                 state.trace_status = error;
@@ -520,9 +521,10 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
         }
     };
     super::paint(&weak, &held);
-    let Some((target, rpc, programs, epoch, network_epoch, fork_url, chain, workspace, network)) = prepared else { return };
+    let Some((target, rpc, programs, epoch, network_epoch, settings, chain, optimism, workspace, network)) = prepared else { return };
     runtime.spawn(async move {
-        let result = record(&rpc, target, programs, &fork_url, chain.map(|chain| (workspace.as_path(), chain))).await.map(|(session, mut saved, hash, note)| {
+        let fork = ReplayFork { settings: &settings, chain, optimism };
+        let result = record(&rpc, target, programs, fork, Some(workspace.as_path())).await.map(|(session, mut saved, hash, note)| {
             saved.network = Some(network);
             let path = save_trace(&workspace, &saved, hash.as_deref());
             (session, path, note)
@@ -536,17 +538,10 @@ fn start(weak: Weak<MainWindow>, held: State, runtime: tokio::runtime::Handle, t
             match result {
                 Ok((mut session, path, note)) => {
                     session.network = state.network_identity.as_ref().map(|identity| identity.tag());
-                    // A chain Chasm has no special handling for can differ in
-                    // precompiles, system transactions and fees.
-                    let chain_note = state.fork_chain_id.filter(|chain| !super::toolchain::chains_first_class(*chain)).map(|chain| format!(
-                        "Chain {} is not Ethereum or Sepolia: precompiles, system transactions and fees may differ, so this replay is approximate.",
-                        super::toolchain::chain_name(chain)
-                    ));
                     state.trace_status = match path {
                         Ok(path) => format!("Saved to {}", shown_path(&path)),
                         Err(error) => format!("Not saved: {error}"),
                     };
-                    let note = [note, chain_note.unwrap_or_default()].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
                     if !note.is_empty() {
                         state.trace_status = format!("{note} {}", state.trace_status);
                     }
@@ -754,7 +749,32 @@ fn saved_path(workspace: &std::path::Path, name: &str) -> Result<std::path::Path
 /// hash (for the file name) and a note to show when the replay is approximate.
 /// On a fork, `verified` (workspace, chain id) adds Sourcify source for
 /// contracts that are not in the workspace.
-async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url: &str, verified: Option<(&std::path::Path, u64)>) -> Result<(Session, SavedTrace, Option<String>, String), String> {
+#[derive(Clone, Copy)]
+struct ReplayFork<'a> {
+    settings: &'a crate::config::NetworkSettings,
+    chain: Option<u64>,
+    optimism: bool,
+}
+
+fn preceding_deposits(block: &Value, hash: &str, position: usize) -> usize {
+    let Some(txs) = block["transactions"].as_array() else { return 0 };
+    if txs.get(position).and_then(|tx| tx["hash"].as_str()) != Some(hash) {
+        return 0;
+    }
+    txs[..position].iter().filter(|tx| tx["type"].as_str().is_some_and(|kind| kind.eq_ignore_ascii_case("0x7e"))).count()
+}
+
+fn arbos_precompile(address: &str) -> Option<&'static str> {
+    match address.strip_prefix("0x")?.trim_start_matches('0') {
+        "64" => Some("ArbSys (0x64)"),
+        "6c" => Some("ArbGasInfo (0x6c)"),
+        "c8" => Some("NodeInterface (0xc8)"),
+        _ => None,
+    }
+}
+
+async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork: ReplayFork<'_>, workspace: Option<&std::path::Path>) -> Result<(Session, SavedTrace, Option<String>, String), String> {
+    let fork_url = &fork.settings.fork_url;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .no_proxy()
@@ -795,7 +815,7 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
         let url = fork_url.to_string();
         async move {
             let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().map_err(|error| error.to_string())?;
-            let body = json!({"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":[number, false]});
+            let body = json!({"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":[number, fork.optimism]});
             let value: Value = super::retry::send(|| client.post(&url).json(&body)).await.map_err(|error| error.to_string())?.json().await.map_err(|error| error.to_string())?;
             Ok::<Value, String>(value["result"].clone())
         }
@@ -818,7 +838,7 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
                     if number == 0 {
                         return Err("This transaction has no block number yet; debug it once it is mined.".into());
                     }
-                    let (node, url) = start_replay_node(fork_url, number - 1).await?;
+                    let (node, url) = start_replay_node(fork, number - 1).await?;
                     replay_node = Some(node);
                     code_rpc = url;
                     code_block = "latest".into();
@@ -836,12 +856,19 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
                     if mined.is_object() {
                         options["blockOverrides"] = json!({"number": mined["number"], "time": mined["timestamp"], "coinbase": mined["miner"], "baseFee": mined["baseFeePerGas"], "gasLimit": mined["gasLimit"], "random": mined["mixHash"]});
                     }
-                    let position = tx["transactionIndex"].as_str().and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
+                    let position = tx["transactionIndex"].as_str().and_then(|text| usize::from_str_radix(text.trim_start_matches("0x"), 16).ok());
                     let trace = rpc_call(&client, &code_rpc, "debug_traceCall", json!([request, "latest", options])).await?;
-                    if position > 0 {
-                        replay_note = format!("Replayed on the state before block {number}. It was transaction {} of that block, so the {position} before it did not run first; storage they changed may differ.", position + 1);
-                    } else {
-                        replay_note = format!("Replayed on a fork of block {} with the chain's own id.", number - 1);
+                    replay_note = format!("Replayed on a fork of block {} with the chain's own id.", number - 1);
+                    if let Some(position) = position.filter(|position| *position > 0) {
+                        let block_matches = tx["blockHash"].as_str().is_some_and(|hash| mined["hash"].as_str() == Some(hash));
+                        let deposits = if fork.optimism && block_matches { preceding_deposits(&mined, &hash, position) } else { 0 };
+                        let earlier = position - deposits;
+                        if earlier > 0 {
+                            replay_note.push_str(&format!(" {earlier} earlier transaction(s) did not run first; storage they changed may differ."));
+                        }
+                        if deposits > 0 {
+                            replay_note.push_str(&format!(" {deposits} preceding OP deposit transaction(s) were not replayed; their effects are not included."));
+                        }
                     }
                     trace
                 }
@@ -861,12 +888,22 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
         return Err("The node did not record opcode steps for this transaction. It was mined before step recording was enabled; restart the project and send it again.".into());
     }
     // Code at every address the trace may enter, for source mapping.
+    let arbitrum = fork.chain.is_some_and(|id| super::toolchain::chain_info(id).kind == "arbitrum");
+    let mut arbos_calls = Vec::new();
     let mut addresses = vec![target_address.to_ascii_lowercase()];
+    if arbitrum {
+        arbos_calls.extend(arbos_precompile(&addresses[0]));
+    }
     for log in trace["structLogs"].as_array().into_iter().flatten() {
         if matches!(log["op"].as_str(), Some("CALL" | "STATICCALL" | "DELEGATECALL" | "CALLCODE")) {
             if let Some(word) = log["stack"].as_array().and_then(|stack| stack.get(stack.len().wrapping_sub(2))).and_then(Value::as_str).filter(|word| word.is_ascii()) {
                 let digits = format!("{:0>40}", word.trim_start_matches("0x"));
                 let address = format!("0x{}", &digits[digits.len() - 40..]).to_ascii_lowercase();
+                if arbitrum {
+                    if let Some(name) = arbos_precompile(&address).filter(|name| !arbos_calls.contains(name)) {
+                        arbos_calls.push(name);
+                    }
+                }
                 if !addresses.contains(&address) && addresses.len() < 64 {
                     addresses.push(address);
                 }
@@ -910,8 +947,18 @@ async fn record(rpc: &str, target: Target, mut programs: Vec<Program>, fork_url:
             saved.prestate = Some(prestate(&client, &code_rpc, &session, &before, after.as_deref()).await);
         }
     }
+    if let Some(chain) = fork.chain {
+        if let Some(warning) = super::toolchain::chain_warning(chain) {
+            if !replay_note.is_empty() { replay_note.push(' '); }
+            replay_note.push_str(warning);
+        }
+    }
+    if !arbos_calls.is_empty() {
+        if !replay_note.is_empty() { replay_note.push(' '); }
+        replay_note.push_str(&format!("This trace calls {}. Anvil does not implement these ArbOS interfaces.", arbos_calls.join(", ")));
+    }
     drop(replay_node);
-    if let Some((workspace, chain)) = verified {
+    if let Some((workspace, chain)) = workspace.zip(fork.chain) {
         let (found, missing) = verified_programs(workspace, chain, &code_at, &programs).await;
         if found > 0 || missing > 0 {
             let note = format!("Source from Sourcify for {found} verified contract(s){}.", if missing > 0 { format!("; {missing} unverified show opcodes only") } else { String::new() });
@@ -1043,10 +1090,10 @@ async fn rpc_call(client: &reqwest::Client, url: &str, method: &str, params: Val
 
 /// Starts a replay fork at `block` on a free local port and waits until it
 /// answers. The node stops when the returned handle is dropped.
-async fn start_replay_node(fork_url: &str, block: u64) -> Result<(crate::anvil::AnvilNode, String), String> {
+async fn start_replay_node(fork: ReplayFork<'_>, block: u64) -> Result<(crate::anvil::AnvilNode, String), String> {
     let port = std::net::TcpListener::bind("127.0.0.1:0").and_then(|listener| listener.local_addr()).map_err(|error| error.to_string())?.port();
     let mut node = crate::anvil::AnvilNode::new_silent(port);
-    node.start_replay(fork_url, block).map_err(|error| format!("Could not start a replay fork: {error}"))?;
+    node.start_replay(&fork.settings.fork_url, block, &fork.settings.hardfork, fork.optimism).map_err(|error| format!("Could not start a replay fork: {error}"))?;
     let url = format!("http://127.0.0.1:{port}");
     let probe = reqwest::Client::builder().timeout(std::time::Duration::from_millis(800)).no_proxy().build().map_err(|error| error.to_string())?;
     for _ in 0..600 {
@@ -1339,6 +1386,26 @@ fn printable(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn op_deposits_are_counted_only_before_the_matching_transaction() {
+        let block = json!({"transactions":[
+            {"hash":"deposit","type":"0x7e"},
+            {"hash":"user","type":"0x2"},
+            {"hash":"target","type":"0x2"},
+            {"hash":"later","type":"0x7e"}
+        ]});
+        assert_eq!(preceding_deposits(&block, "target", 2), 1);
+        assert_eq!(preceding_deposits(&block, "other", 2), 0);
+        assert_eq!(preceding_deposits(&block, "target", 100), 0);
+        assert_eq!(preceding_deposits(&json!({"transactions":["target"]}), "target", 0), 0);
+    }
+
+    #[test]
+    fn arbos_addresses_are_distinguished_from_standard_precompiles() {
+        assert_eq!(arbos_precompile("0x0000000000000000000000000000000000000064"), Some("ArbSys (0x64)"));
+        assert_eq!(arbos_precompile("0x0000000000000000000000000000000000000001"), None);
+    }
 
     #[test]
     fn saved_traces_round_trip_and_reject_paths_outside_the_folder() {

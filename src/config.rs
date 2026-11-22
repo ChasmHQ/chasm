@@ -124,6 +124,35 @@ pub struct NetworkProfile {
     pub fork_block: Option<u64>,
     #[serde(default, skip_serializing_if = "ChainIdMode::is_local")]
     pub chain_id_mode: ChainIdMode,
+    /// Empty leaves Anvil's hardfork selection in place.
+    #[serde(default, skip_serializing_if = "String::is_empty", deserialize_with = "deserialize_hardfork")]
+    pub hardfork: String,
+    /// None selects Optimism mode from the source chain id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimism: Option<bool>,
+}
+
+fn deserialize_hardfork<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+pub(crate) fn validate_hardfork(hardfork: &str, optimism: Option<bool>) -> Result<(), String> {
+    // Anvil 1.2.1 selects a different hardfork parser with --optimism.
+    let op_hardfork = match hardfork.to_ascii_lowercase().as_str() {
+        "" => return Ok(()),
+        "frontier" | "homestead" | "dao" | "tangerine" | "spuriousdragon" | "byzantium"
+        | "constantinople" | "petersburg" | "istanbul" | "muirglacier" | "berlin" | "london"
+        | "arrowglacier" | "grayglacier" | "paris" | "merge" | "shanghai" | "cancun" | "prague"
+        | "latest" => false,
+        "bedrock" | "regolith" | "canyon" | "ecotone" | "fjord" | "granite" | "holocene"
+        | "isthmus" => true,
+        _ => return Err(format!("Unknown Anvil hardfork {hardfork:?}. Use an Anvil 1.2.1 hardfork name such as cancun or holocene.")),
+    };
+    match optimism {
+        Some(false) if op_hardfork => Err(format!("Anvil hardfork {hardfork:?} requires Optimism mode.")),
+        Some(true) if !op_hardfork => Err(format!("Anvil hardfork {hardfork:?} is not available in Optimism mode.")),
+        _ => Ok(()),
+    }
 }
 
 impl NetworkProfile {
@@ -181,6 +210,10 @@ impl NetworkProfile {
         if !self.fork_url_env.is_empty() && (self.fork_url_env.contains(|c: char| c.is_whitespace()) || self.fork_url_env.len() > 128) {
             return Err(format!("Profile {}: fork_url_env must be a plain environment variable name.", id));
         }
+        validate_hardfork(&self.hardfork, self.optimism).map_err(|error| format!("Profile {id}: {error}"))?;
+        if self.is_local() && (!self.hardfork.is_empty() || self.optimism.is_some()) {
+            return Err(format!("Profile {id}: hardfork and optimism require a fork RPC."));
+        }
         Ok(())
     }
 
@@ -209,6 +242,10 @@ pub struct NetworkSettings {
     pub fork_block: Option<u64>,
     #[serde(default)]
     pub chain_id_mode: ChainIdMode,
+    #[serde(default, skip_serializing_if = "String::is_empty", deserialize_with = "deserialize_hardfork")]
+    pub hardfork: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimism: Option<bool>,
 }
 
 impl NetworkSettings {
@@ -336,6 +373,8 @@ impl ChasmConfig {
                 fork_url_env: String::new(),
                 fork_block: self.network.fork_block.take(),
                 chain_id_mode: ChainIdMode::Local,
+                hardfork: String::new(),
+                optimism: None,
             });
             self.network.active = "fork-1".into();
         }
@@ -358,6 +397,8 @@ impl ChasmConfig {
             fork_url: url,
             fork_block: profile.fork_block,
             chain_id_mode: profile.chain_id_mode,
+            hardfork: profile.hardfork.clone(),
+            optimism: profile.optimism,
         })
     }
 
@@ -565,7 +606,10 @@ mod tests {
     }
 
     fn profile(id: &str, url: &str, block: Option<u64>) -> NetworkProfile {
-        NetworkProfile { id: id.into(), name: format!("Profile {id}"), fork_url: url.into(), fork_url_env: String::new(), fork_block: block, chain_id_mode: ChainIdMode::Local }
+        NetworkProfile {
+            id: id.into(), name: format!("Profile {id}"), fork_url: url.into(), fork_url_env: String::new(),
+            fork_block: block, chain_id_mode: ChainIdMode::Local, hardfork: String::new(), optimism: None,
+        }
     }
 
     #[test]
@@ -580,6 +624,8 @@ mod tests {
         assert_eq!(settings.fork_url, "https://rpc.example/key");
         assert_eq!(settings.fork_block, Some(21_000_000));
         assert_eq!(settings.chain_id_mode, ChainIdMode::Local);
+        assert!(settings.hardfork.is_empty());
+        assert_eq!(settings.optimism, None);
         // Saving rewrites the old format; loading it again keeps the fork.
         config.save(root.path()).unwrap();
         let saved: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -654,6 +700,39 @@ mod tests {
         assert!(saved.contains("chain_id_mode = \"source\""), "{saved}");
         assert_eq!(ChainIdMode::parse("source"), Some(ChainIdMode::Source));
         assert_eq!(ChainIdMode::parse("nope"), None);
+    }
+
+    #[test]
+    fn fork_options_round_trip_through_toml() {
+        let root = tempfile::tempdir().unwrap();
+        let path = write(root.path(), "[network]\nactive = 'base'\n\n[[networks]]\nid = 'base'\nfork_url = 'https://rpc.example'\nhardfork = 'isthmus'\noptimism = true\n\n[[networks]]\nid = 'ethereum'\nfork_url = 'https://rpc.example'\nhardfork = 'cancun'\noptimism = false\n");
+        let config = ChasmConfig::load(root.path()).unwrap();
+        let settings = config.resolve_network().unwrap();
+        assert_eq!(settings.hardfork, "isthmus");
+        assert_eq!(settings.optimism, Some(true));
+        config.save(root.path()).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("optimism = false"));
+        let reloaded = ChasmConfig::load(root.path()).unwrap();
+        assert_eq!(reloaded.networks, config.networks);
+        assert_eq!(reloaded.resolve_network().unwrap(), settings);
+    }
+
+    #[test]
+    fn invalid_toml_fork_options_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        for (options, error) in [
+            ("hardfork = 'unknown'", "hardfork"),
+            ("hardfork = true", "hardfork"),
+            ("optimism = 'true'", "optimism"),
+            ("hardfork = 'cancun'\noptimism = true", "Optimism mode"),
+            ("hardfork = 'isthmus'\noptimism = false", "Optimism mode"),
+        ] {
+            write(root.path(), &format!("[[networks]]\nid = 'fork'\nfork_url = 'https://rpc.example'\n{options}\n"));
+            assert!(ChasmConfig::load(root.path()).unwrap_err().to_string().contains(error), "{options}");
+        }
+        write(root.path(), "[[networks]]\nid = 'fresh'\noptimism = true\n");
+        assert!(ChasmConfig::load(root.path()).unwrap_err().to_string().contains("require a fork RPC"));
     }
 
     #[test]

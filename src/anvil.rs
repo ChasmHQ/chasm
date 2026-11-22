@@ -1,3 +1,4 @@
+use crate::config::{validate_hardfork, ChainIdMode, NetworkSettings};
 use std::process::{Child, Command, Stdio};
 
 pub struct AnvilNode {
@@ -36,27 +37,42 @@ impl AnvilNode {
         Ok(())
     }
 
-    pub fn start_fork(&mut self, fork_url: String, fork_block: Option<u64>, chain_id_mode: crate::config::ChainIdMode) -> anyhow::Result<()> {
+    pub fn start_fork(&mut self, settings: &NetworkSettings, resolved_optimism: bool) -> anyhow::Result<()> {
         self.ensure_not_running()?;
-        let mut cmd = self.base_command();
-        apply_fork_args(&mut cmd, &fork_url, fork_block, chain_id_mode);
-
-        let child = cmd.spawn()?;
-        self.adopt(child)?;
-        Ok(())
+        let child = self.fork_command(
+            &settings.fork_url, settings.fork_block, settings.chain_id_mode, &settings.hardfork, resolved_optimism,
+        )?.spawn()?;
+        self.adopt(child)
     }
 
     /// A throwaway fork for replaying one transaction in the debugger. Unlike
-    /// `start_fork` it keeps the forked chain's own id, so contracts that read
-    /// `block.chainid` (EIP-712 domains, signature checks) run as they did on
-    /// chain. Chasm never signs on this node; it only traces calls on it.
-    pub fn start_replay(&mut self, fork_url: &str, block: u64) -> anyhow::Result<()> {
+    /// `start_fork` it always keeps the forked chain's own id. Chasm never
+    /// signs on this node; it only traces calls on it.
+    pub fn start_replay(&mut self, fork_url: &str, block: u64, hardfork: &str, optimism: bool) -> anyhow::Result<()> {
         self.ensure_not_running()?;
-        let mut cmd = self.base_command();
-        cmd.arg("--fork-url").arg(fork_url).arg("--fork-block-number").arg(block.to_string());
-        cmd.args(FORK_RETRY_ARGS);
-        let child = cmd.spawn()?;
+        let child = self.fork_command(fork_url, Some(block), ChainIdMode::Source, hardfork, optimism)?.spawn()?;
         self.adopt(child)
+    }
+
+    fn fork_command(&self, fork_url: &str, fork_block: Option<u64>, chain_id_mode: ChainIdMode, hardfork: &str, optimism: bool) -> anyhow::Result<Command> {
+        validate_hardfork(hardfork, Some(optimism)).map_err(anyhow::Error::msg)?;
+        let mut cmd = self.base_command();
+        cmd.arg("--fork-url").arg(fork_url);
+        cmd.args(FORK_RETRY_ARGS);
+        // Only Source mode lets Anvil use the forked chain's own id.
+        if chain_id_mode.is_local() {
+            cmd.arg("--chain-id").arg("31337");
+        }
+        if let Some(block) = fork_block {
+            cmd.arg("--fork-block-number").arg(block.to_string());
+        }
+        if !hardfork.is_empty() {
+            cmd.arg("--hardfork").arg(hardfork);
+        }
+        if optimism {
+            cmd.arg("--optimism");
+        }
+        Ok(cmd)
     }
 
     /// Contain the child before keeping it. A node that cannot be contained
@@ -174,21 +190,6 @@ impl AnvilNode {
 /// (public RPCs answer 429 under load) and a per-request timeout.
 const FORK_RETRY_ARGS: [&str; 6] = ["--retries", "8", "--fork-retry-backoff", "1000", "--timeout", "45000"];
 
-fn apply_fork_args(cmd: &mut Command, fork_url: &str, fork_block: Option<u64>, chain_id_mode: crate::config::ChainIdMode) {
-    cmd.arg("--fork-url").arg(fork_url);
-    cmd.args(FORK_RETRY_ARGS);
-    // Local mode keeps the local chain id: signing is restricted to 31337, so
-    // a fork can never produce a transaction that is valid on the real
-    // network. Source mode drops the flag so the node reports the forked
-    // chain's own id; sending is then restricted further before it is used.
-    if chain_id_mode.is_local() {
-        cmd.arg("--chain-id").arg("31337");
-    }
-    if let Some(block) = fork_block {
-        cmd.arg("--fork-block-number").arg(block.to_string());
-    }
-}
-
 impl Drop for AnvilNode {
     fn drop(&mut self) {
         self.stop();
@@ -266,38 +267,34 @@ mod tests {
 
     #[test]
     fn fork_arguments_survive_the_shared_builder() {
-        let mut cmd = Command::new("anvil");
-        apply_fork_args(&mut cmd, "https://example.test/rpc", Some(42), crate::config::ChainIdMode::Local);
+        let node = AnvilNode::new(8545);
+        let cmd = node.fork_command("https://example.test/rpc", Some(42), ChainIdMode::Local, "cancun", false).unwrap();
         assert_eq!(
             args(&cmd),
             [
-                "--fork-url",
-                "https://example.test/rpc",
-                "--retries",
-                "8",
-                "--fork-retry-backoff",
-                "1000",
-                "--timeout",
-                "45000",
-                "--chain-id",
-                "31337",
-                "--fork-block-number",
-                "42"
+                "--port", "8545",
+                "--fork-url", "https://example.test/rpc",
+                "--retries", "8", "--fork-retry-backoff", "1000", "--timeout", "45000",
+                "--chain-id", "31337",
+                "--fork-block-number", "42",
+                "--hardfork", "cancun",
             ]
         );
 
-        let mut cmd = Command::new("anvil");
-        apply_fork_args(&mut cmd, "https://example.test/rpc", None, crate::config::ChainIdMode::Local);
-        assert_eq!(args(&cmd)[..2], ["--fork-url", "https://example.test/rpc"]);
-        assert_eq!(args(&cmd)[8..], ["--chain-id", "31337"]);
+        let cmd = node.fork_command("https://example.test/rpc", None, ChainIdMode::Local, "", false).unwrap();
+        assert_eq!(args(&cmd)[2..4], ["--fork-url", "https://example.test/rpc"]);
+        assert_eq!(args(&cmd)[10..], ["--chain-id", "31337"]);
     }
 
     #[test]
     fn source_chain_id_mode_keeps_the_forked_chains_own_id() {
-        let mut cmd = Command::new("anvil");
-        apply_fork_args(&mut cmd, "https://example.test/rpc", Some(7), crate::config::ChainIdMode::Source);
+        let node = AnvilNode::new(8545);
+        let cmd = node.fork_command("https://example.test/rpc", Some(7), ChainIdMode::Source, "holocene", true).unwrap();
         let argv = args(&cmd);
         assert!(!argv.iter().any(|arg| arg == "--chain-id"), "{argv:?}");
-        assert!(argv.iter().any(|arg| arg == "--fork-block-number"), "{argv:?}");
+        assert_eq!(argv[10..], ["--fork-block-number", "7", "--hardfork", "holocene", "--optimism"]);
+        let auto = node.fork_command("https://example.test/rpc", Some(7), ChainIdMode::Source, "", true).unwrap();
+        assert_eq!(args(&auto)[10..], ["--fork-block-number", "7", "--optimism"]);
+        assert!(node.fork_command("https://example.test/rpc", Some(7), ChainIdMode::Source, "cancun", true).is_err());
     }
 }

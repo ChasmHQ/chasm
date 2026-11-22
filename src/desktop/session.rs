@@ -283,6 +283,7 @@ pub struct DesktopState {
     pub network: crate::config::NetworkSettings,
     /// Chain id of the forked network, read from its RPC at boot.
     pub fork_chain_id: Option<u64>,
+    pub fork_optimism: bool,
     /// The identity pinned at boot: profile, source chain, fork block and
     /// what the node reports as its chain id.
     pub network_identity: Option<super::network::NetworkIdentity>,
@@ -449,6 +450,7 @@ impl DesktopState {
             timeline: Vec::new(),
             network: Default::default(),
             fork_chain_id: None,
+            fork_optimism: false,
             network_identity: None,
             profile_state_held: false,
             profile_state_saved: false,

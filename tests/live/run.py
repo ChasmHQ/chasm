@@ -36,9 +36,10 @@ def main():
     import flows
     wanted = sys.argv[1:]
     import stress
-    # The stress flow is slow; it runs only when named.
-    available = flows.FLOWS + [stress.stress]
-    chosen = [flow for flow in available if (not wanted and flow is not stress.stress) or flow.__name__ in wanted or flow.__name__ == "bank"]
+    from base_fork import base_fork
+    opt_in = [stress.stress, base_fork]
+    available = flows.FLOWS + opt_in
+    chosen = [flow for flow in available if (not wanted and flow not in opt_in) or flow.__name__ in wanted or flow.__name__ == "bank"]
     process = subprocess.Popen([EXE, workspace, "--control-token-file", token_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     results = []
     try:

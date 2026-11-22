@@ -229,15 +229,10 @@ pub struct ChainInfo {
     /// Native token symbol when known (ETH, BNB, POL, AVAX); none means
     /// "native token".
     pub symbol: Option<&'static str>,
-    /// "ethereum" for the chains Chasm treats as first-class (Ethereum and
-    /// Sepolia); "other" for everything else, which forks with warnings.
+    /// "ethereum", "op-stack", "arbitrum", or "other"; not a support guarantee.
     pub kind: &'static str,
 }
 
-/// Chain names, native tokens and kind. Only Ethereum mainnet (1) and
-/// Sepolia (11155111) are first-class: precompiles, system transactions and
-/// fees follow Ethereum there. Other EVM chains fork without special
-/// handling and are labelled as such.
 pub fn chain_info(id: u64) -> ChainInfo {
     let (name, symbol) = match id {
         1 => ("Ethereum", Some("ETH")),
@@ -248,13 +243,19 @@ pub fn chain_info(id: u64) -> ChainInfo {
         10 => ("Optimism", Some("ETH")),
         11155420 => ("Optimism Sepolia", Some("ETH")),
         42161 => ("Arbitrum", Some("ETH")),
+        42170 => ("Arbitrum Nova", Some("ETH")),
         421614 => ("Arbitrum Sepolia", Some("ETH")),
         56 => ("BNB Chain", Some("BNB")),
         137 => ("Polygon", Some("POL")),
         43114 => ("Avalanche", Some("AVAX")),
         other => (PUBLIC_RPCS.iter().find(|(_, _, chain)| *chain == other).map(|(name, _, _)| *name).unwrap_or("chain"), None),
     };
-    let kind = if id == 1 || id == 11155111 { "ethereum" } else { "other" };
+    let kind = match id {
+        1 | 11155111 | 17000 => "ethereum",
+        8453 | 84532 | 10 | 11155420 => "op-stack",
+        42161 | 42170 | 421614 => "arbitrum",
+        _ => "other",
+    };
     ChainInfo { name, symbol, kind }
 }
 
@@ -272,12 +273,20 @@ pub fn native_token(id: Option<u64>) -> &'static str {
     id.and_then(|id| chain_info(id).symbol).unwrap_or("native token")
 }
 
-/// Whether a chain is first-class for forking and tracing.
-pub fn chains_first_class(id: u64) -> bool {
-    chain_info(id).kind == "ethereum"
+pub fn is_op_stack(id: u64) -> bool {
+    chain_info(id).kind == "op-stack"
 }
 
-/// Rough hardfork rank of a block header, so a build can be compared with the
+pub fn chain_warning(id: u64) -> Option<&'static str> {
+    match chain_info(id).kind {
+        "ethereum" => None,
+        "op-stack" => Some("Chasm selects Anvil Optimism mode by default for this chain. The fork does not model L1 data fees or the full rollup protocol."),
+        "arbitrum" => Some("Anvil does not emulate ArbOS, its precompiles, system transactions or fee accounting. Replay uses the RPC block number, not ArbOS's L1 block number."),
+        _ => Some("Anvil forks EVM state without chain-specific handling. Precompiles, system transactions, and fees may differ from the source chain."),
+    }
+}
+
+/// Rough hardfork rank of an Ethereum block header, so a build can be compared with the
 /// network it will run on. Ranks: Paris 0, Shanghai 1, Cancun 2, Prague 3.
 pub fn header_hardfork(header: &serde_json::Value) -> (&'static str, u8) {
     if header.get("requestsHash").is_some_and(|value| !value.is_null()) {
@@ -306,6 +315,12 @@ pub fn evm_version_rank(version: &str) -> Option<u8> {
 /// One line per check of a fork RPC, before it is saved. Only the host is
 /// named: provider keys often sit in the URL path.
 pub async fn test_rpc(url: &str, block: &str, workspace_evm: Option<&str>) -> Result<Vec<String>, String> {
+    test_rpc_with_settings(url, block, workspace_evm, None).await
+}
+
+async fn test_rpc_with_settings(
+    url: &str, block: &str, workspace_evm: Option<&str>, settings: Option<&crate::config::NetworkSettings>,
+) -> Result<Vec<String>, String> {
     let url = url.trim();
     let parsed = reqwest::Url::parse(url).map_err(|_| "Enter an http(s) RPC URL.".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
@@ -334,39 +349,42 @@ pub async fn test_rpc(url: &str, block: &str, workspace_evm: Option<&str>) -> Re
     let quantity = |value: &serde_json::Value| value.as_str().and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok());
     let mut lines = Vec::new();
     let chain = call("eth_chainId", serde_json::json!([])).await;
-    let Some(chain) = chain.as_ref().ok().and_then(quantity) else {
+    let Some(chain) = chain.as_ref().ok().and_then(quantity).filter(|id| *id != 0) else {
         return Err(format!("{host} did not answer eth_chainId ({}). Check the URL.", chain.err().unwrap_or_else(|| "invalid answer".into())));
     };
+    if let Some(settings) = settings {
+        let optimism = settings.optimism.unwrap_or_else(|| is_op_stack(chain));
+        crate::config::validate_hardfork(&settings.hardfork, Some(optimism))?;
+    }
     let info = chain_info(chain);
     lines.push(format!("ok  chain: {}", chain_name(chain)));
-    if info.kind == "ethereum" {
-        lines.push("ok  chain kind: Ethereum — native token, precompiles and fees follow Ethereum".into());
-    } else {
-        lines.push(format!(
-            "--  chain kind: other chain — precompiles, system transactions and fees may differ from Ethereum; Chasm forks it without special handling (native token: {})",
-            info.symbol.unwrap_or("reported by the chain")
-        ));
+    lines.push(format!("ok  chain kind: {} (native token: {})", info.kind, info.symbol.unwrap_or("reported by the chain")));
+    if let Some(warning) = chain_warning(chain) {
+        lines.push(format!("--  {warning}"));
     }
     let head = call("eth_blockNumber", serde_json::json!([])).await.ok().as_ref().and_then(quantity);
     match head {
         Some(head) => lines.push(format!("ok  head: block {head}")),
         None => lines.push("no  head: eth_blockNumber failed".into()),
     }
-    // Capabilities the fork and the debugger depend on.
-    match call("eth_getBlockByNumber", serde_json::json!(["latest", false])).await {
-        Ok(header) if !header.is_null() => {
-            let (fork, rank) = header_hardfork(&header);
-            lines.push(format!("ok  latest hardfork: {fork}"));
-            if let Some(rank_workspace) = workspace_evm.and_then(evm_version_rank) {
-                if rank_workspace > rank {
-                    lines.push(format!(
-                        "no  the workspace builds for {} but the network's latest block is {fork}: deployed code may use opcodes this chain does not have",
-                        workspace_evm.unwrap_or_default()
-                    ));
+    if info.kind == "ethereum" {
+        match call("eth_getBlockByNumber", serde_json::json!(["latest", false])).await {
+            Ok(header) if !header.is_null() => {
+                let (fork, rank) = header_hardfork(&header);
+                lines.push(format!("ok  latest block header suggests {fork} rules"));
+                if let Some(rank_workspace) = workspace_evm.and_then(evm_version_rank) {
+                    if rank_workspace > rank {
+                        lines.push(format!(
+                            "no  the workspace builds for {} but the latest block suggests {fork} rules: deployed code may use opcodes this chain does not have",
+                            workspace_evm.unwrap_or_default()
+                        ));
+                    }
                 }
             }
+            _ => lines.push("--  hardfork: the latest block header is unavailable".into()),
         }
-        _ => lines.push("--  hardfork: the latest block header is unavailable".into()),
+    } else {
+        lines.push("--  hardfork: Ethereum header rules do not determine opcode support on this chain".into());
     }
     match debug_trace_supported(url).await {
         Some(true) => lines.push("ok  debug_traceTransaction: supported".into()),
@@ -421,20 +439,23 @@ pub fn load_network(workspace: &Path) -> (Vec<crate::config::NetworkProfile>, St
     }
 }
 
-/// Parse a profile from API JSON. An omitted `chain_id_mode` keeps the mode
-/// of the saved profile with that id (Local for a new profile), so a client
-/// that does not know the field cannot silently downgrade a Source profile.
+/// Older clients can omit fork options. Null resets hardfork or optimism.
 pub fn profile_from_json(workspace: &Path, value: &serde_json::Value) -> Result<crate::config::NetworkProfile, String> {
     let mut profile: crate::config::NetworkProfile = serde_json::from_value(value.clone())
         .map_err(|error| format!("Invalid profile: {error}"))?;
-    let explicit = value.get("chain_id_mode").is_some_and(|mode| !mode.is_null());
-    if !explicit {
+    let keep_mode = value.get("chain_id_mode").is_none();
+    let keep_hardfork = value.get("hardfork").is_none();
+    let keep_optimism = value.get("optimism").is_none();
+    if keep_mode || keep_hardfork || keep_optimism {
         if let Ok(config) = ChasmConfig::load(workspace) {
             if let Some(saved) = config.profile(&profile.id) {
-                profile.chain_id_mode = saved.chain_id_mode;
+                if keep_mode { profile.chain_id_mode = saved.chain_id_mode; }
+                if keep_hardfork { profile.hardfork.clone_from(&saved.hardfork); }
+                if keep_optimism { profile.optimism = saved.optimism; }
             }
         }
     }
+    crate::config::validate_hardfork(&profile.hardfork, profile.optimism)?;
     Ok(profile)
 }
 
@@ -483,6 +504,14 @@ impl NetworkSwitch {
         Ok(Self { previous_active, previous_target, edit, settings })
     }
 
+    pub async fn test_rpc(&self) -> Result<Vec<String>, String> {
+        if self.settings.is_local() {
+            return Ok(Vec::new());
+        }
+        let block = self.settings.fork_block.map(|block| block.to_string()).unwrap_or_default();
+        test_rpc_with_settings(&self.settings.fork_url, &block, None, Some(&self.settings)).await
+    }
+
     /// Keep unrelated edits made during the RPC test. Refuse a changed target
     /// (including a newly resolved environment URL) rather than activating it.
     pub fn checked_config(&self, workspace: &Path) -> Result<ChasmConfig, String> {
@@ -503,9 +532,8 @@ impl NetworkSwitch {
 /// The legacy single-network save behind `toolchain.action network` and the
 /// Network form's Save button: it edits the active fork profile's URL and
 /// block (creating `fork-1` when the local chain is active), or switches back
-/// to a local chain on an empty URL. The saved profile's chain id mode is
-/// kept — editing the URL must not silently downgrade a Source profile back
-/// to Local; `network.save` sets the mode explicitly.
+/// to a local chain on an empty URL. Editing the URL keeps the saved chain id
+/// mode and fork options; `network.save` can change them explicitly.
 pub fn prepare_network(workspace: &Path, url: &str, block: &str) -> Result<NetworkSwitch, String> {
     let url = url.trim();
     let block = block.trim();
@@ -520,9 +548,13 @@ pub fn prepare_network(workspace: &Path, url: &str, block: &str) -> Result<Netwo
         "" | crate::config::NetworkProfile::LOCAL_ID => "fork-1",
         active => active,
     }.to_string();
-    let name = config.profile(&id).map(|profile| profile.name.clone()).unwrap_or_default();
-    let chain_id_mode = config.profile(&id).map(|profile| profile.chain_id_mode).unwrap_or(crate::config::ChainIdMode::Local);
-    let profile = crate::config::NetworkProfile { id: id.clone(), name, fork_url: url.into(), fork_url_env: String::new(), fork_block, chain_id_mode };
+    let mut profile = config.profile(&id).cloned().unwrap_or_else(|| crate::config::NetworkProfile {
+        id: id.clone(), name: String::new(), fork_url: String::new(), fork_url_env: String::new(),
+        fork_block: None, chain_id_mode: crate::config::ChainIdMode::Local, hardfork: String::new(), optimism: None,
+    });
+    profile.fork_url = url.into();
+    profile.fork_url_env.clear();
+    profile.fork_block = fork_block;
     NetworkSwitch::from_config(config, &id, Some(profile))
 }
 
@@ -608,9 +640,13 @@ mod tests {
         assert_eq!(ChasmConfig::load(workspace.path()).unwrap().network.active, "fork-1");
         assert!(switch("ghost").is_err());
         // Profiles save, replace and remove by id; `local` never does.
-        let profile = crate::config::NetworkProfile { id: "mainnet".into(), name: "Ethereum mainnet".into(), fork_url: "https://m.example".into(), fork_url_env: String::new(), fork_block: Some(1), chain_id_mode: crate::config::ChainIdMode::Source };
+        let profile = crate::config::NetworkProfile {
+            id: "mainnet".into(), name: "Ethereum mainnet".into(), fork_url: "https://m.example".into(),
+            fork_url_env: String::new(), fork_block: Some(1), chain_id_mode: crate::config::ChainIdMode::Source,
+            hardfork: String::new(), optimism: None,
+        };
         assert_eq!(save_profile(workspace.path(), profile.clone()).unwrap(), profile);
-        assert!(save_profile(workspace.path(), crate::config::NetworkProfile { id: "Local".into(), name: String::new(), fork_url: String::new(), fork_url_env: String::new(), fork_block: None, chain_id_mode: crate::config::ChainIdMode::Local }).is_err());
+        assert!(save_profile(workspace.path(), crate::config::NetworkProfile { id: "Local".into(), ..profile }).is_err());
         assert!(remove_profile(workspace.path(), "fork-1").is_err(), "the active profile is refused");
         switch("").unwrap().save(workspace.path()).unwrap();
         remove_profile(workspace.path(), "fork-1").unwrap();
@@ -637,21 +673,25 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_alias_keeps_the_saved_chain_id_mode() {
+    fn the_legacy_alias_keeps_saved_fork_options() {
         let root = tempfile::tempdir().unwrap();
         let source = crate::config::NetworkProfile {
             id: "mainnet".into(), name: String::new(), fork_url: "https://old.example".into(),
             fork_url_env: String::new(), fork_block: None, chain_id_mode: crate::config::ChainIdMode::Source,
+            hardfork: "cancun".into(), optimism: Some(false),
         };
         save_profile(root.path(), source).unwrap();
         ChasmConfig::update(root.path(), |config| config.network.active = "mainnet".into()).unwrap();
         let switched = prepare_network(root.path(), "https://new.example", "").unwrap();
         assert_eq!(switched.settings.chain_id_mode, crate::config::ChainIdMode::Source, "editing the URL must not downgrade a Source profile");
+        assert_eq!(switched.settings.hardfork, "cancun");
+        assert_eq!(switched.settings.optimism, Some(false));
         let committed = switched.checked_config(root.path()).unwrap();
         assert_eq!(committed.profile("mainnet").unwrap().chain_id_mode, crate::config::ChainIdMode::Source);
-        // A brand-new fork-1 profile stays Local, as before profiles existed.
         let fresh = prepare_network(tempfile::tempdir().unwrap().path(), "https://rpc.example", "").unwrap();
         assert_eq!(fresh.settings.chain_id_mode, crate::config::ChainIdMode::Local);
+        assert!(fresh.settings.hardfork.is_empty());
+        assert_eq!(fresh.settings.optimism, None);
     }
 
     #[test]
@@ -660,6 +700,7 @@ mod tests {
         let source = crate::config::NetworkProfile {
             id: "mainnet".into(), name: String::new(), fork_url: "https://rpc.example".into(),
             fork_url_env: String::new(), fork_block: None, chain_id_mode: crate::config::ChainIdMode::Source,
+            hardfork: String::new(), optimism: None,
         };
         save_profile(root.path(), source).unwrap();
         let parsed = profile_from_json(root.path(), &serde_json::json!({"id": "mainnet", "fork_url": "https://rpc.example"})).unwrap();
@@ -670,6 +711,46 @@ mod tests {
         assert_eq!(fresh.chain_id_mode, crate::config::ChainIdMode::Local, "a new profile defaults to Local");
         assert!(profile_from_json(root.path(), &serde_json::json!({"id": "Bad Id"})).is_ok(), "validation happens after parsing");
         assert!(profile_from_json(root.path(), &serde_json::json!({"id": "x", "unknown": 1})).is_err(), "unknown keys are refused");
+    }
+
+    #[test]
+    fn profile_json_distinguishes_omission_from_explicit_reset() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let parse = |value| profile_from_json(root, &value);
+        let saved = parse(json!({"id":"base", "fork_url":"https://rpc.example", "hardfork":"holocene", "optimism":true})).unwrap();
+        save_profile(root, saved).unwrap();
+
+        let kept = parse(json!({"id":"base", "fork_url":"https://new.example"})).unwrap();
+        assert_eq!(kept.hardfork, "holocene");
+        assert_eq!(kept.optimism, Some(true));
+        let auto = parse(json!({"id":"base", "fork_url":"https://new.example", "optimism":null})).unwrap();
+        assert_eq!(auto.hardfork, "holocene");
+        assert_eq!(auto.optimism, None);
+        let disabled = parse(json!({"id":"base", "fork_url":"https://new.example", "hardfork":null, "optimism":false})).unwrap();
+        assert!(disabled.hardfork.is_empty());
+        assert_eq!(disabled.optimism, Some(false));
+        let cleared = parse(json!({"id":"base", "fork_url":"https://new.example", "hardfork":null, "optimism":null})).unwrap();
+        assert!(cleared.hardfork.is_empty());
+        assert_eq!(cleared.optimism, None);
+        save_profile(root, cleared).unwrap();
+        let config = ChasmConfig::load(root).unwrap();
+        let profile = config.profile("base").unwrap();
+        assert!(profile.hardfork.is_empty());
+        assert_eq!(profile.optimism, None);
+    }
+
+    #[test]
+    fn profile_json_refuses_invalid_fork_options() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let parse = |value| profile_from_json(root.path(), &value);
+        let unknown = parse(json!({"id":"fork", "fork_url":"https://rpc.example", "hardfork":"osaka"}));
+        assert!(unknown.unwrap_err().contains("hardfork"));
+        assert!(parse(json!({"id":"fork", "fork_url":"https://rpc.example", "hardfork":42})).is_err());
+        assert!(parse(json!({"id":"fork", "fork_url":"https://rpc.example", "optimism":"auto"})).is_err());
+        assert!(parse(json!({"id":"fork", "fork_url":"https://rpc.example", "hardfork":"prague", "optimism":true})).is_err());
     }
 
     #[test]
@@ -685,13 +766,27 @@ mod tests {
     }
 
     #[test]
-    fn only_ethereum_and_sepolia_are_first_class_and_tokens_are_named() {
-        assert_eq!(chain_info(1).kind, "ethereum");
+    fn chain_kinds_share_optimism_defaults_and_limitations() {
+        for id in [1, 11155111, 17000] {
+            assert_eq!(chain_info(id).kind, "ethereum");
+            assert!(!is_op_stack(id));
+            assert_eq!(chain_warning(id), None);
+        }
         assert_eq!(chain_info(11155111).name, "Sepolia");
-        assert_eq!(chain_info(11155111).kind, "ethereum");
-        assert_eq!(chain_info(8453).kind, "other", "L2s fork with warnings, not special handling");
-        assert!(chains_first_class(1) && chains_first_class(11155111));
-        assert!(!chains_first_class(8453) && !chains_first_class(999_999));
+        assert_eq!(chain_info(17000).name, "Holesky");
+        for id in [8453, 84532, 10, 11155420] {
+            assert_eq!(chain_info(id).kind, "op-stack");
+            assert!(is_op_stack(id));
+            assert!(chain_warning(id).unwrap().contains("L1 data fees"));
+        }
+        for id in [42161, 42170, 421614] {
+            assert_eq!(chain_info(id).kind, "arbitrum");
+            assert!(!is_op_stack(id));
+            assert!(chain_warning(id).unwrap().contains("ArbOS"));
+        }
+        assert_eq!(chain_info(999_999).kind, "other");
+        assert!(!is_op_stack(999_999));
+        assert!(chain_warning(999_999).is_some());
         assert_eq!(native_token(Some(1)), "ETH");
         assert_eq!(native_token(Some(11155111)), "ETH");
         assert_eq!(native_token(Some(137)), "POL");

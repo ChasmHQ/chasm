@@ -2,13 +2,14 @@
 
 End-to-end flows that drive a real Chasm window through the local control
 API. `cargo test` does not run them: they need a debug build, Foundry in PATH,
-port 8545 free and the fixture compilers installed. The `fork` flow uses a public RPC and Sourcify. `CHASM_SKIP_FORK=1` skips only that flow: `toolchain` and `template` can still download missing libraries. A skipped `fork` returns normally, so the runner's pass count alone does not establish fork coverage.
+port 8545 free and the fixture compilers installed. The fork flows use public RPCs, and `fork` also uses Sourcify. `CHASM_SKIP_FORK=1` skips `fork`, `networks` and `base_fork`; `toolchain` and `template` can still download missing libraries. Skipped flows return normally, so the runner's pass count alone does not establish fork coverage.
 
 ```bash
 cargo build
-python tests/live/run.py                 # default suite, excluding stress
+python tests/live/run.py                 # default suite, excluding stress and base_fork
 python tests/live/run.py revert history  # bank always runs first
-python tests/live/run.py stress           # large fixtures and timing budgets; slow
+python tests/live/run.py stress          # large fixtures and timing budgets; slow
+python tests/live/run.py base_fork       # Base RPC (override with CHASM_BASE_RPC)
 CHASM_SKIP_FORK=1 python tests/live/run.py
 ```
 
@@ -44,10 +45,11 @@ key is stored here.
 | `revert_explained` | a keeper revert names `MiniToken.transfer` and its custom error; an oversized deploy names EIP-170; unsent calls trace through the API |
 | `fork` | mainnet fork, real transaction replay matches the receipt, Sourcify source; USDC imported by address as a proxy with its implementation's ABI, `name()` read through it |
 | `networks` | named profiles: switch with preflight and resume, per-network History and imports, Source mode with `ChainIdProbe`, a refused bad RPC, and a Sepolia check; needs the public RPC |
+| `base_fork` (only when named) | Base source chain ID, automatic OP Stack mode, WETH read and unsigned trace, OP deposit transaction decoding |
 | `stress` (only when named) | 20-field form, 200k-step trace, 30 deployments, 500 History rows, 128-step macro, three zooms |
 
 The table describes assertions in `flows.py`, not results from a particular run. The `bundle` flow does not query the transaction pool or mine a later block to check for leftover sends. `src/desktop/macro_runner_tests.rs` covers an unconfirmed rollback with a mock backend, not a live node failure.
 
-`python tests/live/profile_lifecycle.py` checks profile persistence on Windows. It starts a disposable upstream Anvil with chain ID 11155111 on loopback, pins the fork to a known block, and waits for a new workspace ID after each switch. It verifies the anchor hash, marker removal, isolated balances, and an edit made just before closing the window. It does **not** require or test the public Sepolia RPC. Forced termination is not a graceful close.
+`python tests/live/profile_lifecycle.py` checks profile persistence on Windows. It starts a disposable upstream Anvil with chain ID 11155111 on loopback, pins the fork to a known block, and waits for a new workspace ID after each switch. It verifies the anchor hash, marker removal, isolated balances, and an edit just before closing the window. A second profile follows `latest`; the test advances the upstream head and checks that the overlay restores balance and storage without changing the new head or invalidating new receipts. It does **not** require or test the public Sepolia RPC. Forced termination is not a graceful close.
 
 `CHASM_STRESS_SHOTS=<folder>` saves a screenshot of each view per zoom.
